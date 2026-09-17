@@ -106,9 +106,9 @@ pub struct TaintContext {
 impl TaintContext {
     /// Build a TaintContext by analysing all variable assignments within
     /// `scope_root` (a function body or the file root node).
-    pub fn build(scope_root: Node, source: &[u8]) -> Self {
+    pub fn build(scope_root: Node<'_>, source: &[u8]) -> Self {
         // Collect every (name, value_node) pair in this scope.
-        let mut assignments: Vec<(String, Node)> = Vec::new();
+        let mut assignments: Vec<(String, Node<'_>)> = Vec::new();
         collect_assignments(scope_root, source, &mut assignments);
 
         let mut tainted: HashSet<String> = HashSet::new();
@@ -157,7 +157,7 @@ impl TaintContext {
     }
 
     /// Returns `true` if `node` is (or transitively contains) a tainted value.
-    pub fn node_is_tainted(&self, node: Node, source: &[u8]) -> bool {
+    pub fn node_is_tainted(&self, node: Node<'_>, source: &[u8]) -> bool {
         if is_direct_taint_source(node, source) {
             return true;
         }
@@ -166,7 +166,7 @@ impl TaintContext {
 
     /// Returns `true` if `node` is provably safe (sanitised, static, or all
     /// referenced variables are in the safe set).
-    pub fn node_is_safe(&self, node: Node, source: &[u8]) -> bool {
+    pub fn node_is_safe(&self, node: Node<'_>, source: &[u8]) -> bool {
         is_direct_safe_value(node, source, &self.safe)
     }
 }
@@ -260,7 +260,7 @@ fn collect_assignments<'a>(node: Node<'a>, source: &[u8], out: &mut Vec<(String,
 
 /// Returns `true` if `node` is a *direct* taint source (no variable lookup
 /// required).
-pub fn is_direct_taint_source(node: Node, source: &[u8]) -> bool {
+pub fn is_direct_taint_source(node: Node<'_>, source: &[u8]) -> bool {
     match node.kind() {
         "member_expression" => {
             let obj = node
@@ -323,7 +323,7 @@ pub fn is_direct_taint_source(node: Node, source: &[u8]) -> bool {
 
 /// Returns `true` if `node` is provably safe — either a static literal, a
 /// sanitizer call, or an expression composed entirely of safe values.
-pub fn is_direct_safe_value(node: Node, source: &[u8], safe: &HashSet<String>) -> bool {
+pub fn is_direct_safe_value(node: Node<'_>, source: &[u8], safe: &HashSet<String>) -> bool {
     match node.kind() {
         // Static literals
         "string" | "number" | "true" | "false" | "null" | "undefined" => true,
@@ -392,7 +392,11 @@ pub fn is_direct_safe_value(node: Node, source: &[u8], safe: &HashSet<String>) -
 
 /// Returns `true` if `node` (or any sub-expression) references a variable in
 /// `tainted`, or is itself a direct taint source.
-pub fn node_contains_tainted_var(node: Node, source: &[u8], tainted: &HashSet<String>) -> bool {
+pub fn node_contains_tainted_var(
+    node: Node<'_>,
+    source: &[u8],
+    tainted: &HashSet<String>,
+) -> bool {
     if is_direct_taint_source(node, source) {
         return true;
     }

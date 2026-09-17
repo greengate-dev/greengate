@@ -56,7 +56,7 @@ static RE_INJECTION: LazyLock<Regex> = LazyLock::new(|| {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_ci_lint(opts: CiLintOpts) -> Result<()> {
+pub fn run_ci_lint(opts: CiLintOpts<'_>) -> Result<()> {
     let files = match opts.file {
         Some(ref f) => vec![PathBuf::from(f)],
         None => find_workflow_files(),

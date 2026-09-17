@@ -18,6 +18,7 @@
 //! best-effort.
 
 use crate::utils::config::TelemetryConfig;
+use crate::utils::http;
 use std::time::SystemTime;
 
 // ── Public metric types ───────────────────────────────────────────────────────
@@ -255,7 +256,8 @@ fn emit_otlp(metrics: &[Metric], endpoint: &str, service_name: &str) -> anyhow::
     });
 
     let url = format!("{}/v1/metrics", endpoint.trim_end_matches('/'));
-    ureq::post(&url)
+    http::agent()
+        .post(&url)
         .set("Content-Type", "application/json")
         .send_json(payload)
         .map_err(|e| anyhow::anyhow!("HTTP {}", e))?;

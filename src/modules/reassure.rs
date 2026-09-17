@@ -29,7 +29,7 @@ struct ComponentResult {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_reassure(opts: ReassureOpts) -> Result<()> {
+pub fn run_reassure(opts: ReassureOpts<'_>) -> Result<()> {
     terminal::info(&format!("Parsing Reassure report: {}", opts.current));
 
     let current = load_report(opts.current)?;

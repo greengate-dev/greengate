@@ -1,6 +1,8 @@
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
 #[derive(Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub scan: ScanConfig,
@@ -36,6 +38,7 @@ pub struct Config {
 
 /// Audit settings loaded from `.greengate.toml` under `[audit]`.
 #[derive(Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct AuditConfig {
     /// GHSA/CVE IDs to suppress — use for known-acceptable transitive dep
     /// vulnerabilities that cannot be fixed by upgrading a direct dependency.
@@ -46,6 +49,7 @@ pub struct AuditConfig {
 
 /// A user-defined tree-sitter query rule from `.greengate.toml`.
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct CustomSastRule {
     /// Unique rule ID reported in findings, e.g. "MY/NoConsoleLog"
     pub id: String,
@@ -55,6 +59,7 @@ pub struct CustomSastRule {
 
 /// SAST settings loaded from `.greengate.toml` under `[sast]`.
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SastConfig {
     /// Master switch — set to false to disable all SAST checks (default: true)
     #[serde(default = "default_sast_enabled")]
@@ -106,6 +111,7 @@ fn default_max_nesting_depth() -> usize {
 /// `#[derive(Default)]` is not used because the entropy fields require non-zero defaults
 /// that cannot be expressed with Rust's `Default` trait directly; use helper fns instead.
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ScanConfig {
     #[serde(default)]
     pub exclude_patterns: Vec<String>,
@@ -135,12 +141,14 @@ impl Default for ScanConfig {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ExtraPattern {
     pub name: String,
     pub regex: String,
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct CoverageConfig {
     #[serde(default = "default_coverage_min")]
     pub min: f64,
@@ -158,6 +166,7 @@ impl Default for CoverageConfig {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct LintConfig {
     #[serde(default = "default_target_dir")]
     pub target_dir: String,
@@ -174,6 +183,7 @@ impl Default for LintConfig {
 // ── Lighthouse config ─────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct LighthouseConfig {
     /// URL to audit (required for `greengate lighthouse` unless passed via CLI)
     #[serde(default)]
@@ -211,6 +221,7 @@ impl Default for LighthouseConfig {
 // ── Reassure config ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ReassureConfig {
     /// Path to Reassure current.perf file
     #[serde(default = "default_reassure_current")]
@@ -281,6 +292,7 @@ fn default_reassure_threshold() -> f64 {
 // ── Docker config ─────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct DockerConfig {
     /// Path to the Dockerfile to lint (default: "Dockerfile")
     #[serde(default = "default_dockerfile")]
@@ -303,6 +315,7 @@ fn default_dockerfile() -> String {
 
 /// Settings for `greengate review` loaded from `.greengate.toml` under `[review]`.
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewConfig {
     /// Minimum coverage percentage required for newly added lines (default: 80)
     #[serde(default = "default_review_min_coverage")]
@@ -328,6 +341,7 @@ fn default_review_min_coverage() -> f64 {
 // ── Pipeline config ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     /// Ordered list of steps to run with `greengate run`.
     /// Each entry is a command string, e.g. "scan", "coverage --min 80".
@@ -341,6 +355,7 @@ pub struct PipelineConfig {
 /// under `[supply_chain]`.  Currently drives `greengate watch-install`;
 /// reserved for `greengate sandbox-install` in a future release.
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SupplyChainConfig {
     /// Fail the install if a phantom file (created-then-deleted postinstall
     /// binary) or unexpected executable drop is detected (default: true).
@@ -417,6 +432,7 @@ fn default_slopsquat_min_downloads() -> u64 {
 
 /// Settings for `greengate tia` loaded from `.greengate.toml` under `[tia]`.
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct TiaConfig {
     /// Glob patterns that identify test files to consider for impact analysis.
     /// Patterns follow standard glob syntax with `**` for recursive matching.
@@ -453,6 +469,7 @@ fn default_tia_test_patterns() -> Vec<String> {
 
 /// Settings for metrics export loaded from `.greengate.toml` under `[telemetry]`.
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct TelemetryConfig {
     /// Master switch — set to false to disable all telemetry (default: true)
     #[serde(default = "default_telemetry_enabled")]
@@ -496,16 +513,17 @@ fn default_telemetry_service_name() -> String {
 
 /// Settings for `greengate sbom` loaded from `.greengate.toml` under `[sbom]`.
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SbomConfig {
     /// Default output path for generated SBOMs (default: "sbom.json").
     #[serde(default = "default_sbom_output")]
     pub default_output: String,
     /// Expected OIDC issuer when verifying attestations, e.g.
-    /// "https://token.actions.githubusercontent.com". Leave empty to accept any.
+    /// `https://token.actions.githubusercontent.com`. Leave empty to accept any.
     #[serde(default)]
     pub expected_issuer: Option<String>,
     /// Expected signer identity when verifying attestations, e.g.
-    /// "https://github.com/acme/repo/.github/workflows/release.yml@refs/heads/main".
+    /// `https://github.com/acme/repo/.github/workflows/release.yml@refs/heads/main`.
     /// Leave empty to accept any. Treated as an exact match.
     #[serde(default)]
     pub expected_identity: Option<String>,
@@ -529,6 +547,7 @@ fn default_sbom_output() -> String {
 
 /// Settings for `greengate scan --triage` loaded from `.greengate.toml` under `[triage]`.
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct TriageConfig {
     /// Master switch — set to false to disable triage even when --triage is passed (default: true)
     #[serde(default = "default_triage_enabled")]
@@ -587,34 +606,45 @@ fn default_triage_context_lines() -> usize {
 /// Load `.greengate.toml` from the current directory, falling back to defaults.
 /// Prints a status message to stderr (suitable for text/interactive output).
 /// Use [`load_silent`] when emitting structured output (JSON, SARIF, JUnit).
-pub fn load() -> Config {
+///
+/// # Errors
+/// Returns an error if `.greengate.toml` exists but cannot be read or parsed.
+/// A *missing* file is not an error — it yields the defaults.
+pub fn load() -> Result<Config> {
     load_inner(true)
 }
 
 /// Like [`load`] but suppresses the "Loaded config" info message.
 /// Use this when the caller is emitting machine-readable output so that the
 /// info line does not pollute parsers that capture stderr alongside stdout.
-pub fn load_silent() -> Config {
+///
+/// # Errors
+/// As [`load`].
+pub fn load_silent() -> Result<Config> {
     load_inner(false)
 }
 
-fn load_inner(verbose: bool) -> Config {
+fn load_inner(verbose: bool) -> Result<Config> {
     let path = std::path::Path::new(".greengate.toml");
-    if path.exists() {
-        match std::fs::read_to_string(path) {
-            Ok(content) => match toml::from_str(&content) {
-                Ok(cfg) => {
-                    if verbose {
-                        eprintln!("ℹ️  Loaded config from .greengate.toml");
-                    }
-                    return cfg;
-                }
-                Err(e) => eprintln!("⚠️  Failed to parse .greengate.toml: {}", e),
-            },
-            Err(e) => eprintln!("⚠️  Failed to read .greengate.toml: {}", e),
-        }
+    if !path.exists() {
+        return Ok(Config::default());
     }
-    Config::default()
+
+    // A config that exists but does not parse is a hard error. Falling back to
+    // defaults here would silently discard every gate the user configured —
+    // allowlists, thresholds, whether SAST runs at all — and the run would look
+    // like a pass. With `deny_unknown_fields` on the structs above, a typo'd key
+    // lands here too, which is the whole point: an unrecognised setting is not a
+    // setting that is quietly off.
+    let content = std::fs::read_to_string(path)
+        .context("failed to read .greengate.toml (it exists but could not be opened)")?;
+    let cfg = toml::from_str(&content).context(
+        "failed to parse .greengate.toml — fix the file, or run `greengate check-config` for detail",
+    )?;
+    if verbose {
+        eprintln!("ℹ️  Loaded config from .greengate.toml");
+    }
+    Ok(cfg)
 }
 
 /// Apply a named profile on top of an already-loaded config.

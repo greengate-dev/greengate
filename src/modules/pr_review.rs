@@ -6,6 +6,7 @@
 ///   2. **New-code coverage gaps** — which newly added lines are NOT covered by the
 ///      provided LCOV/Cobertura report, and whether they meet the configured floor.
 use crate::modules::github;
+use crate::utils::http;
 use crate::utils::terminal;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -674,14 +675,14 @@ fn create_review_check_run(
             )
         }
     });
-    let resp = ureq::post(&url)
+    let resp = http::agent()
+        .post(&url)
         .set("Authorization", &format!("Bearer {}", token))
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
         .send_json(body)
         .map_err(|e| anyhow::anyhow!("GitHub create review check-run: {}", e))?;
-    let json: serde_json::Value = resp
-        .into_json()
+    let json: serde_json::Value = http::read_json(resp)
         .map_err(|e| anyhow::anyhow!("GitHub create review check-run parse: {}", e))?;
     json["id"]
         .as_u64()
@@ -706,7 +707,8 @@ fn patch_check_run_annotations(
             "annotations": annotations,
         }
     });
-    ureq::request("PATCH", &url)
+    http::agent()
+        .request("PATCH", &url)
         .set("Authorization", &format!("Bearer {}", token))
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
@@ -731,7 +733,8 @@ fn complete_review_check_run(
         "status": "completed",
         "conclusion": conclusion,
     });
-    ureq::request("PATCH", &url)
+    http::agent()
+        .request("PATCH", &url)
         .set("Authorization", &format!("Bearer {}", token))
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
@@ -751,14 +754,15 @@ fn post_review_pr_comment(
         "{}/repos/{}/{}/commits/{}/pulls",
         API_BASE, owner, repo, sha
     );
-    let pr_number = match ureq::get(&commits_url)
+    let pr_number = match http::agent()
+        .get(&commits_url)
         .set("Authorization", &format!("Bearer {}", token))
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
         .call()
     {
         Ok(r) => {
-            let json: serde_json::Value = r.into_json().unwrap_or(serde_json::Value::Null);
+            let json: serde_json::Value = http::read_json(r).unwrap_or(serde_json::Value::Null);
             json[0]["number"].as_u64()
         }
         Err(_) => None,
@@ -774,7 +778,8 @@ fn post_review_pr_comment(
     );
     let markdown = build_review_comment(output);
     let body = serde_json::json!({ "body": markdown });
-    ureq::post(&comment_url)
+    http::agent()
+        .post(&comment_url)
         .set("Authorization", &format!("Bearer {}", token))
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")

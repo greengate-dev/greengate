@@ -28,3 +28,26 @@ globset = "0.4"
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
+
+# Overflow wraps silently in release by default, so the same arithmetic behaves
+# differently than it does in debug and in tests. For a tool whose output gates
+# a build, a loud panic beats a silently wrong count.
+[profile.release]
+overflow-checks = true
+
+[lints.rust]
+# The crate contains no `unsafe` at all; keep it that way deliberately rather
+# than by accident.
+unsafe_code = "forbid"
+unused_must_use = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+# NOTE: `unwrap_used`, `expect_used` and `indexing_slicing` are deliberately NOT
+# enabled repo-wide. Auditing them site by site found ~66 hits in non-test code
+# and nearly all are provably in range — `serde_json::Value` indexing (which is
+# total), `[0u32; 256]` indexed by a `u8`, and slices behind explicit bounds
+# guards. Turning them on would mean ~66 blanket `#[allow]`s, which would hide
+# the next real one. Run them on demand instead:
+#   cargo clippy --all-targets -- -W clippy::unwrap_used -W clippy::indexing_slicing

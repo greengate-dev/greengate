@@ -426,7 +426,10 @@ fn parse_git_log_patch(stdout: &str) -> Vec<(String, PathBuf, String, usize)> {
 }
 
 /// Scan the full git commit history for secrets in added lines.
-fn run_history_scan(opts: &ScanOpts, all_patterns: &[(String, Regex)]) -> Result<Vec<Finding>> {
+fn run_history_scan(
+    opts: &ScanOpts<'_>,
+    all_patterns: &[(String, Regex)],
+) -> Result<Vec<Finding>> {
     let is_text = matches!(opts.format, OutputFormat::Text);
 
     if is_text {
@@ -511,7 +514,7 @@ fn run_history_scan(opts: &ScanOpts, all_patterns: &[(String, Regex)]) -> Result
 
 // ── Pattern compilation ───────────────────────────────────────────────────────
 
-fn compile_patterns(opts: &ScanOpts) -> Result<Vec<(String, Regex)>> {
+fn compile_patterns(opts: &ScanOpts<'_>) -> Result<Vec<(String, Regex)>> {
     let mut patterns: Vec<(String, Regex)> = BUILTIN_PATTERNS
         .iter()
         .map(|(name, pat)| {
@@ -561,16 +564,16 @@ fn get_changed_files(mode: &DiffMode) -> Result<Vec<PathBuf>> {
 
 /// Collect all files to scan (honoring diff mode and exclusions) into a Vec.
 fn collect_scan_files(
-    opts: &ScanOpts,
+    opts: &ScanOpts<'_>,
     excludes: &Option<ignore::overrides::Override>,
     is_text: bool,
 ) -> Result<Vec<PathBuf>> {
     let files: Vec<PathBuf> = match &opts.diff {
-        Some(DiffMode::Staged) | Some(DiffMode::Since(_)) => {
+        Some(mode @ (DiffMode::Staged | DiffMode::Since(_))) => {
             if is_text {
                 terminal::info("Diff mode: scanning only changed files...");
             }
-            get_changed_files(opts.diff.as_ref().unwrap())?
+            get_changed_files(mode)?
         }
         None => {
             let walker = files::get_walker("./");
@@ -592,7 +595,7 @@ fn collect_scan_files(
 /// Regex + entropy scan over a pre-built file list.
 /// When SAST is enabled, JS/TS files are skipped here — the SAST module handles them.
 fn run_regex_scan(
-    opts: &ScanOpts,
+    opts: &ScanOpts<'_>,
     all_patterns: &[(String, Regex)],
     files: &[PathBuf],
     is_text: bool,
@@ -728,7 +731,7 @@ fn sarif_level(severity: &str) -> &'static str {
 /// reported as requiring manual attention.
 ///
 /// When `dry_run` is true the changes are printed but not written to disk.
-pub fn apply_scan_fixes(findings: &[Finding], opts: &ScanOpts, dry_run: bool) -> Result<()> {
+pub fn apply_scan_fixes(findings: &[Finding], opts: &ScanOpts<'_>, dry_run: bool) -> Result<()> {
     use std::collections::HashMap;
 
     // Recompile patterns so we can match the exact substring to replace.
@@ -1133,7 +1136,7 @@ pub fn enrich_with_blame(findings: &mut [Finding]) {
 
 /// Collect all findings without emitting output. Used by `run_scan` and
 /// the GitHub annotation path in `main.rs`.
-pub fn collect_findings(opts: &ScanOpts) -> Result<Vec<Finding>> {
+pub fn collect_findings(opts: &ScanOpts<'_>) -> Result<Vec<Finding>> {
     let is_text = matches!(opts.format, OutputFormat::Text);
 
     let all_patterns = compile_patterns(opts)?;
@@ -1233,7 +1236,7 @@ pub fn scan_text_content(
     findings
 }
 
-pub fn run_scan(opts: ScanOpts) -> Result<()> {
+pub fn run_scan(opts: ScanOpts<'_>) -> Result<()> {
     let is_text = matches!(opts.format, OutputFormat::Text);
     if is_text {
         terminal::info("Starting secret and PII scan...");

@@ -1,4 +1,5 @@
 use crate::modules::scanner::Finding;
+use crate::utils::http;
 use anyhow::Result;
 
 // ── Environment detection ─────────────────────────────────────────────────────
@@ -11,13 +12,20 @@ pub struct GitHubEnv {
 
 /// Returns `Some(GitHubEnv)` when all three required env vars are present.
 pub fn detect_github_env() -> Option<GitHubEnv> {
-    let token = std::env::var("GITHUB_TOKEN").ok()?;
-    let repository = std::env::var("GITHUB_REPOSITORY").ok()?;
-    let sha = std::env::var("GITHUB_SHA").ok()?;
+    detect_github_env_from(|key| std::env::var(key).ok())
+}
+
+/// The detection logic, over an arbitrary variable lookup.
+///
+/// Split out so tests can exercise it without mutating the process environment.
+/// `std::env::set_var` carries a safety contract that `cargo test` cannot honour:
+/// tests run on parallel threads, so one test's write races every other test's
+/// read. Injecting the lookup sidesteps the problem instead of asserting it away.
+fn detect_github_env_from(lookup: impl Fn(&str) -> Option<String>) -> Option<GitHubEnv> {
     Some(GitHubEnv {
-        token,
-        repository,
-        sha,
+        token: lookup("GITHUB_TOKEN")?,
+        repository: lookup("GITHUB_REPOSITORY")?,
+        sha: lookup("GITHUB_SHA")?,
     })
 }
 
@@ -58,14 +66,14 @@ fn create_check_run(owner: &str, repo: &str, sha: &str, token: &str) -> Result<u
         "head_sha": sha,
         "status": "in_progress",
     });
-    let resp = ureq::post(&url)
+    let resp = http::agent()
+        .post(&url)
         .set("Authorization", &format!("Bearer {}", token))
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
         .send_json(body)
         .map_err(|e| anyhow::anyhow!("GitHub create check-run: {}", e))?;
-    let json: serde_json::Value = resp
-        .into_json()
+    let json: serde_json::Value = http::read_json(resp)
         .map_err(|e| anyhow::anyhow!("GitHub create check-run parse: {}", e))?;
     json["id"]
         .as_u64()
@@ -108,7 +116,8 @@ fn update_check_run_annotations(
             "annotations": annotations,
         }
     });
-    ureq::request("PATCH", &url)
+    http::agent()
+        .request("PATCH", &url)
         .set("Authorization", &format!("Bearer {}", token))
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
@@ -137,7 +146,8 @@ fn complete_check_run(
             "summary": format!("greengate found {} issue(s).", total),
         }
     });
-    ureq::request("PATCH", &url)
+    http::agent()
+        .request("PATCH", &url)
         .set("Authorization", &format!("Bearer {}", token))
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
@@ -158,14 +168,15 @@ fn post_pr_summary_comment(
         "{}/repos/{}/{}/commits/{}/pulls",
         API_BASE, owner, repo, sha
     );
-    let pr_number = match ureq::get(&commits_url)
+    let pr_number = match http::agent()
+        .get(&commits_url)
         .set("Authorization", &format!("Bearer {}", token))
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
         .call()
     {
         Ok(r) => {
-            let json: serde_json::Value = r.into_json().unwrap_or(serde_json::Value::Null);
+            let json: serde_json::Value = http::read_json(r).unwrap_or(serde_json::Value::Null);
             json[0]["number"].as_u64()
         }
         Err(_) => None,
@@ -184,7 +195,8 @@ fn post_pr_summary_comment(
     let markdown = build_pr_summary(findings);
     let body = serde_json::json!({ "body": markdown });
 
-    ureq::post(&comment_url)
+    http::agent()
+        .post(&comment_url)
         .set("Authorization", &format!("Bearer {}", token))
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
@@ -246,45 +258,25 @@ mod tests {
 
     #[test]
     fn detect_github_env_returns_some_with_all_vars() {
-        // Scoped setup/teardown to avoid polluting other tests.
-        let _g1 = ScopedEnv::set("GITHUB_TOKEN", "tok");
-        let _g2 = ScopedEnv::set("GITHUB_REPOSITORY", "owner/repo");
-        let _g3 = ScopedEnv::set("GITHUB_SHA", "abc123");
-        assert!(detect_github_env().is_some());
+        let env = detect_github_env_from(|key| match key {
+            "GITHUB_TOKEN" => Some("tok".to_string()),
+            "GITHUB_REPOSITORY" => Some("owner/repo".to_string()),
+            "GITHUB_SHA" => Some("abc123".to_string()),
+            _ => None,
+        })
+        .expect("all three variables are present");
+        assert_eq!(env.token, "tok");
+        assert_eq!(env.repository, "owner/repo");
+        assert_eq!(env.sha, "abc123");
     }
 
     #[test]
     fn detect_github_env_returns_none_on_missing_token() {
-        let _g1 = ScopedEnv::remove("GITHUB_TOKEN");
-        assert!(detect_github_env().is_none());
-    }
-
-    /// RAII guard that restores an env var on drop.
-    struct ScopedEnv {
-        key: &'static str,
-        prev: Option<String>,
-    }
-    impl ScopedEnv {
-        fn set(key: &'static str, val: &str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: single-threaded test context
-            unsafe { std::env::set_var(key, val) }; // greengate: ignore
-            Self { key, prev }
-        }
-        fn remove(key: &'static str) -> Self {
-            let prev = std::env::var(key).ok();
-            // SAFETY: single-threaded test context
-            unsafe { std::env::remove_var(key) }; // greengate: ignore
-            Self { key, prev }
-        }
-    }
-    impl Drop for ScopedEnv {
-        fn drop(&mut self) {
-            match &self.prev {
-                // SAFETY: single-threaded test context — restoring env on drop
-                Some(v) => unsafe { std::env::set_var(self.key, v) }, // greengate: ignore
-                None => unsafe { std::env::remove_var(self.key) },    // greengate: ignore
-            }
-        }
+        let env = detect_github_env_from(|key| match key {
+            "GITHUB_REPOSITORY" => Some("owner/repo".to_string()),
+            "GITHUB_SHA" => Some("abc123".to_string()),
+            _ => None,
+        });
+        assert!(env.is_none());
     }
 }

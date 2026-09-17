@@ -20,7 +20,7 @@ use tree_sitter::{Language, Parser, Query, QueryCursor};
 /// Checks the matched line itself AND the line immediately after it.
 /// Formatters (Prettier, ESLint) often move `// greengate: ignore` comments
 /// inside object literals to the next line, e.g.:
-/// ```
+/// ```text
 ///   dangerouslySetInnerHTML={{          ← flagged line (row N)
 ///     // greengate: ignore               ← comment on row N+1
 ///     __html: sanitized,
@@ -532,7 +532,7 @@ fn html_value_node<'a>(
 /// Returns true if `node` represents a known-safe HTML value:
 ///   • a static string / template literal with no interpolations
 ///   • a call to a known sanitizer function (DOMPurify.sanitize, JSON.stringify, …)
-fn is_safe_html_value(node: tree_sitter::Node, source: &[u8]) -> bool {
+fn is_safe_html_value(node: tree_sitter::Node<'_>, source: &[u8]) -> bool {
     match node.kind() {
         // Static string literal — no dynamic content, no injection vector
         "string" => true,
@@ -572,7 +572,7 @@ fn is_safe_html_value(node: tree_sitter::Node, source: &[u8]) -> bool {
 /// `regex.exec(str)`, `model.exec()`, and promise-chain `.exec()` calls are
 /// common patterns that do NOT involve child_process and should not be flagged.
 /// We suppress when the object is a known non-shell type or a regex literal.
-fn exec_is_non_shell(matched: tree_sitter::Node, source: &[u8]) -> bool {
+fn exec_is_non_shell(matched: tree_sitter::Node<'_>, source: &[u8]) -> bool {
     // matched is the call_expression; function is a member_expression
     let Some(func) = matched.child_by_field_name("function") else {
         return false;
@@ -843,7 +843,7 @@ const NESTING_NODE_KINDS: &[&str] = &[
 ];
 
 /// Returns the number of source lines occupied by a function node's body.
-fn count_function_lines(node: tree_sitter::Node) -> usize {
+fn count_function_lines(node: tree_sitter::Node<'_>) -> usize {
     let body = node.child_by_field_name("body").unwrap_or(node);
     let start = body.start_position().row;
     let end = body.end_position().row;
@@ -851,14 +851,14 @@ fn count_function_lines(node: tree_sitter::Node) -> usize {
 }
 
 /// Returns the number of formal parameters for a function-like node.
-fn count_parameters(node: tree_sitter::Node) -> usize {
+fn count_parameters(node: tree_sitter::Node<'_>) -> usize {
     node.child_by_field_name("parameters")
         .map(|p| p.named_child_count())
         .unwrap_or(0)
 }
 
 /// Recursively computes the maximum nesting depth within `node`.
-fn max_nesting_depth_in(node: tree_sitter::Node, current: usize) -> usize {
+fn max_nesting_depth_in(node: tree_sitter::Node<'_>, current: usize) -> usize {
     let mut depth = current;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -881,7 +881,7 @@ fn scan_complexity(
     let mut findings = Vec::new();
 
     // Iterative stack traversal — avoids recursion on deeply nested files.
-    let mut stack: Vec<tree_sitter::Node> = vec![tree.root_node()];
+    let mut stack: Vec<tree_sitter::Node<'_>> = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if FUNCTION_NODE_KINDS.contains(&node.kind()) {
             let line_no = node.start_position().row + 1;

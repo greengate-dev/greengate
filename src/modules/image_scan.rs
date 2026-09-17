@@ -28,7 +28,7 @@ pub struct ImageScanOpts<'a> {
 ///   4. For each layer: `tar -xf layer.tar -C <tmpdir>/layer-N/`
 ///   5. Walk text files and run regex + entropy scan
 ///   6. Report findings with path `<image>::layer:<digest>::<file>`
-pub fn run_image_scan(opts: ImageScanOpts) -> Result<()> {
+pub fn run_image_scan(opts: ImageScanOpts<'_>) -> Result<()> {
     require_docker()?;
 
     crate::utils::terminal::info(&format!(

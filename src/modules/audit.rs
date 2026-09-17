@@ -1,3 +1,4 @@
+use crate::utils::http;
 use crate::utils::{config, files, terminal};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -384,7 +385,7 @@ fn fetch_vuln_details(id: &str) -> VulnDetails {
         cached
     } else {
         let url = format!("https://api.osv.dev/v1/vulns/{}", id);
-        let Ok(response) = ureq::get(&url).call() else {
+        let Ok(response) = http::agent().get(&url).call() else {
             return VulnDetails {
                 summary: "No summary available".to_string(),
                 severity: None,
@@ -392,7 +393,7 @@ fn fetch_vuln_details(id: &str) -> VulnDetails {
                 reference_url: None,
             };
         };
-        let Ok(v) = serde_json::from_reader::<_, Value>(response.into_reader()) else {
+        let Ok(v) = http::read_json::<Value>(response) else {
             return VulnDetails {
                 summary: "No summary available".to_string(),
                 severity: None,
@@ -487,13 +488,14 @@ fn query_osv(packages: &[Package]) -> Result<Vec<Vulnerability>> {
     let result: Value = if let Some(cached) = cache_read(&key) {
         cached
     } else {
-        let response = ureq::post(OSV_BATCH_URL)
+        let response = http::agent()
+            .post(OSV_BATCH_URL)
             .set("Content-Type", "application/json")
             .send_string(&body_str)
             .context("Failed to reach OSV API — check your network connection")?;
 
-        let parsed: Value = serde_json::from_reader(response.into_reader())
-            .context("Failed to parse OSV API response")?;
+        let parsed: Value =
+            http::read_json(response).context("Failed to parse OSV API response")?;
 
         cache_write(&key, &parsed);
         parsed
@@ -539,7 +541,7 @@ fn query_osv(packages: &[Package]) -> Result<Vec<Vulnerability>> {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run_audit() -> Result<()> {
-    let cfg = config::load_silent();
+    let cfg = config::load_silent()?;
     let ignored: std::collections::HashSet<String> = cfg
         .audit
         .ignore_advisories

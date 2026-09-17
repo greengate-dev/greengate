@@ -1,5 +1,6 @@
 use crate::modules::scanner::Finding;
 use crate::utils::config::TriageConfig;
+use crate::utils::http;
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -50,9 +51,15 @@ fn read_context(path: &Path, line: usize, window: usize) -> String {
     };
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len();
-    let start = line.saturating_sub(window + 1);
+    // `line` may point past the end of the file: `--history` findings carry a
+    // line number from an old blob, while we read the current working tree.
+    // Clamp both ends so a shrunk file yields an empty window, not a panic.
     let end = (line + window).min(total);
-    lines[start..end]
+    let start = line.saturating_sub(window + 1).min(end);
+    let Some(window_lines) = lines.get(start..end) else {
+        return String::new();
+    };
+    window_lines
         .iter()
         .enumerate()
         .map(|(i, l)| format!("{:4} | {}", start + i + 1, l))
@@ -101,7 +108,9 @@ fn parse_response(text: &str) -> Result<TriageResult> {
         .rfind('}')
         .ok_or_else(|| anyhow::anyhow!("no closing brace in LLM response"))?
         + 1;
-    let json_str = &text[start..end];
+    let json_str = text
+        .get(start..end)
+        .ok_or_else(|| anyhow::anyhow!("malformed JSON object in LLM response"))?;
     let v: serde_json::Value = serde_json::from_str(json_str)
         .with_context(|| format!("bad triage JSON: {}", json_str))?;
 
@@ -137,16 +146,16 @@ fn call_anthropic(prompt: &str, cfg: &TriageConfig, api_key: &str) -> Result<Str
         "messages": [{"role": "user", "content": prompt}],
     });
 
-    let resp = ureq::post(endpoint)
+    let resp = http::agent()
+        .post(endpoint)
         .set("x-api-key", api_key)
         .set("anthropic-version", "2023-06-01")
         .set("content-type", "application/json")
         .send_json(body)
         .map_err(|e| anyhow::anyhow!("Anthropic API error: {}", e))?;
 
-    let json: serde_json::Value = resp
-        .into_json()
-        .context("failed to parse Anthropic response")?;
+    let json: serde_json::Value =
+        http::read_json(resp).context("failed to parse Anthropic response")?;
 
     json["content"][0]["text"]
         .as_str()
@@ -166,15 +175,15 @@ fn call_openai_compat(prompt: &str, cfg: &TriageConfig, api_key: &str) -> Result
         "messages": [{"role": "user", "content": prompt}],
     });
 
-    let resp = ureq::post(endpoint)
+    let resp = http::agent()
+        .post(endpoint)
         .set("Authorization", &format!("Bearer {}", api_key))
         .set("content-type", "application/json")
         .send_json(body)
         .map_err(|e| anyhow::anyhow!("OpenAI-compatible API error: {}", e))?;
 
-    let json: serde_json::Value = resp
-        .into_json()
-        .context("failed to parse OpenAI response")?;
+    let json: serde_json::Value =
+        http::read_json(resp).context("failed to parse OpenAI response")?;
 
     json["choices"][0]["message"]["content"]
         .as_str()
@@ -433,5 +442,35 @@ mod tests {
         };
         let results = triage_findings(&[], &cfg);
         assert!(results.is_empty());
+    }
+
+    // ── Regression: both of these used to panic ──────────────────────────────
+
+    #[test]
+    fn read_context_survives_line_past_end_of_file() {
+        // A `--history` finding carries a line number from an old blob; the
+        // working-tree file has since shrunk to 10 lines.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("shrunk.txt");
+        std::fs::write(&path, "a\n".repeat(10)).expect("write fixture");
+        assert_eq!(read_context(&path, 100, 3), "");
+    }
+
+    #[test]
+    fn read_context_clamps_window_to_file_end() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("short.txt");
+        std::fs::write(&path, "one\ntwo\nthree\n").expect("write fixture");
+        let ctx = read_context(&path, 3, 5);
+        assert!(ctx.contains("one"), "got: {ctx}");
+        assert!(ctx.contains("three"), "got: {ctx}");
+    }
+
+    #[test]
+    fn parse_response_errors_on_reversed_braces() {
+        // Last `}` precedes the first `{` — both are present, so the old
+        // existence-only checks passed and the slice panicked.
+        let err = parse_response("} {").expect_err("should not panic, should error");
+        assert!(err.to_string().contains("malformed"), "got: {err}");
     }
 }

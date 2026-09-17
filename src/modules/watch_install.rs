@@ -284,6 +284,17 @@ fn report_script_threats(threats: &[ScriptThreat], allow_postinstall: &[String])
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+/// Take a lock guard, recovering the inner value if the mutex was poisoned.
+///
+/// See the call sites: the guarded state only ever accumulates observed paths,
+/// so a panic elsewhere cannot leave it in a state that makes the remaining
+/// findings wrong — and a crashed gate reports nothing at all.
+fn poisoned_ok<T>(
+    result: std::sync::LockResult<std::sync::MutexGuard<'_, T>>,
+) -> std::sync::MutexGuard<'_, T> {
+    result.unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
     terminal::info(&format!(
         "Zero-Trust Supply Chain Gate: intercepting `{} {}`",
@@ -360,11 +371,15 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
         while !done_clone.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(250));
             let current = snapshot_dir("node_modules");
-            state_clone.lock().unwrap().update(current);
+            // Recover from poisoning rather than panicking: the guarded state is
+            // an accumulating set of observed paths, so a partial update from a
+            // panicking sibling leaves it structurally valid, and reporting the
+            // phantoms we did see beats taking the whole gate down.
+            poisoned_ok(state_clone.lock()).update(current);
         }
         // One final scan after the child exits to catch any last-moment events.
         let current = snapshot_dir("node_modules");
-        state_clone.lock().unwrap().update(current);
+        poisoned_ok(state_clone.lock()).update(current);
     });
 
     // 5. Run the wrapped package manager and inherit its stdio so the developer
@@ -415,7 +430,7 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
     }
 
     // 9. Collect all phantom findings from the Layer 2 watcher.
-    let mut watch_state = state.lock().unwrap();
+    let mut watch_state = poisoned_ok(state.lock());
     let mut findings: Vec<PhantomFinding> = watch_state.phantoms();
 
     // 10. Layer 3 — Detect new executables in the project root (exec-drop).

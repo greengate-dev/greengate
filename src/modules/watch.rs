@@ -87,7 +87,7 @@ fn diff_snapshots(
 }
 
 fn run_scan_once(staged: bool) -> Result<()> {
-    let cfg = config::load();
+    let cfg = config::load()?;
     let diff = if staged {
         Some(scanner::DiffMode::Staged)
     } else {

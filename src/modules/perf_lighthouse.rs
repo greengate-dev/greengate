@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::utils::http;
 use crate::utils::terminal;
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -97,7 +98,7 @@ fn score_to_u8(cat: Option<&CategoryScore>) -> u8 {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_lighthouse(opts: LighthouseOpts) -> Result<()> {
+pub fn run_lighthouse(opts: LighthouseOpts<'_>) -> Result<()> {
     terminal::info(&format!(
         "Running Lighthouse audit: {} ({})",
         opts.url, opts.strategy
@@ -119,12 +120,13 @@ pub fn run_lighthouse(opts: LighthouseOpts) -> Result<()> {
         request_url.push_str(&format!("&key={}", k));
     }
 
-    let response = ureq::get(&request_url)
+    let response = http::agent()
+        .get(&request_url)
         .call()
         .context("Failed to reach PageSpeed Insights API — check your network connection")?;
 
-    let body: Value = serde_json::from_reader(response.into_reader())
-        .context("Failed to parse PageSpeed Insights API response")?;
+    let body: Value =
+        http::read_json(response).context("Failed to parse PageSpeed Insights API response")?;
 
     // Surface human-readable API errors (e.g. invalid URL, quota exceeded)
     if let Some(err) = body.get("error") {

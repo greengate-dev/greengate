@@ -47,7 +47,7 @@ enum Commands {
         /// Enrich each finding with git blame info (author + commit)
         #[arg(long)]
         blame: bool,
-        /// Auto-redact detected secrets in-place (replaces matched values with <REDACTED>).
+        /// Auto-redact detected secrets in-place (replaces matched values with `<REDACTED>`).
         /// SAST and structural findings are listed but not modified.
         #[arg(long)]
         fix: bool,
@@ -55,7 +55,7 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
         /// Call an LLM to triage each finding as likely-real, likely-false-positive, or
-        /// uncertain. Requires an API key in the env var set by [triage] api_key_env
+        /// uncertain. Requires an API key in the env var set by `[triage] api_key_env`
         /// (default: ANTHROPIC_API_KEY). Configure model and endpoint in .greengate.toml.
         #[arg(long)]
         triage: bool,
@@ -158,13 +158,13 @@ enum Commands {
         /// Sign the generated SBOM with Sigstore keyless signing via cosign
         #[arg(long, conflicts_with = "verify")]
         attest: bool,
-        /// Path for the cosign bundle file (default: <output>.bundle.json)
+        /// Path for the cosign bundle file (default: `<output>.bundle.json`)
         #[arg(long, value_name = "FILE")]
         bundle: Option<String>,
         /// Verify an existing SBOM against a cosign bundle instead of generating one
         #[arg(long, value_name = "SBOM_FILE", conflicts_with = "attest")]
         verify: Option<String>,
-        /// Expected OIDC issuer for --verify, e.g. https://token.actions.githubusercontent.com
+        /// Expected OIDC issuer for --verify, e.g. `https://token.actions.githubusercontent.com`
         #[arg(long, value_name = "ISSUER")]
         certificate_oidc_issuer: Option<String>,
         /// Expected signer identity for --verify (exact match)
@@ -312,9 +312,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Scan { format, .. } if matches!(format.as_str(), "json" | "sarif" | "junit" | "gitlab")
     );
     let mut cfg = if silent {
-        utils::config::load_silent()
+        utils::config::load_silent()?
     } else {
-        utils::config::load()
+        utils::config::load()?
     };
 
     // Apply profile overrides on top of the loaded config
