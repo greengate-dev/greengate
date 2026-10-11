@@ -80,6 +80,12 @@ min_new_code_coverage = 80.0
 # Set to a positive integer to fail the gate when the score exceeds this value
 complexity_budget = 0
 
+[policy]
+# What a gate does when it could not check everything (e.g. the vulnerability
+# database was unreachable): "fail" exits 3 (default), "warn" exits 0 but
+# still reports the run as incomplete. See the exit codes reference.
+on_incomplete = "fail"
+
 [audit]
 # GHSA/CVE advisory IDs to suppress — use for known-acceptable transitive
 # dependency vulnerabilities that cannot be fixed by upgrading a direct dep.

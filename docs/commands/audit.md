@@ -20,10 +20,27 @@ Maven (`pom.xml`), .NET/NuGet (`*.csproj`, `packages.lock.json`), Ruby
 (`Gemfile.lock`), and Python lockfiles (`Pipfile.lock`, `poetry.lock`, `uv.lock`)
 are not currently supported.
 
-OSV batch responses are cached for 24 hours. If a query fails and no fresh
-cache entry is available, the command warns that it skipped the audit and
-returns exit code `0`; this does not mean the dependencies were checked or
-found safe. This cache is not an offline vulnerability database.
+OSV batch responses are cached for 24 hours. This cache is not an offline
+vulnerability database.
+
+## What "incomplete" means
+
+`audit` only passes when every dependency it found was actually checked. When
+something could not be checked, the run is **incomplete** and exits `3` — it
+is never reported as a pass. Causes:
+
+- OSV could not be reached, or answered for fewer packages than were queried
+- OSV truncated a package's advisory list (paginated response)
+- A dependency file could not be read
+- `requirements.txt` lines that are not `==` pinned, `-r` includes, and
+  editable (`-e`) installs — these name packages whose versions are unknown
+
+Every incomplete check is listed with its reason. Findings still win: a run
+that found vulnerabilities exits `1` even if some checks were incomplete.
+
+To accept incomplete runs, pass `--allow-incomplete` or set
+`[policy] on_incomplete = "warn"`. The exit code becomes `0`, but the output
+and JSON report still say `incomplete`.
 
 ## Usage
 
@@ -31,8 +48,31 @@ found safe. This cache is not an offline vulnerability database.
 greengate audit [OPTIONS]
 
 Options:
-  -h, --help    Print help
+      --format <FORMAT>   Output format [default: text] [possible values: text, json]
+      --allow-incomplete  Exit 0 even when some checks could not run
+  -h, --help              Print help
 ```
+
+`--format json` writes a `greengate.report/v1` document to stdout:
+
+```json
+{
+  "schema": "greengate.report/v1",
+  "command": "audit",
+  "status": "incomplete",
+  "checks": [
+    { "id": "lockfile:./package-lock.json", "status": "passed" },
+    { "id": "osv", "status": "incomplete", "reason": "1 package(s) not checked: Failed to reach OSV API …" }
+  ],
+  "findings": [],
+  "suppressed": []
+}
+```
+
+`status` is one of `passed`, `findings`, `incomplete`, or `error`.
+
+Set `GREENGATE_OSV_URL` to query an OSV-compatible mirror instead of
+`https://api.osv.dev`.
 
 ## Suppressing known-acceptable advisories
 
@@ -78,7 +118,7 @@ greengate audit
 ⚠️  Found 2 actionable vulnerability/ies:
   [GHSA-xxxx-yyyy-zzzz] openssl 0.10.55 — Use-after-free in X.509 certificate verification
   [GHSA-aaaa-bbbb-cccc] serde_json 1.0.85 — Stack overflow on deeply nested input
-Error: Audit failed: 2 vulnerability/ies found.
+Audit failed: 2 known vulnerability/-ies found.
 ```
 
 ## Sample output — all clear
@@ -95,7 +135,9 @@ Error: Audit failed: 2 vulnerability/ies found.
   run: greengate audit
 ```
 
-Exits `0` when no actionable vulnerabilities are found, `1` otherwise.
+Exits `0` when every dependency was checked and none has an actionable
+advisory, `1` when advisories are found, and `3` when some dependencies could
+not be checked. See [exit codes](../reference/exit-codes.md).
 
 ## Workflow: handling unfixable transitive dependencies
 

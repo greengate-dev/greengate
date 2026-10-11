@@ -1,3 +1,4 @@
+use crate::report::{Check, Finding, Format, Location, Report, Severity};
 use crate::utils::http;
 use crate::utils::{config, files, terminal};
 use anyhow::{Context, Result};
@@ -6,7 +7,17 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-const OSV_BATCH_URL: &str = "https://api.osv.dev/v1/querybatch";
+/// OSV API root. `GREENGATE_OSV_URL` points the audit at a mirror (or, in
+/// tests, at a local fake) without changing anything else.
+fn osv_base() -> String {
+    std::env::var("GREENGATE_OSV_URL")
+        .ok()
+        .filter(|u| !u.trim().is_empty())
+        .map_or_else(
+            || "https://api.osv.dev".to_string(),
+            |u| u.trim_end_matches('/').to_string(),
+        )
+}
 /// OSV cache lives for 24 hours — enough to avoid repeated CI queries.
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -29,6 +40,31 @@ pub struct Vulnerability {
     pub fixed_in: Option<String>,
     pub reference_url: Option<String>,
     pub source_file: PathBuf,
+    pub ecosystem: &'static str,
+}
+
+impl Vulnerability {
+    fn to_finding(&self) -> Finding {
+        Finding {
+            rule: format!("OSV/{}", self.vuln_id),
+            severity: self
+                .severity
+                .as_deref()
+                .map_or(Severity::Unknown, Severity::parse),
+            location: Location::Package {
+                ecosystem: self.ecosystem.to_string(),
+                name: self.package.clone(),
+                version: self.version.clone(),
+                source: self.source_file.clone(),
+            },
+            message: self.summary.clone(),
+            remediation: self
+                .fixed_in
+                .as_ref()
+                .map(|fix| format!("upgrade to >= {fix}")),
+            reference: self.reference_url.clone(),
+        }
+    }
 }
 
 // ── Lock-file parsers ─────────────────────────────────────────────────────────
@@ -93,29 +129,58 @@ fn parse_package_lock(content: &str, source: PathBuf) -> Vec<Package> {
         .collect()
 }
 
-/// Parse `requirements.txt` — only `==` pinned versions are auditable.
-fn parse_requirements_txt(content: &str, source: PathBuf) -> Vec<Package> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                return None;
+/// Parse `requirements.txt` — only `==` / `===` pinned versions are auditable.
+///
+/// Returns the pinned packages and every other requirement line (ranges,
+/// includes, editable installs, URLs). Those were *not* checked, and the caller
+/// must say so rather than let them pass unseen.
+fn parse_requirements_txt(content: &str, source: PathBuf) -> Parsed {
+    let mut packages = Vec::new();
+    let mut unchecked = Vec::new();
+    // pip-compile writes `pkg==1.0 \` with `--hash` continuation lines.
+    let joined = content.replace("\\\r\n", " ").replace("\\\n", " ");
+    for raw in joined.lines() {
+        // Inline comments need preceding whitespace (`#` can appear in URLs).
+        let line = raw.split(" #").next().unwrap_or("").trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('-') {
+            // Includes and editable installs pull in packages we do not see;
+            // everything else (`--index-url`, `-c`, `--require-hashes`…) is a
+            // pip option, not a requirement.
+            let first = line.split([' ', '=']).next().unwrap_or("");
+            if matches!(first, "-r" | "--requirement" | "-e" | "--editable") {
+                unchecked.push(line.to_string());
             }
-            let mut parts = line.splitn(2, "==");
-            let name = parts.next()?.trim().to_string();
-            let version = parts.next()?.trim().to_string();
-            if name.is_empty() || version.is_empty() {
-                return None;
+            continue;
+        }
+        // Drop environment markers and per-requirement options (`--hash=…`).
+        let spec = line.split(';').next().unwrap_or("");
+        let spec = spec.split(" --").next().unwrap_or("").trim();
+        let pinned = spec
+            .split_once("==")
+            .map(|(name, version)| (name, version.trim_start_matches('=')));
+        match pinned {
+            Some((name, version)) if !name.contains("://") => {
+                // `requests[security]` → `requests`
+                let name = name.split('[').next().unwrap_or("").trim();
+                let version = version.trim();
+                if name.is_empty() || version.is_empty() {
+                    unchecked.push(line.to_string());
+                    continue;
+                }
+                packages.push(Package {
+                    name: name.to_string(),
+                    version: version.to_string(),
+                    ecosystem: "PyPI",
+                    source_file: source.clone(),
+                });
             }
-            Some(Package {
-                name,
-                version,
-                ecosystem: "PyPI",
-                source_file: source.clone(),
-            })
-        })
-        .collect()
+            _ => unchecked.push(line.to_string()),
+        }
+    }
+    (packages, unchecked)
 }
 
 /// Parse `go.sum` and return Go packages.
@@ -272,14 +337,18 @@ fn parse_pnpm_lock(content: &str, source: PathBuf) -> Vec<Package> {
 
 // ── Lock-file discovery ───────────────────────────────────────────────────────
 
+/// Packages read from a dependency file, plus the entries that could not be.
+type Parsed = (Vec<Package>, Vec<String>);
+
 /// Walk the entire directory tree and collect packages from ALL supported lock files.
 ///
 /// Supported: `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`,
 /// `requirements.txt`, `go.sum`
 ///
 /// Unlike the old single-file detection, this walks the whole repo so monorepos
-/// with multiple sub-projects are fully covered.
-fn collect_all_lockfiles(root: &Path) -> Result<Vec<Package>> {
+/// with multiple sub-projects are fully covered. Every dependency file found
+/// gets a check, so a file that could not be read is reported, not skipped.
+fn collect_all_lockfiles(root: &Path, checks: &mut Vec<Check>) -> Vec<Package> {
     let mut all: Vec<Package> = Vec::new();
 
     for entry in files::get_walker(root).filter_map(|e| e.ok()) {
@@ -288,22 +357,48 @@ fn collect_all_lockfiles(root: &Path) -> Result<Vec<Package>> {
             Some(n) => n,
             None => continue,
         };
-
-        // Skip binary / unreadable files gracefully
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let pkgs: Vec<Package> = match file_name {
-            "Cargo.lock" => parse_cargo_lock(&content, path.clone()),
-            "package-lock.json" => parse_package_lock(&content, path.clone()),
-            "yarn.lock" => parse_yarn_lock(&content, path.clone()),
-            "pnpm-lock.yaml" => parse_pnpm_lock(&content, path.clone()),
-            "requirements.txt" => parse_requirements_txt(&content, path.clone()),
-            "go.sum" => parse_go_sum(&content, path.clone()),
+        let parse: fn(&str, PathBuf) -> Parsed = match file_name {
+            "Cargo.lock" => |c, p| (parse_cargo_lock(c, p), Vec::new()),
+            "package-lock.json" => |c, p| (parse_package_lock(c, p), Vec::new()),
+            "yarn.lock" => |c, p| (parse_yarn_lock(c, p), Vec::new()),
+            "pnpm-lock.yaml" => |c, p| (parse_pnpm_lock(c, p), Vec::new()),
+            "requirements.txt" => parse_requirements_txt,
+            "go.sum" => |c, p| (parse_go_sum(c, p), Vec::new()),
             _ => continue,
         };
+
+        let check_id = format!("lockfile:{}", path.display());
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                checks.push(Check::incomplete(
+                    check_id,
+                    format!("could not be read: {e}"),
+                ));
+                continue;
+            }
+        };
+
+        let (pkgs, unchecked) = parse(&content, path.clone());
+        if unchecked.is_empty() {
+            checks.push(Check::passed(check_id));
+        } else {
+            let shown: Vec<&str> = unchecked.iter().take(3).map(String::as_str).collect();
+            let more = unchecked.len().saturating_sub(shown.len());
+            checks.push(Check::incomplete(
+                check_id,
+                format!(
+                    "{} requirement(s) are not pinned with `==` and were not checked: {}{}",
+                    unchecked.len(),
+                    shown.join(", "),
+                    if more > 0 {
+                        format!(" (+{more} more)")
+                    } else {
+                        String::new()
+                    }
+                ),
+            ));
+        }
 
         if !pkgs.is_empty() {
             terminal::info(&format!(
@@ -315,7 +410,7 @@ fn collect_all_lockfiles(root: &Path) -> Result<Vec<Package>> {
         all.extend(pkgs);
     }
 
-    Ok(all)
+    all
 }
 
 // ── OSV disk cache ────────────────────────────────────────────────────────────
@@ -367,6 +462,9 @@ fn cache_write(key: &str, value: &Value) {
 // ── OSV API ───────────────────────────────────────────────────────────────────
 
 struct VulnDetails {
+    /// False when the full record could not be fetched; the advisory itself is
+    /// still real, only its summary/severity/fix are missing.
+    complete: bool,
     summary: String,
     severity: Option<String>,
     fixed_in: Option<String>,
@@ -384,9 +482,10 @@ fn fetch_vuln_details(id: &str) -> VulnDetails {
     let parsed: Value = if let Some(cached) = cache_read(&cache_key_str) {
         cached
     } else {
-        let url = format!("https://api.osv.dev/v1/vulns/{}", id);
+        let url = format!("{}/v1/vulns/{}", osv_base(), id);
         let Ok(response) = http::agent().get(&url).call() else {
             return VulnDetails {
+                complete: false,
                 summary: "No summary available".to_string(),
                 severity: None,
                 fixed_in: None,
@@ -395,6 +494,7 @@ fn fetch_vuln_details(id: &str) -> VulnDetails {
         };
         let Ok(v) = http::read_json::<Value>(response) else {
             return VulnDetails {
+                complete: false,
                 summary: "No summary available".to_string(),
                 severity: None,
                 fixed_in: None,
@@ -459,6 +559,7 @@ fn fetch_vuln_details(id: &str) -> VulnDetails {
         .map(|s| s.to_string());
 
     VulnDetails {
+        complete: true,
         summary,
         severity,
         fixed_in,
@@ -466,7 +567,9 @@ fn fetch_vuln_details(id: &str) -> VulnDetails {
     }
 }
 
-fn query_osv(packages: &[Package]) -> Result<Vec<Vulnerability>> {
+/// Query OSV for `packages`. A transport failure is an `Err`; a response that
+/// does not cover every package is reported through `checks`.
+fn query_osv(packages: &[Package], checks: &mut Vec<Check>) -> Result<Vec<Vulnerability>> {
     let queries: Vec<Value> = packages
         .iter()
         .map(|p| {
@@ -489,7 +592,7 @@ fn query_osv(packages: &[Package]) -> Result<Vec<Vulnerability>> {
         cached
     } else {
         let response = http::agent()
-            .post(OSV_BATCH_URL)
+            .post(&format!("{}/v1/querybatch", osv_base()))
             .set("Content-Type", "application/json")
             .send_string(&body_str)
             .context("Failed to reach OSV API — check your network connection")?;
@@ -507,8 +610,32 @@ fn query_osv(packages: &[Package]) -> Result<Vec<Vulnerability>> {
         .and_then(|r: &Value| r.as_array())
         .unwrap_or(&empty);
 
+    // OSV answers each query positionally. Any package past the end of the
+    // results was never checked.
+    if results.len() < packages.len() {
+        checks.push(Check::incomplete(
+            "osv:coverage",
+            format!(
+                "OSV returned {} result(s) for {} package(s); the rest were not checked",
+                results.len(),
+                packages.len()
+            ),
+        ));
+    }
+
     let mut vulns = Vec::new();
+    let mut paged: Vec<String> = Vec::new();
+    let mut without_details: Vec<String> = Vec::new();
     for (result_entry, pkg) in results.iter().zip(packages.iter()) {
+        // More advisories than fit in one batch page: the ones listed are
+        // real, but the list is not exhaustive.
+        if result_entry
+            .get("next_page_token")
+            .and_then(Value::as_str)
+            .is_some_and(|t| !t.is_empty())
+        {
+            paged.push(format!("{}@{}", pkg.name, pkg.version));
+        }
         let vuln_array: &Vec<Value> =
             match result_entry.get("vulns").and_then(|v: &Value| v.as_array()) {
                 Some(a) => a,
@@ -522,6 +649,9 @@ fn query_osv(packages: &[Package]) -> Result<Vec<Vulnerability>> {
                 .to_string();
             // OSV querybatch only returns id/modified/aliases — fetch full record for details.
             let details = fetch_vuln_details(&id);
+            if !details.complete {
+                without_details.push(id.clone());
+            }
             vulns.push(Vulnerability {
                 package: pkg.name.clone(),
                 version: pkg.version.clone(),
@@ -531,8 +661,25 @@ fn query_osv(packages: &[Package]) -> Result<Vec<Vulnerability>> {
                 fixed_in: details.fixed_in,
                 reference_url: details.reference_url,
                 source_file: pkg.source_file.clone(),
+                ecosystem: pkg.ecosystem,
             });
         }
+    }
+
+    if !paged.is_empty() {
+        checks.push(Check::incomplete(
+            "osv:pagination",
+            format!("advisory list truncated by OSV for: {}", paged.join(", ")),
+        ));
+    }
+    if !without_details.is_empty() {
+        checks.push(Check::incomplete(
+            "osv:details",
+            format!(
+                "could not fetch severity/fix details for: {}",
+                without_details.join(", ")
+            ),
+        ));
     }
 
     Ok(vulns)
@@ -540,10 +687,9 @@ fn query_osv(packages: &[Package]) -> Result<Vec<Vulnerability>> {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_audit() -> Result<()> {
-    let cfg = config::load_silent()?;
-    let ignored: std::collections::HashSet<String> = cfg
-        .audit
+pub fn run_audit(cfg: &config::AuditConfig, format: Format) -> Result<Report> {
+    let text = format == Format::Text;
+    let ignored: HashSet<String> = cfg
         .ignore_advisories
         .iter()
         .map(|id| id.to_uppercase())
@@ -556,12 +702,13 @@ pub fn run_audit() -> Result<()> {
         ));
     }
 
+    let mut report = Report::new("audit");
     let root = std::path::Path::new(".");
 
     // Walk the entire repo for all supported lock files
-    let all_packages = collect_all_lockfiles(root)?;
+    let all_packages = collect_all_lockfiles(root, &mut report.checks);
 
-    if all_packages.is_empty() {
+    if all_packages.is_empty() && report.checks.is_empty() {
         anyhow::bail!(
             "No supported lock files found. Supported: Cargo.lock, package-lock.json, yarn.lock, pnpm-lock.yaml, requirements.txt, go.sum"
         );
@@ -573,10 +720,10 @@ pub fn run_audit() -> Result<()> {
     ));
 
     // Deduplicate by (name, version, ecosystem) — keeps first occurrence for source_file display
-    let mut seen: HashSet<(String, String, &'static str)> = HashSet::new();
+    let mut seen: HashSet<(&str, &str, &'static str)> = HashSet::new();
     let unique: Vec<&Package> = all_packages
         .iter()
-        .filter(|p| seen.insert((p.name.clone(), p.version.clone(), p.ecosystem)))
+        .filter(|p| seen.insert((&p.name, &p.version, p.ecosystem)))
         .collect();
 
     terminal::info(&format!(
@@ -600,13 +747,22 @@ pub fn run_audit() -> Result<()> {
     bar.set_message("Querying OSV API...");
 
     let mut all_vulns: Vec<Vulnerability> = Vec::new();
-    for chunk in to_query.chunks(1000) {
-        match query_osv(chunk) {
+    let chunks = to_query.chunks(1000).count();
+    for (i, chunk) in to_query.chunks(1000).enumerate() {
+        match query_osv(chunk, &mut report.checks) {
             Ok(vulns) => all_vulns.extend(vulns),
             Err(e) => {
-                bar.finish_and_clear();
-                terminal::warn(&format!("OSV API error: {} — skipping audit.", e));
-                return Ok(());
+                // A failed query leaves its packages unchecked — that is not a
+                // pass. Keep going: other chunks may still answer.
+                let id = if chunks > 1 {
+                    format!("osv:batch-{}", i + 1)
+                } else {
+                    "osv".to_string()
+                };
+                report.checks.push(Check::incomplete(
+                    id,
+                    format!("{} package(s) not checked: {e:#}", chunk.len()),
+                ));
             }
         }
     }
@@ -617,6 +773,13 @@ pub fn run_audit() -> Result<()> {
     let (suppressed, actionable): (Vec<_>, Vec<_>) = all_vulns
         .into_iter()
         .partition(|v| ignored.contains(&v.vuln_id.to_uppercase()));
+
+    report.suppressed = suppressed.iter().map(Vulnerability::to_finding).collect();
+    report.findings = actionable.iter().map(Vulnerability::to_finding).collect();
+
+    if !text {
+        return Ok(report);
+    }
 
     if !suppressed.is_empty() {
         terminal::warn(&format!(
@@ -633,35 +796,40 @@ pub fn run_audit() -> Result<()> {
     }
 
     if actionable.is_empty() {
-        terminal::success(&format!(
-            "No actionable vulnerabilities found in {} unique package(s).",
+        if report.unfinished().next().is_none() {
+            terminal::success(&format!(
+                "No actionable vulnerabilities found in {} unique package(s).",
+                unique.len()
+            ));
+        }
+    } else {
+        terminal::warn(&format!(
+            "Found {} vulnerability/-ies across {} unique package(s):",
+            actionable.len(),
             unique.len()
         ));
-        return Ok(());
+        for v in &actionable {
+            let sev = v.severity.as_deref().unwrap_or("UNKNOWN");
+            eprintln!("  [{}] [{}] {}@{}", v.vuln_id, sev, v.package, v.version);
+            eprintln!("    {}", v.summary);
+            if let Some(fix) = &v.fixed_in {
+                eprintln!("    Fix: upgrade to >= {}", fix);
+            }
+            if let Some(url) = &v.reference_url {
+                eprintln!("    Ref: {}", url);
+            }
+            eprintln!("    Source: {}", v.source_file.display());
+        }
     }
 
-    terminal::warn(&format!(
-        "Found {} vulnerability/-ies across {} unique package(s):",
-        actionable.len(),
-        unique.len()
-    ));
-    for v in &actionable {
-        let sev = v.severity.as_deref().unwrap_or("UNKNOWN");
-        eprintln!("  [{}] [{}] {}@{}", v.vuln_id, sev, v.package, v.version);
-        eprintln!("    {}", v.summary);
-        if let Some(fix) = &v.fixed_in {
-            eprintln!("    Fix: upgrade to >= {}", fix);
-        }
-        if let Some(url) = &v.reference_url {
-            eprintln!("    Ref: {}", url);
-        }
-        eprintln!("    Source: {}", v.source_file.display());
+    report.print_unfinished();
+    if !actionable.is_empty() {
+        eprintln!(
+            "Audit failed: {} known vulnerability/-ies found.",
+            actionable.len()
+        );
     }
-
-    anyhow::bail!(
-        "Audit failed: {} known vulnerability/-ies found.",
-        actionable.len()
-    );
+    Ok(report)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -731,8 +899,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     #[test]
     fn test_parse_requirements_txt_pinned_only() {
         let content = "Django==4.2.0\nrequests>=2.28.0\nflask==2.3.2\n# comment\n";
-        let pkgs = parse_requirements_txt(content, PathBuf::from("requirements.txt"));
+        let (pkgs, unchecked) = parse_requirements_txt(content, PathBuf::from("requirements.txt"));
         assert_eq!(pkgs.len(), 2);
+        assert_eq!(unchecked, vec!["requests>=2.28.0"]);
         assert!(
             pkgs.iter()
                 .any(|p| p.name == "Django" && p.version == "4.2.0")
@@ -746,15 +915,49 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     #[test]
     fn test_parse_requirements_txt_skips_comments() {
         let content = "# this is a comment\n\nrequests==2.28.2\n";
-        let pkgs = parse_requirements_txt(content, PathBuf::from("requirements.txt"));
+        let (pkgs, unchecked) = parse_requirements_txt(content, PathBuf::from("requirements.txt"));
         assert_eq!(pkgs.len(), 1);
+        assert!(unchecked.is_empty());
+    }
+
+    #[test]
+    fn test_parse_requirements_txt_pip_compile_output() {
+        // Hash continuations, markers, extras and pip options are all normal
+        // in a compiled requirements file; none of them is an unchecked dep.
+        let content = "--index-url https://pypi.org/simple\n\
+                       --require-hashes\n\
+                       requests[security]==2.31.0 \\\n    --hash=sha256:aaa \\\n    --hash=sha256:bbb\n\
+                       pywin32==306 ; sys_platform == \"win32\"  # via foo\n\
+                       black===23.1.0\n";
+        let (pkgs, unchecked) = parse_requirements_txt(content, PathBuf::from("requirements.txt"));
+        let got: Vec<(&str, &str)> = pkgs
+            .iter()
+            .map(|p| (p.name.as_str(), p.version.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("requests", "2.31.0"),
+                ("pywin32", "306"),
+                ("black", "23.1.0")
+            ]
+        );
+        assert!(unchecked.is_empty(), "unexpected: {unchecked:?}");
+    }
+
+    #[test]
+    fn test_parse_requirements_txt_reports_what_it_cannot_check() {
+        let content = "-r base.txt\n-e .\ngit+https://github.com/a/b.git==1.0\nflask>=2\n";
+        let (pkgs, unchecked) = parse_requirements_txt(content, PathBuf::from("requirements.txt"));
+        assert!(pkgs.is_empty());
+        assert_eq!(unchecked.len(), 4);
     }
 
     #[test]
     fn test_parse_requirements_txt_source_file_preserved() {
         let content = "Django==4.2.0\n";
         let source = PathBuf::from("services/api/requirements.txt");
-        let pkgs = parse_requirements_txt(content, source.clone());
+        let (pkgs, _) = parse_requirements_txt(content, source.clone());
         assert_eq!(pkgs[0].source_file, source);
     }
 

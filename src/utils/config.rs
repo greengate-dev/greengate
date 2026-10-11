@@ -34,6 +34,18 @@ pub struct Config {
     pub sbom: SbomConfig,
     #[serde(default)]
     pub triage: TriageConfig,
+    #[serde(default)]
+    pub policy: PolicyConfig,
+}
+
+/// Gate-wide policy loaded from `.greengate.toml` under `[policy]`.
+#[derive(Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyConfig {
+    /// What a gate that could not check everything does: `fail` (exit 3,
+    /// default) or `warn` (exit 0, still reported as incomplete).
+    #[serde(default)]
+    pub on_incomplete: crate::report::OnIncomplete,
 }
 
 /// Audit settings loaded from `.greengate.toml` under `[audit]`.

@@ -113,7 +113,14 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
             crate::modules::coverage::run_coverage(&file, min)
         }
 
-        "audit" => crate::modules::audit::run_audit(),
+        "audit" => {
+            let report =
+                crate::modules::audit::run_audit(&cfg.audit, crate::report::Format::Text)?;
+            match report.exit_code(cfg.policy.on_incomplete) {
+                0 => Ok(()),
+                _ => anyhow::bail!("audit {}", status_word(report.status())),
+            }
+        }
 
         "lighthouse" => {
             use crate::modules::perf_lighthouse::{LighthouseOpts, LighthouseThresholds};
@@ -217,6 +224,15 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
 }
 
 /// Extract the value following `--flag value` from an args slice.
+fn status_word(status: crate::report::Status) -> &'static str {
+    match status {
+        crate::report::Status::Passed => "passed",
+        crate::report::Status::Findings => "found policy violations",
+        crate::report::Status::Incomplete => "was incomplete",
+        crate::report::Status::Error => "failed to run",
+    }
+}
+
 fn flag_value<'a>(args: &[&'a str], flag: &str) -> Option<&'a str> {
     args.windows(2).find(|w| w[0] == flag).map(|w| w[1])
 }

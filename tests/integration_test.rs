@@ -619,6 +619,206 @@ fn audit_finds_pnpm_lock() {
     );
 }
 
+// ── audit: incomplete is not a pass ──────────────────────────────────────────
+//
+// A local fake stands in for OSV (`GREENGATE_OSV_URL`), and HOME points at the
+// temp dir so the on-disk OSV cache never leaks between tests.
+
+/// Serve canned OSV responses on 127.0.0.1 until the test process exits.
+/// `batch` answers POST /v1/querybatch; GET /v1/vulns/<id> returns a record
+/// with that id.
+fn fake_osv(batch: &'static str) -> String {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut content_length = 0;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    content_length = v.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).unwrap();
+            let path = request_line.split_whitespace().nth(1).unwrap_or("");
+            let response = match path.strip_prefix("/v1/vulns/") {
+                Some(id) => format!(
+                    r#"{{"id":"{id}","summary":"fake advisory","database_specific":{{"severity":"HIGH"}}}}"#
+                ),
+                None => batch.to_string(),
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// Run `greengate audit --format json <extra>` against `osv_url` in `dir`.
+fn audit_json(
+    dir: &std::path::Path,
+    osv_url: &str,
+    extra: &[&str],
+) -> (Option<i32>, serde_json::Value) {
+    let output = Command::new(binary())
+        .args(["audit", "--format", "json"])
+        .args(extra)
+        .env("GREENGATE_OSV_URL", osv_url)
+        .env("HOME", dir)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let report = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not a JSON report ({e}): {stdout}\nstderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    (output.status.code(), report)
+}
+
+fn write_lodash_lock(dir: &std::path::Path) {
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"packages": {"node_modules/lodash": {"version": "4.17.20"}}}"#,
+    )
+    .unwrap();
+}
+
+/// A port nothing listens on: bind, note the port, close.
+fn closed_port_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{addr}")
+}
+
+#[test]
+fn audit_clean_result_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (code, report) = audit_json(dir.path(), &fake_osv(r#"{"results":[{}]}"#), &[]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["schema"], "greengate.report/v1");
+    assert_eq!(report["status"], "passed");
+}
+
+#[test]
+fn audit_unreachable_osv_is_incomplete_not_a_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &[]);
+    assert_eq!(code, Some(3), "{report}");
+    assert_eq!(report["status"], "incomplete");
+    let osv = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "osv")
+        .expect("an osv check");
+    assert_eq!(osv["status"], "incomplete");
+}
+
+#[test]
+fn audit_allow_incomplete_exits_zero_but_stays_honest() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &["--allow-incomplete"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        report["status"], "incomplete",
+        "the report must not claim a pass"
+    );
+}
+
+#[test]
+fn audit_on_incomplete_warn_config_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[policy]\non_incomplete = \"warn\"\n",
+    )
+    .unwrap();
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &[]);
+    assert_eq!(code, Some(0));
+    assert_eq!(report["status"], "incomplete");
+}
+
+#[test]
+fn audit_short_osv_response_is_incomplete() {
+    // One package queried, zero results back: lodash was never checked.
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (code, report) = audit_json(dir.path(), &fake_osv(r#"{"results":[]}"#), &[]);
+    assert_eq!(code, Some(3), "{report}");
+}
+
+#[test]
+fn audit_unpinned_requirements_are_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("requirements.txt"),
+        "flask==2.3.2\nrequests>=2\n",
+    )
+    .unwrap();
+    let (code, report) = audit_json(dir.path(), &fake_osv(r#"{"results":[{}]}"#), &[]);
+    assert_eq!(code, Some(3), "{report}");
+    let reason = report["checks"][0]["reason"].as_str().unwrap();
+    assert!(reason.contains("requests>=2"), "{reason}");
+}
+
+#[test]
+fn audit_findings_outrank_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let osv =
+        fake_osv(r#"{"results":[{"vulns":[{"id":"GHSA-test-0001"}],"next_page_token":"more"}]}"#);
+    let (code, report) = audit_json(dir.path(), &osv, &[]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(report["status"], "findings");
+    assert_eq!(report["findings"][0]["rule"], "OSV/GHSA-test-0001");
+    assert_eq!(report["findings"][0]["severity"], "high");
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "osv:pagination" && c["status"] == "incomplete"),
+        "a truncated advisory list must still be reported: {report}"
+    );
+}
+
+#[test]
+fn audit_suppressed_advisory_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[audit]\nignore_advisories = [\"GHSA-test-0001\"]\n",
+    )
+    .unwrap();
+    let osv = fake_osv(r#"{"results":[{"vulns":[{"id":"GHSA-test-0001"}]}]}"#);
+    let (code, report) = audit_json(dir.path(), &osv, &[]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["suppressed"][0]["rule"], "OSV/GHSA-test-0001");
+}
+
 // ── install-hooks ─────────────────────────────────────────────────────────────
 
 #[test]

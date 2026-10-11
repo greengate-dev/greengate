@@ -1,10 +1,12 @@
 use clap::{Parser, Subcommand};
 use modules::scanner::{DiffMode, OutputFormat, ScanOpts};
 use modules::tia::TiaFormat;
+use std::process::ExitCode;
 use utils::config::Profile;
 use utils::output::ReportFormat;
 
 mod modules;
+mod report;
 mod utils;
 
 #[derive(Parser)]
@@ -90,8 +92,17 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Audits project dependencies for known vulnerabilities via the OSV database
-    Audit,
+    /// Audits project dependencies for known vulnerabilities via the OSV database.
+    /// Exits 0 when every dependency was checked and none is vulnerable, 1 on
+    /// findings, and 3 when some could not be checked (see [policy] on_incomplete).
+    Audit {
+        /// Output format (json writes a greengate.report/v1 document to stdout)
+        #[arg(long, default_value = "text")]
+        format: report::Format,
+        /// Exit 0 even when some checks could not run (overrides [policy] on_incomplete)
+        #[arg(long)]
+        allow_incomplete: bool,
+    },
     /// Audits web performance via Google PageSpeed Insights (Lighthouse)
     Lighthouse {
         /// URL to audit (overrides config)
@@ -304,7 +315,17 @@ enum Commands {
     },
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<ExitCode> {
     let t0 = std::time::Instant::now();
     let cli = Cli::parse();
 
@@ -367,14 +388,15 @@ fn main() -> anyhow::Result<()> {
                 modules::scanner::apply_scan_fixes(&findings, &opts, dry_run)?;
                 // After fixing, re-scan to confirm what remains (or just exit clean)
                 if !dry_run {
-                    return Ok(());
+                    return Ok(ExitCode::SUCCESS);
                 }
             }
 
             // Baseline: save mode
             if update_baseline {
                 modules::baseline::save_baseline(&findings)?;
-                return modules::scanner::emit_findings(&findings, format);
+                return modules::scanner::emit_findings(&findings, format)
+                    .map(|()| ExitCode::SUCCESS);
             }
 
             // Baseline: compare mode — only fail on new findings
@@ -388,9 +410,10 @@ fn main() -> anyhow::Result<()> {
                     total - findings.len(),
                 );
                 if !findings.is_empty() {
-                    return modules::scanner::emit_findings(&findings, format);
+                    return modules::scanner::emit_findings(&findings, format)
+                        .map(|()| ExitCode::SUCCESS);
                 }
-                return Ok(());
+                return Ok(ExitCode::SUCCESS);
             }
 
             // Telemetry — fire and forget, never fails the build
@@ -410,7 +433,7 @@ fn main() -> anyhow::Result<()> {
                 if effective > 0 {
                     std::process::exit(1);
                 }
-                return Ok(());
+                return Ok(ExitCode::SUCCESS);
             }
 
             // Normal scan path
@@ -447,17 +470,33 @@ fn main() -> anyhow::Result<()> {
         Commands::InstallHooks { force } => {
             modules::hooks::run_install_hooks(force)?;
         }
-        Commands::Audit => {
-            let result = modules::audit::run_audit();
+        Commands::Audit {
+            format,
+            allow_incomplete,
+        } => {
+            let report = modules::audit::run_audit(&cfg.audit, format);
+            let on_incomplete = if allow_incomplete {
+                report::OnIncomplete::Warn
+            } else {
+                cfg.policy.on_incomplete
+            };
+            let code = report.as_ref().map_or(1, |r| r.exit_code(on_incomplete));
             modules::telemetry::emit(
                 &modules::telemetry::command_metrics(
                     "audit",
                     t0.elapsed().as_millis() as u64,
-                    result.is_ok(),
+                    code == 0,
                 ),
                 &cfg.telemetry,
             );
-            result?;
+            let report = report?;
+            if format == report::Format::Json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report.to_json(t0.elapsed().as_millis()))?
+                );
+            }
+            return Ok(ExitCode::from(code));
         }
         Commands::Lighthouse {
             url,
@@ -667,5 +706,5 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }

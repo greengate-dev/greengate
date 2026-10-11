@@ -5,6 +5,20 @@ All notable changes to greengate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - Unreleased
+
+### Added
+- `greengate.report/v1` — one result model for every gate: `passed`, `findings`, `incomplete`, or `error`, with each check and its reason. `audit --format json` emits it.
+- `[policy] on_incomplete = "fail" | "warn"` and `audit --allow-incomplete`.
+- `GREENGATE_OSV_URL` to point `audit` at an OSV mirror.
+
+### Changed
+- **Breaking:** `audit` exits `3` when it could not check every dependency, instead of warning and exiting `0`. That covers an unreachable or short OSV response, a truncated advisory list, an unreadable lockfile, and `requirements.txt` entries that are not `==` pinned (ranges, `-r` includes, editable installs). Findings still exit `1`; set `on_incomplete = "warn"` to keep exiting `0`.
+- `audit` only reads files whose names it supports, rather than every file in the repository.
+
+### Fixed
+- `requirements.txt` pins with extras (`pkg[extra]==1.0`), environment markers, `--hash` options, line continuations or `===` were mis-parsed into wrong names or versions.
+
 ## [0.3.4] - Unreleased
 
 ### Added
