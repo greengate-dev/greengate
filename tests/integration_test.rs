@@ -1800,3 +1800,93 @@ fn report_flag_still_writes_when_the_gate_errors() {
     assert_eq!(report["status"], "error");
     assert_eq!(report["checks"][0]["id"], "coverage");
 }
+
+// ── image-scan against a real Docker daemon ───────────────────────────────────
+//
+// Builds a tiny `FROM scratch` image locally (no registry pull) and scans it.
+// Docker 25+ writes `docker save` archives in OCI layout (`blobs/sha256/…`,
+// no `layer.tar`), which greengate used to find no layers in and pass.
+// Skips when no Docker daemon is reachable.
+
+fn docker_available() -> bool {
+    Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Build `FROM scratch` + one file and return the image tag; removed on drop.
+struct TestImage(String);
+
+impl TestImage {
+    fn build(name: &str, file_contents: &str) -> TestImage {
+        let ctx = tempfile::tempdir().unwrap();
+        std::fs::write(ctx.path().join("creds.ini"), file_contents).unwrap();
+        std::fs::write(
+            ctx.path().join("Dockerfile"),
+            "FROM scratch\nCOPY creds.ini /app/creds.ini\n",
+        )
+        .unwrap();
+        let tag = format!("greengate-test-{name}-{}:latest", std::process::id());
+        let ok = Command::new("docker")
+            .args(["build", "-q", "-t", &tag, "."])
+            .current_dir(ctx.path())
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "docker build failed");
+        TestImage(tag)
+    }
+}
+
+impl Drop for TestImage {
+    fn drop(&mut self) {
+        let _ = Command::new("docker").args(["rmi", "-f", &self.0]).output();
+    }
+}
+
+#[test]
+fn image_scan_finds_secrets_in_a_current_docker_archive() {
+    if !docker_available() {
+        eprintln!("skipped: no Docker daemon");
+        return;
+    }
+    // Synthetic AWS-shaped key, split so the source never carries it whole.
+    let key = ["AKIA", "Q7HX3MZP2KDLW4RT"].concat();
+    let image = TestImage::build("secret", &format!("aws_access_key_id = {key}\n"));
+    let dir = tempfile::tempdir().unwrap();
+
+    let out = run_in(dir.path(), &["image-scan", &image.0, "--report", "r.json"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("r.json")).unwrap()).unwrap();
+    assert_eq!(report["findings"][0]["rule"], "AWS Access Key");
+
+    let out = run_in(dir.path(), &["image-scan", &image.0, "--no-fail"]);
+    assert_eq!(out.status.code(), Some(0), "--no-fail waives findings");
+}
+
+#[test]
+fn image_scan_clean_image_passes_with_json_on_stdout() {
+    if !docker_available() {
+        eprintln!("skipped: no Docker daemon");
+        return;
+    }
+    let image = TestImage::build("clean", "region = eu-west-1\n");
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_in(dir.path(), &["image-scan", &image.0, "--format", "json"]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not JSON ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(v["total"], 0);
+}
