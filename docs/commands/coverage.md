@@ -5,7 +5,7 @@ description: 'Parse LCOV or Cobertura XML coverage reports and fail the build wh
 
 # coverage — Coverage Threshold Gate
 
-Parses a coverage report and fails with exit code 1 if total line coverage is below the specified minimum. Shows a per-file breakdown of files below the threshold.
+Parses a coverage report and fails with exit code 1 (exit code 4 if the file cannot be read or has no line data) if total line coverage is below the specified minimum. Shows a per-file breakdown of files below the threshold.
 
 Two formats are supported and auto-detected:
 

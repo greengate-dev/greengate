@@ -38,7 +38,7 @@ is never reported as a pass. Causes:
 Every incomplete check is listed with its reason. Findings still win: a run
 that found vulnerabilities exits `1` even if some checks were incomplete.
 
-To accept incomplete runs, pass `--allow-incomplete` or set
+To accept incomplete runs, pass the global `--allow-incomplete` flag or set
 `[policy] on_incomplete = "warn"`. The exit code becomes `0`, but the output
 and JSON report still say `incomplete`.
 

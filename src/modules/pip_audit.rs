@@ -17,6 +17,7 @@
 //! Any new executable that appears in the Python scripts directory (e.g.
 //! `~/.local/bin`, `venv/bin`) between the before/after snapshots is flagged.
 
+use crate::report::{Check, Finding, Report, Severity};
 use crate::utils::terminal;
 use anyhow::Result;
 use std::collections::HashSet;
@@ -149,8 +150,10 @@ const PY_SIGNALS: &[(&str, &str)] = &[
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
+pub fn run_pip_install(opts: PipInstallOpts) -> Result<Report> {
     let install_args = install_args(&opts.args);
+    let mut report = Report::new("pip-install");
+    report.no_fail = opts.no_fail;
     terminal::info(&format!(
         "Zero-Trust Supply Chain Gate (pip): intercepting `{} install {}`",
         opts.pip,
@@ -182,15 +185,26 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
         eprintln!("  Verify the exact package name at https://pypi.org before installing.");
         eprintln!();
 
-        let blocking = typosquats
-            .iter()
-            .filter(|(pkg, _)| !is_allowlisted(pkg, &opts.allow_packages))
-            .count();
-        if blocking > 0 && !opts.no_fail {
-            return Err(anyhow::anyhow!(
+        for (requested, closest) in &typosquats {
+            let finding = Finding::package(
+                "SUPPLY-CHAIN/TYPOSQUAT",
+                Severity::High,
+                "pip",
+                requested,
+                format!("suspiciously close to popular package '{closest}'"),
+            );
+            if is_allowlisted(requested, &opts.allow_packages) {
+                report.warnings.push(finding);
+            } else {
+                report.findings.push(finding);
+            }
+        }
+        if !report.findings.is_empty() && !opts.no_fail {
+            eprintln!(
                 "Zero-Trust Supply Chain Gate: {} potential typosquat(s) — halting before install.",
-                blocking
-            ));
+                report.findings.len()
+            );
+            return Ok(report);
         }
     }
 
@@ -213,12 +227,15 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
             &opts.allow_packages,
             &|_| false,
             &policy,
+            &mut report.checks,
         );
         let blocking = slopsquat::print_reports(Ecosystem::Pypi, &reports);
+        slopsquat::record(Ecosystem::Pypi, &reports, &mut report);
         if blocking > 0 && !opts.no_fail {
-            return Err(anyhow::anyhow!(
+            eprintln!(
                 "Zero-Trust Supply Chain Gate (pip): {blocking} high-suspicion slopsquat(s) — halting before install."
-            ));
+            );
+            return Ok(report);
         }
     }
 
@@ -327,8 +344,26 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
                     t.max_entropy
                 );
             }
-            if !allowed {
+            let finding = Finding::package(
+                "SUPPLY-CHAIN/SCRIPT_THREAT",
+                Severity::High,
+                "pip",
+                &t.package,
+                format!(
+                    "{}: {}",
+                    t.file.display(),
+                    if t.signals.is_empty() {
+                        format!("entropy {:.2}", t.max_entropy)
+                    } else {
+                        t.signals.join(", ")
+                    }
+                ),
+            );
+            if allowed {
+                report.warnings.push(finding);
+            } else {
                 any_blocking = true;
+                report.findings.push(finding);
             }
         }
         eprintln!();
@@ -347,28 +382,40 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
         for exe in &new_executables {
             eprintln!("  [EXEC_DROP] {}", exe.display());
             any_blocking = true;
+            report.findings.push(Finding::in_file(
+                "SUPPLY-CHAIN/EXEC_DROP",
+                Severity::High,
+                exe,
+                0,
+                "new executable dropped into the scripts directory",
+            ));
         }
         eprintln!();
     }
 
     if any_blocking && !opts.no_fail {
-        return Err(anyhow::anyhow!(
-            "Zero-Trust Supply Chain Gate (pip): blocking finding(s) detected — halting."
-        ));
+        eprintln!("Zero-Trust Supply Chain Gate (pip): blocking finding(s) detected — halting.");
     }
 
     if let Some(failure) = pip_failure {
-        return Err(anyhow::anyhow!(failure));
+        eprintln!("{failure}");
+        report.checks.push(Check::error("pip", failure));
+        return Ok(report);
     }
 
-    if script_threats.is_empty() && new_executables.is_empty() && typosquats.is_empty() {
+    if script_threats.is_empty()
+        && new_executables.is_empty()
+        && typosquats.is_empty()
+        && report.unfinished().next().is_none()
+    {
         terminal::success(
             "Zero-Trust Supply Chain Gate (pip): clean — no typosquats, suspicious scripts, \
              or unexpected executables detected.",
         );
     }
 
-    Ok(())
+    report.print_unfinished();
+    Ok(report)
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────

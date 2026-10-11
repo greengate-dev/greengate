@@ -103,10 +103,13 @@ steps = [
 | Code | Meaning |
 |---|---|
 | `0` | All steps passed |
-| `1` | One or more steps failed |
+| `1` | A step found policy violations |
+| `3` | A step could not check everything (see `[policy] on_incomplete`) |
+| `4` | A step could not run |
 
 ## Notes
 
-- Steps run sequentially; the first failure stops the pipeline
+- Steps run sequentially; the first step that does not pass stops the pipeline
+- The exit code reflects the worst result among the steps that ran
 - If no `[pipeline]` section is defined in `.greengate.toml`, the command exits with an error message instructing you to add one
 - Use `greengate init` to generate a starter config with a default pipeline

@@ -214,7 +214,8 @@ permissions:
 | Code | Meaning |
 |---|---|
 | `0` | All gates passed (or no coverage file specified) |
-| `1` | Coverage below threshold, complexity budget exceeded, or a runtime error |
+| `1` | Coverage below threshold or complexity budget exceeded |
+| `4` | Runtime error (e.g. the diff or coverage file could not be read) |
 
 ## Notes
 

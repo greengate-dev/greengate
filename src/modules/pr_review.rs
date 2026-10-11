@@ -6,6 +6,7 @@
 ///   2. **New-code coverage gaps** — which newly added lines are NOT covered by the
 ///      provided LCOV/Cobertura report, and whether they meet the configured floor.
 use crate::modules::github;
+use crate::report::{Finding, Report, Severity};
 use crate::utils::http;
 use crate::utils::output::ReportFormat;
 use crate::utils::terminal;
@@ -85,7 +86,7 @@ pub struct CoverageOutput {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_review(opts: ReviewOpts) -> Result<()> {
+pub fn run_review(opts: ReviewOpts) -> Result<Report> {
     // 1. Parse diff
     let diff_files = parse_diff(&opts.base, opts.staged)?;
 
@@ -135,10 +136,56 @@ pub fn run_review(opts: ReviewOpts) -> Result<()> {
         eprintln!("greengate: warning: GitHub review annotation failed: {}", e);
     }
 
-    if !passed {
-        anyhow::bail!("greengate review: quality gate failed.");
+    Ok(review_report(&output, opts.complexity_budget))
+}
+
+fn review_report(output: &ReviewOutput, complexity_budget: u32) -> Report {
+    let mut report = Report::new("review");
+    let c = &output.complexity;
+    if complexity_budget > 0 && c.score > complexity_budget {
+        report.findings.push(Finding::project(
+            "REVIEW/ComplexityBudget",
+            Severity::Medium,
+            format!(
+                "complexity score {} exceeds the budget of {complexity_budget}",
+                c.score
+            ),
+        ));
     }
-    Ok(())
+    if let Some(cov) = output.coverage.as_ref().filter(|cov| !cov.passed) {
+        let mut per_file = cov
+            .files
+            .iter()
+            .filter(|f| f.covered + f.uncovered > 0 && f.coverage_pct < cov.min_required)
+            .peekable();
+        if per_file.peek().is_none() {
+            report.findings.push(Finding::project(
+                "REVIEW/NewCodeCoverage",
+                Severity::Medium,
+                format!(
+                    "new-code coverage {:.1}% is below the {:.1}% target",
+                    cov.overall_pct, cov.min_required
+                ),
+            ));
+        }
+        for f in per_file {
+            let lines: Vec<String> = f.uncovered_lines.iter().map(u32::to_string).collect();
+            let first = f.uncovered_lines.first().map_or(0, |l| *l as usize);
+            report.findings.push(Finding::in_file(
+                "REVIEW/NewCodeCoverage",
+                Severity::Medium,
+                &f.file,
+                first,
+                format!(
+                    "{:.1}% of added lines covered (target {:.1}%); uncovered: {}",
+                    f.coverage_pct,
+                    cov.min_required,
+                    lines.join(", ")
+                ),
+            ));
+        }
+    }
+    report
 }
 
 // ── Diff parsing ──────────────────────────────────────────────────────────────

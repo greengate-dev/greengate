@@ -26,6 +26,7 @@
 //!
 //! Implementation uses zero extra runtime dependencies.
 
+use crate::report::{Check, Finding, Report, Severity};
 use crate::utils::terminal;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -284,7 +285,9 @@ fn report_script_threats(threats: &[ScriptThreat], allow_postinstall: &[String])
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
+pub fn run_watch_install(opts: WatchInstallOpts) -> Result<Report> {
+    let mut report = Report::new("watch-install");
+    report.no_fail = !opts.block_phantom_scripts;
     terminal::info(&format!(
         "Zero-Trust Supply Chain Gate: intercepting `{} {}`",
         opts.package_manager,
@@ -313,12 +316,15 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
                 &opts.allow_postinstall,
                 &in_lock,
                 &policy,
+                &mut report.checks,
             );
             let blocking = slopsquat::print_reports(Ecosystem::Npm, &reports);
+            slopsquat::record(Ecosystem::Npm, &reports, &mut report);
             if blocking > 0 && opts.block_phantom_scripts {
-                return Err(anyhow::anyhow!(
+                eprintln!(
                     "Zero-Trust Supply Chain Gate (npm): {blocking} high-suspicion slopsquat(s) — halting before install."
-                ));
+                );
+                return Ok(report);
             }
         }
     }
@@ -326,6 +332,9 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
     // 1. Layer 1 — Pre-flight static scan of already-present node_modules/.
     //    Catches suspicious scripts from a previous install or partial cache.
     let node_modules_path = Path::new("node_modules");
+    // Threats already reported before the install, so the post-install rescan
+    // does not report them twice.
+    let mut pre_reported: HashSet<(String, String)> = HashSet::new();
     if node_modules_path.is_dir() {
         let pre_threats = scan_package_scripts(node_modules_path);
         let blocking: Vec<&ScriptThreat> = pre_threats
@@ -333,14 +342,17 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
             .filter(|t| !is_allowlisted(&t.package, &opts.allow_postinstall))
             .collect();
         report_script_threats(&pre_threats, &opts.allow_postinstall);
+        record_script_threats(&pre_threats, &opts.allow_postinstall, &mut report);
         if !blocking.is_empty() && opts.block_phantom_scripts {
-            return Err(anyhow::anyhow!(
+            eprintln!(
                 "Zero-Trust Supply Chain Gate: {} pre-existing package(s) with suspicious \
                  lifecycle scripts — halting before install. Review the findings above or \
                  add to allow_postinstall if trusted.",
                 blocking.len()
-            ));
+            );
+            return Ok(report);
         }
+        pre_reported.extend(pre_threats.into_iter().map(|t| (t.package, t.hook)));
     }
 
     // 2. Pre-install snapshots — taken before the child process starts so we
@@ -403,19 +415,25 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
 
     // 8. Layer 1 (post-install pass) — scan scripts of newly installed packages.
     //    Catches packages that weren't in node_modules/ before this install run.
+    //    The install has already run, so keep going and report every layer
+    //    rather than stopping at the first.
     if node_modules_path.is_dir() {
-        let post_threats = scan_package_scripts(node_modules_path);
+        let post_threats: Vec<ScriptThreat> = scan_package_scripts(node_modules_path)
+            .into_iter()
+            .filter(|t| !pre_reported.contains(&(t.package.clone(), t.hook.clone())))
+            .collect();
         report_script_threats(&post_threats, &opts.allow_postinstall);
+        record_script_threats(&post_threats, &opts.allow_postinstall, &mut report);
         let blocking_scripts = post_threats
             .iter()
             .filter(|t| !is_allowlisted(&t.package, &opts.allow_postinstall))
             .count();
         if blocking_scripts > 0 && opts.block_phantom_scripts {
-            return Err(anyhow::anyhow!(
+            eprintln!(
                 "Zero-Trust Supply Chain Gate: {} newly installed package(s) with suspicious \
-                 lifecycle scripts detected — halting.",
+                 lifecycle scripts detected.",
                 blocking_scripts
-            ));
+            );
         }
     }
 
@@ -453,6 +471,24 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
 
     // 11. Emit all phantom/exec-drop findings; allowlisted ones warn but don't fail.
     report_findings(&findings, &opts.allow_postinstall);
+    for f in &findings {
+        let (rule, message) = match f.kind {
+            FindingKind::EphemeralFile => (
+                "SUPPLY-CHAIN/PHANTOM_FILE",
+                format!("{}: created during install, then deleted", f.package),
+            ),
+            FindingKind::ExecutableDrop => (
+                "SUPPLY-CHAIN/EXEC_DROP",
+                "new executable in the project root after install".to_string(),
+            ),
+        };
+        let finding = Finding::in_file(rule, Severity::High, &f.path, 0, message);
+        if is_allowlisted(&f.package, &opts.allow_postinstall) {
+            report.warnings.push(finding);
+        } else {
+            report.findings.push(finding);
+        }
+    }
 
     let blocking_count = findings
         .iter()
@@ -460,24 +496,51 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
         .count();
 
     if blocking_count > 0 && opts.block_phantom_scripts {
-        return Err(anyhow::anyhow!(
+        eprintln!(
             "Zero-Trust Supply Chain Gate: {} blocking runtime event(s) detected — halting.",
             blocking_count
-        ));
+        );
     }
 
     if let Some(failure) = pm_failure {
-        return Err(anyhow::anyhow!(failure));
+        eprintln!("{failure}");
+        report.checks.push(Check::error("package-manager", failure));
+        return Ok(report);
     }
 
-    if findings.is_empty() {
+    if report.findings.is_empty() && report.unfinished().next().is_none() {
         terminal::success(
             "Zero-Trust Supply Chain Gate: clean — no phantom files, executable drops, \
              or suspicious scripts detected.",
         );
     }
 
-    Ok(())
+    Ok(report)
+}
+
+/// Add lifecycle-script threats to `report`; allowlisted packages warn.
+fn record_script_threats(threats: &[ScriptThreat], allow: &[String], report: &mut Report) {
+    for t in threats {
+        let mut evidence = t.signals.join(", ");
+        if t.max_entropy > 4.8 {
+            if !evidence.is_empty() {
+                evidence.push_str("; ");
+            }
+            evidence.push_str(&format!("entropy {:.2}", t.max_entropy));
+        }
+        let finding = Finding::package(
+            "SUPPLY-CHAIN/SCRIPT_THREAT",
+            Severity::High,
+            "npm",
+            &t.package,
+            format!("{} script: {evidence}", t.hook),
+        );
+        if is_allowlisted(&t.package, allow) {
+            report.warnings.push(finding);
+        } else {
+            report.findings.push(finding);
+        }
+    }
 }
 
 // ── Watch state ───────────────────────────────────────────────────────────────

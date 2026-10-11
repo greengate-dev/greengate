@@ -16,7 +16,7 @@ greengate check-config
 ## Behaviour
 
 - If `.greengate.toml` exists and is valid, prints every resolved value and exits 0.
-- If the file contains a TOML syntax or type error, prints a descriptive error and exits 1.
+- If the file contains a TOML syntax or type error, prints a descriptive error and exits 2.
 - If no config file is found, prints the built-in defaults that will be used and exits 0.
 
 ## Examples

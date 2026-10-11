@@ -1,3 +1,4 @@
+use crate::report::{Check, Finding, Location, Report, Severity};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
@@ -98,7 +99,7 @@ fn score_to_u8(cat: Option<&CategoryScore>) -> u8 {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_lighthouse(opts: LighthouseOpts<'_>) -> Result<()> {
+pub fn run_lighthouse(opts: LighthouseOpts<'_>) -> Result<Report> {
     terminal::info(&format!(
         "Running Lighthouse audit: {} ({})",
         opts.url, opts.strategy
@@ -120,25 +121,19 @@ pub fn run_lighthouse(opts: LighthouseOpts<'_>) -> Result<()> {
         request_url.push_str(&format!("&key={}", k));
     }
 
-    let response = http::agent()
-        .get(&request_url)
-        .call()
-        .context("Failed to reach PageSpeed Insights API — check your network connection")?;
-
-    let body: Value =
-        http::read_json(response).context("Failed to parse PageSpeed Insights API response")?;
-
-    // Surface human-readable API errors (e.g. invalid URL, quota exceeded)
-    if let Some(err) = body.get("error") {
-        let msg = err
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown API error");
-        anyhow::bail!("PageSpeed Insights API error: {}", msg);
-    }
-
-    let psi: PsiResponse =
-        serde_json::from_value(body).context("Unexpected PageSpeed Insights response shape")?;
+    // Anything that stops us reading scores means the gate could not be
+    // evaluated — incomplete, not passed and not a finding.
+    let mut report = Report::new("lighthouse");
+    let psi = match fetch_psi(&request_url) {
+        Ok(psi) => psi,
+        Err(e) => {
+            report
+                .checks
+                .push(Check::incomplete("pagespeed", format!("{e:#}")));
+            report.print_unfinished();
+            return Ok(report);
+        }
+    };
 
     let cats = &psi.lighthouse_result.categories;
 
@@ -162,6 +157,7 @@ pub fn run_lighthouse(opts: LighthouseOpts<'_>) -> Result<()> {
     ];
 
     let mut failures = 0usize;
+    report.checks.push(Check::passed("pagespeed"));
 
     eprintln!();
     for (name, score, min) in &results {
@@ -175,20 +171,52 @@ pub fn run_lighthouse(opts: LighthouseOpts<'_>) -> Result<()> {
         );
         if score < min {
             failures += 1;
+            report.findings.push(Finding {
+                rule: format!("LIGHTHOUSE/{}", name.replace(' ', "")),
+                severity: Severity::Medium,
+                location: Location::Url {
+                    url: opts.url.to_string(),
+                },
+                message: format!("{name} score {score} is below the minimum {min}"),
+                remediation: None,
+                reference: None,
+            });
         }
     }
     eprintln!();
 
     if failures > 0 {
-        anyhow::bail!(
+        eprintln!(
             "Lighthouse failed: {} category/-ies below threshold.",
             failures
         );
+        return Ok(report);
     }
 
     terminal::success(&format!(
         "Lighthouse passed: all categories meet their thresholds for {}",
         opts.url
     ));
-    Ok(())
+    Ok(report)
+}
+
+fn fetch_psi(request_url: &str) -> Result<PsiResponse> {
+    let response = http::agent()
+        .get(request_url)
+        .call()
+        .context("Failed to reach PageSpeed Insights API — check your network connection")?;
+
+    let body: Value =
+        http::read_json(response).context("Failed to parse PageSpeed Insights API response")?;
+
+    // Surface human-readable API errors (e.g. invalid URL, quota exceeded)
+    if let Some(err) = body.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown API error");
+        anyhow::bail!("PageSpeed Insights API error: {}", msg);
+    }
+
+    serde_json::from_value(body).context("Unexpected PageSpeed Insights response shape")
 }

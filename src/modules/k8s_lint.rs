@@ -1,3 +1,4 @@
+use crate::report::{Check, Finding, Report, Severity};
 use crate::utils::terminal;
 use anyhow::Result;
 use serde_yaml::Value;
@@ -10,21 +11,23 @@ struct LintIssue {
     detail: String,
 }
 
-pub fn run_lint(target_dir: &str) -> Result<()> {
+pub fn run_lint(target_dir: &str) -> Result<Report> {
     terminal::info(&format!(
         "Linting Kubernetes manifests in '{}'...",
         target_dir
     ));
 
+    let mut report = Report::new("lint");
     let yaml_files = collect_yaml_files(target_dir);
 
     if yaml_files.is_empty() {
         terminal::info("No YAML files found.");
-        return Ok(());
+        return Ok(report);
     }
 
     let mut all_issues: Vec<LintIssue> = Vec::new();
     let mut unparsed: Vec<String> = Vec::new();
+    let mut templates = 0usize;
 
     for path in &yaml_files {
         match std::fs::read_to_string(path) {
@@ -34,37 +37,71 @@ pub fn run_lint(target_dir: &str) -> Result<()> {
                 for doc_str in docs {
                     match serde_yaml::from_str::<Value>(&doc_str) {
                         Ok(doc) => all_issues.extend(check_manifest(path, &doc)),
+                        // Un-rendered Helm/Kustomize templates are common in
+                        // repos and are not manifests yet.
+                        Err(_) if doc_str.contains("{{") => templates += 1,
                         Err(e) => unparsed.push(format!("{}: {e}", path.display())),
                     }
                 }
             }
             Err(e) => {
                 terminal::warn(&format!("Cannot read {}: {}", path.display(), e));
+                report.checks.push(Check::incomplete(
+                    format!("manifest:{}", path.display()),
+                    format!("could not be read: {e}"),
+                ));
             }
         }
     }
 
-    // Not a failure — un-rendered Helm/Kustomize templates are common in repos —
-    // but never silent, so a typo'd manifest is not mistaken for a passing one.
+    if templates > 0 {
+        terminal::info(&format!(
+            "Skipped {templates} un-rendered template document(s) — render them to lint."
+        ));
+    }
+
+    // A document that is not a template and does not parse was never linted,
+    // so a typo'd manifest cannot pass as a clean one.
     if !unparsed.is_empty() {
         terminal::warn(&format!(
-            "{} YAML document(s) did not parse and were NOT linted \
-             (templates must be rendered first):",
+            "{} YAML document(s) did not parse and were NOT linted:",
             unparsed.len()
         ));
         for u in &unparsed {
             eprintln!("  - {u}");
         }
+        report.checks.push(Check::incomplete(
+            "manifests:parse",
+            format!(
+                "{} YAML document(s) did not parse and were not linted",
+                unparsed.len()
+            ),
+        ));
     }
 
     let files_checked = yaml_files.len();
+    report.findings = all_issues
+        .iter()
+        .map(|i| {
+            Finding::in_file(
+                i.rule,
+                Severity::Medium,
+                &i.file,
+                0,
+                format!("container {}: {}", i.container, i.detail),
+            )
+        })
+        .collect();
 
     if all_issues.is_empty() {
-        terminal::success(&format!(
-            "All {} manifest(s) passed lint checks.",
-            files_checked
-        ));
-        return Ok(());
+        if report.unfinished().next().is_none() {
+            terminal::success(&format!(
+                "All {} manifest(s) passed lint checks.",
+                files_checked
+            ));
+        }
+        report.print_unfinished();
+        return Ok(report);
     }
 
     terminal::warn(&format!(
@@ -80,7 +117,9 @@ pub fn run_lint(target_dir: &str) -> Result<()> {
         );
     }
 
-    anyhow::bail!("K8s lint failed: {} issue(s) found.", all_issues.len());
+    report.print_unfinished();
+    eprintln!("K8s lint failed: {} issue(s) found.", all_issues.len());
+    Ok(report)
 }
 
 // ── File discovery ────────────────────────────────────────────────────────────

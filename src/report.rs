@@ -25,10 +25,6 @@ pub enum Status {
     /// Some checks could not run; nothing that did run found a problem.
     Incomplete,
     /// greengate or a tool it wraps failed.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "constructed as commands move onto Report")
-    )]
     Error,
     /// Policy was violated. Outranks the rest: it is definite and actionable.
     Findings,
@@ -108,10 +104,6 @@ impl Check {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used as commands move onto Report")
-    )]
     pub fn error(id: impl Into<String>, reason: impl Into<String>) -> Check {
         Check {
             id: id.into(),
@@ -124,21 +116,25 @@ impl Check {
 #[derive(Serialize, Debug, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Location {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "constructed as file-based gates move onto Report")
-    )]
     File {
         path: PathBuf,
         #[serde(skip_serializing_if = "Option::is_none")]
         line: Option<usize>,
     },
+    /// A deployed page, e.g. a Lighthouse audit target.
+    Url { url: String },
+    /// The change or repository as a whole (a complexity budget, an
+    /// authorship ceiling) rather than any one file.
+    Project,
     Package {
         ecosystem: String,
         name: String,
-        version: String,
-        /// The dependency file the package was read from.
-        source: PathBuf,
+        /// Unknown for a package named on a command line, before resolution.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        /// The dependency file the package was read from, if any.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source: Option<PathBuf>,
     },
 }
 
@@ -154,6 +150,84 @@ pub struct Finding {
     pub reference: Option<String>,
 }
 
+impl Finding {
+    /// A finding located in a source file. `line` 0 means the whole file.
+    pub fn in_file(
+        rule: impl Into<String>,
+        severity: Severity,
+        path: impl Into<PathBuf>,
+        line: usize,
+        message: impl Into<String>,
+    ) -> Finding {
+        Finding {
+            rule: rule.into(),
+            severity,
+            location: Location::File {
+                path: path.into(),
+                line: (line > 0).then_some(line),
+            },
+            message: message.into(),
+            remediation: None,
+            reference: None,
+        }
+    }
+}
+
+impl Finding {
+    /// A finding about the change or repository as a whole.
+    pub fn project(
+        rule: impl Into<String>,
+        severity: Severity,
+        message: impl Into<String>,
+    ) -> Finding {
+        Finding {
+            rule: rule.into(),
+            severity,
+            location: Location::Project,
+            message: message.into(),
+            remediation: None,
+            reference: None,
+        }
+    }
+}
+
+impl Finding {
+    /// A finding about a package, as named by `name` in `ecosystem`.
+    pub fn package(
+        rule: impl Into<String>,
+        severity: Severity,
+        ecosystem: impl Into<String>,
+        name: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Finding {
+        Finding {
+            rule: rule.into(),
+            severity,
+            location: Location::Package {
+                ecosystem: ecosystem.into(),
+                name: name.into(),
+                version: None,
+                source: None,
+            },
+            message: message.into(),
+            remediation: None,
+            reference: None,
+        }
+    }
+}
+
+impl From<crate::modules::scanner::Severity> for Severity {
+    fn from(s: crate::modules::scanner::Severity) -> Severity {
+        use crate::modules::scanner::Severity as S;
+        match s {
+            S::Low => Severity::Low,
+            S::Medium => Severity::Medium,
+            S::High => Severity::High,
+            S::Critical => Severity::Critical,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Report {
     pub command: &'static str,
@@ -161,6 +235,12 @@ pub struct Report {
     pub findings: Vec<Finding>,
     /// Findings matched by a suppression; reported, never counted.
     pub suppressed: Vec<Finding>,
+    /// Below the blocking threshold (or allowlisted): always shown, never
+    /// counted toward the status.
+    pub warnings: Vec<Finding>,
+    /// `--no-fail`: findings are reported (status stays `findings`) but do
+    /// not fail the exit code. Incomplete and error results still do.
+    pub no_fail: bool,
 }
 
 impl Report {
@@ -170,6 +250,8 @@ impl Report {
             checks: Vec::new(),
             findings: Vec::new(),
             suppressed: Vec::new(),
+            warnings: Vec::new(),
+            no_fail: false,
         }
     }
 
@@ -189,7 +271,17 @@ impl Report {
 
     /// The exit code for this report under `on_incomplete`.
     pub fn exit_code(&self, on_incomplete: OnIncomplete) -> u8 {
-        match (self.status(), on_incomplete) {
+        let status = match self.status() {
+            // With findings waived, what is left decides the exit code.
+            Status::Findings if self.no_fail => self
+                .checks
+                .iter()
+                .map(|c| c.status)
+                .max()
+                .unwrap_or(Status::Passed),
+            status => status,
+        };
+        match (status, on_incomplete) {
             (Status::Incomplete, OnIncomplete::Warn) => 0,
             (status, _) => status.exit_code(),
         }
@@ -204,6 +296,7 @@ impl Report {
             "duration_ms": duration_ms,
             "checks": self.checks,
             "findings": self.findings,
+            "warnings": self.warnings,
             "suppressed": self.suppressed,
         })
     }
@@ -288,6 +381,17 @@ mod tests {
         r.findings.push(finding());
         assert_eq!(r.status(), Status::Findings);
         assert_eq!(r.exit_code(OnIncomplete::Warn), 1);
+    }
+
+    #[test]
+    fn no_fail_waives_findings_but_not_incomplete() {
+        let mut r = Report::new("t");
+        r.no_fail = true;
+        r.findings.push(finding());
+        assert_eq!(r.status(), Status::Findings, "status stays honest");
+        assert_eq!(r.exit_code(OnIncomplete::Fail), 0);
+        r.checks.push(Check::incomplete("a", "x"));
+        assert_eq!(r.exit_code(OnIncomplete::Fail), 3);
     }
 
     #[test]

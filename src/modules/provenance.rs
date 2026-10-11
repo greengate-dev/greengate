@@ -8,6 +8,7 @@
 //! added lines, reports the split, and can fail the build when the AI-authored
 //! share of new code exceeds a configured threshold.
 
+use crate::report::{Finding, Report, Severity};
 use crate::utils::output::ReportFormat;
 use crate::utils::terminal;
 use anyhow::{Context, Result};
@@ -142,7 +143,7 @@ struct Summary<'a> {
     by_tool: Vec<(String, usize)>,
 }
 
-pub fn run_provenance(opts: ProvenanceOpts) -> Result<()> {
+pub fn run_provenance(opts: ProvenanceOpts) -> Result<Report> {
     let range = format!("{}..HEAD", opts.base);
     let commits = collect_commits(&range)?;
 
@@ -187,20 +188,26 @@ pub fn run_provenance(opts: ProvenanceOpts) -> Result<()> {
     }
 
     // Gate applies regardless of output format.
+    let mut report = Report::new("provenance");
     if let Some(max) = opts.max_ai_lines_pct {
         if ai_line_pct > max as u64 {
-            return Err(anyhow::anyhow!(
-                "Provenance gate: AI-authored code is {ai_line_pct}% of new lines, exceeding the {max}% ceiling."
+            let message = format!(
+                "AI-authored code is {ai_line_pct}% of new lines, exceeding the {max}% ceiling"
+            );
+            eprintln!("Provenance gate: {message}.");
+            report.findings.push(Finding::project(
+                "PROVENANCE/AiShareExceeded",
+                Severity::Medium,
+                message,
             ));
-        }
-        if opts.format == ReportFormat::Text {
+        } else if opts.format == ReportFormat::Text {
             terminal::success(&format!(
                 "Provenance gate passed: {ai_line_pct}% AI-authored ≤ {max}% ceiling."
             ));
         }
     }
 
-    Ok(())
+    Ok(report)
 }
 
 fn emit_text(s: &Summary<'_>) {

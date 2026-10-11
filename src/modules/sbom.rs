@@ -1,3 +1,4 @@
+use crate::report::{Check, Finding, Report, Severity};
 use anyhow::{Context, Result};
 use serde_json::json;
 
@@ -212,7 +213,7 @@ pub fn run_sbom_verify(
     bundle_path: &str,
     issuer: Option<&str>,
     identity: Option<&str>,
-) -> Result<()> {
+) -> Result<Report> {
     require_cosign()?;
 
     crate::utils::terminal::info(&format!(
@@ -262,17 +263,40 @@ pub fn run_sbom_verify(
 
     let status = cmd.status().context("Failed to spawn cosign verify-blob")?;
 
+    let mut report = Report::new("sbom-verify");
     if !status.success() {
-        anyhow::bail!(
-            "SBOM attestation FAILED — the SBOM may have been tampered with or the \
-             signing identity does not match the expected policy."
+        let message = "SBOM attestation FAILED — the SBOM may have been tampered with or the \
+                       signing identity does not match the expected policy.";
+        eprintln!("{message}");
+        report.findings.push(Finding::in_file(
+            "SBOM/AttestationInvalid",
+            Severity::High,
+            sbom_path,
+            0,
+            message,
+        ));
+        return Ok(report);
+    }
+
+    // Without an expected identity, cosign accepts a valid signature from
+    // anyone: the file is intact, but who signed it was never checked.
+    if identity.is_none() {
+        report.checks.push(Check::incomplete(
+            "sbom:signer",
+            "signature is valid, but no expected signer identity is set \
+             (--certificate-identity or [sbom] expected_identity), so the signer was not checked",
+        ));
+        crate::utils::terminal::warn(
+            "Signature is valid and anchored in Rekor, but the signer identity was NOT checked.",
         );
+        report.print_unfinished();
+        return Ok(report);
     }
 
     crate::utils::terminal::success(
         "Attestation verified. Signature is valid and anchored in the Rekor transparency log.",
     );
-    Ok(())
+    Ok(report)
 }
 
 // ── CycloneDX output ──────────────────────────────────────────────────────────

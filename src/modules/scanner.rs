@@ -1,3 +1,4 @@
+use crate::report::{self, Report};
 use crate::utils::{
     config::{SastConfig, ScanConfig},
     files, terminal,
@@ -1220,10 +1221,35 @@ pub fn emit_findings(findings: &[Finding], format: OutputFormat) -> Result<()> {
         OutputFormat::Gitlab => output_gitlab(findings)?,
     }
 
-    anyhow::bail!(
+    eprintln!(
         "Scan failed: {} secret(s)/PII found. Review the findings above.",
         findings.len()
     );
+    Ok(())
+}
+
+/// Scan findings as a [`Report`] for `command`.
+pub fn findings_report(command: &'static str, findings: &[Finding]) -> Report {
+    let mut report = Report::new(command);
+    report.findings = findings.iter().map(Finding::to_report).collect();
+    report
+}
+
+impl Finding {
+    pub fn to_report(&self) -> report::Finding {
+        let mut f = report::Finding::in_file(
+            &self.rule_id,
+            self.severity.into(),
+            &self.path,
+            self.line,
+            match &self.commit {
+                Some(c) => format!("{} (commit {c})", self.rule_id),
+                None => self.rule_id.clone(),
+            },
+        );
+        f.reference = self.blame.clone();
+        f
+    }
 }
 
 // ── Git blame enrichment ──────────────────────────────────────────────────────
@@ -1330,13 +1356,14 @@ pub fn scan_text_content(
     scan_lines(path_label, content, patterns, cfg, Suppressions::Ignore)
 }
 
-pub fn run_scan(opts: &ScanOpts<'_>) -> Result<()> {
+pub fn run_scan(opts: &ScanOpts<'_>) -> Result<Report> {
     let is_text = matches!(opts.format, OutputFormat::Text);
     if is_text {
         terminal::info("Starting secret and PII scan...");
     }
     let findings = collect_findings(opts)?;
-    emit_findings(&findings, opts.format)
+    emit_findings(&findings, opts.format)?;
+    Ok(findings_report("scan", &findings))
 }
 
 // ── Exclude helpers ───────────────────────────────────────────────────────────

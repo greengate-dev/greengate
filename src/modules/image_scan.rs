@@ -1,6 +1,7 @@
 use crate::modules::scanner::{
-    Finding, Severity, compile_patterns, emit_findings, scan_text_content,
+    Finding, Severity, compile_patterns, emit_findings, findings_report, scan_text_content,
 };
+use crate::report::{Check, Report};
 use crate::utils::config::ScanConfig;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -28,7 +29,7 @@ pub struct ImageScanOpts<'a> {
 ///   4. For each layer: `tar -xf layer.tar -C <tmpdir>/layer-N/`
 ///   5. Walk text files and run regex + entropy scan
 ///   6. Report findings with path `<image>::layer:<digest>::<file>`
-pub fn run_image_scan(opts: ImageScanOpts<'_>) -> Result<()> {
+pub fn run_image_scan(opts: ImageScanOpts<'_>) -> Result<Report> {
     require_docker()?;
 
     crate::utils::terminal::info(&format!(
@@ -68,14 +69,19 @@ pub fn run_image_scan(opts: ImageScanOpts<'_>) -> Result<()> {
         anyhow::bail!("Failed to extract image tar");
     }
 
-    // Step 3 — find all layer.tar files
-    let layer_tars = find_layer_tars(&outer_dir);
+    // Step 3 — find the layer archives
+    let mut report = Report::new("image-scan");
+    report.no_fail = opts.no_fail;
+    let layer_tars = find_layers(&outer_dir);
 
     if layer_tars.is_empty() {
-        crate::utils::terminal::warn(
-            "No layer.tar files found — image may use a different OCI layout.",
-        );
-        return Ok(());
+        crate::utils::terminal::warn("No image layers found in the `docker save` archive.");
+        report.checks.push(Check::incomplete(
+            "image:layers",
+            "no layers found in the `docker save` archive — nothing was scanned",
+        ));
+        report.print_unfinished();
+        return Ok(report);
     }
 
     crate::utils::terminal::info(&format!(
@@ -107,13 +113,21 @@ pub fn run_image_scan(opts: ImageScanOpts<'_>) -> Result<()> {
 
         if !ok {
             // Retry without --ignore-command-error (macOS tar doesn't support it)
-            std::process::Command::new("tar") // greengate: ignore
+            let retried = std::process::Command::new("tar") // greengate: ignore
                 .args(["-xf"])
                 .arg(layer_tar)
                 .args(["-C"])
                 .arg(&layer_dir)
                 .status()
-                .ok();
+                .is_ok_and(|s| s.success());
+            // Whatever did extract is still scanned, but the layer was not
+            // fully covered.
+            if !retried {
+                report.checks.push(Check::incomplete(
+                    format!("image:layer:{layer_digest}"),
+                    "layer could not be fully extracted",
+                ));
+            }
         }
 
         let layer_findings = scan_layer_dir(
@@ -129,26 +143,26 @@ pub fn run_image_scan(opts: ImageScanOpts<'_>) -> Result<()> {
     // Deduplicate: same content appears in multiple layers when a file is unchanged
     all_findings.dedup_by(|a, b| a.path == b.path && a.rule_id == b.rule_id && a.line == b.line);
 
-    if all_findings.is_empty() {
+    report.findings = findings_report("image-scan", &all_findings).findings;
+
+    if all_findings.is_empty() && opts.format == OutputFormat::Text {
+        if report.unfinished().next().is_some() {
+            report.print_unfinished();
+            return Ok(report);
+        }
         crate::utils::terminal::success(&format!(
             "No secrets found in {} ({} layer(s) scanned).",
             opts.image,
             layer_tars.len()
         ));
-        return Ok(());
+        return Ok(report);
     }
 
+    // Structured formats print a document even when empty, so stdout stays
+    // parseable.
     emit_findings(&all_findings, opts.format)?;
-
-    if !opts.no_fail {
-        anyhow::bail!(
-            "Image scan failed: {} finding(s) in {}",
-            all_findings.len(),
-            opts.image
-        );
-    }
-
-    Ok(())
+    report.print_unfinished();
+    Ok(report)
 }
 
 // ── Layer scanning ────────────────────────────────────────────────────────────
@@ -279,6 +293,43 @@ fn require_docker() -> Result<()> {
     Ok(())
 }
 
+/// The layer archives in an extracted `docker save` output. `manifest.json`
+/// names them in both the legacy layout (`<id>/layer.tar`) and the OCI layout
+/// Docker 25+ writes (`blobs/sha256/<digest>`); a bare `layer.tar` walk is the
+/// fallback for archives without one.
+fn find_layers(dir: &Path) -> Vec<PathBuf> {
+    let from_manifest: Vec<PathBuf> = std::fs::read_to_string(dir.join("manifest.json"))
+        .ok()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
+        .and_then(|m| m.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|image| {
+            image
+                .get("Layers")
+                .and_then(|l| l.as_array())
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|l| l.as_str().map(str::to_string))
+        // Layer paths come from the image; keep them inside the archive.
+        .filter(|l| {
+            !Path::new(l)
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        })
+        .map(|l| dir.join(l))
+        .filter(|p| p.is_file())
+        .collect();
+    let mut layers = if from_manifest.is_empty() {
+        find_layer_tars(dir)
+    } else {
+        from_manifest
+    };
+    layers.dedup();
+    layers
+}
+
 fn find_layer_tars(dir: &Path) -> Vec<PathBuf> {
     let mut result = Vec::new();
     find_layer_tars_recursive(dir, &mut result);
@@ -303,6 +354,18 @@ fn find_layer_tars_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Produce a short digest label from the layer.tar path relative to the outer dir.
 /// e.g. `a1b2c3d4` from `<outer>/a1b2c3d4.../layer.tar`
 fn layer_digest_label(layer_tar: &Path, outer_dir: &Path) -> String {
+    // OCI layout: `blobs/sha256/<digest>` — the digest is the file name.
+    if layer_tar
+        .parent()
+        .and_then(|p| p.file_name())
+        .is_some_and(|n| n == "sha256")
+    {
+        return layer_tar
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.chars().take(12).collect())
+            .unwrap_or_else(|| "unknown".to_string());
+    }
     layer_tar
         .strip_prefix(outer_dir)
         .ok()
@@ -418,6 +481,22 @@ mod tests {
         let tars = find_layer_tars(&td.path);
         assert_eq!(tars.len(), 1);
         assert_eq!(tars[0], layer);
+    }
+
+    #[test]
+    fn find_layers_reads_oci_manifest() {
+        let td = TempDir::new("greengate-test-layers-oci").unwrap();
+        let blobs = td.path.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(blobs.join("aaaa1111bbbb2222"), b"layer").unwrap();
+        std::fs::write(
+            td.path.join("manifest.json"),
+            r#"[{"Config":"blobs/sha256/cfg","Layers":["blobs/sha256/aaaa1111bbbb2222","../escape"]}]"#,
+        )
+        .unwrap();
+        let layers = find_layers(&td.path);
+        assert_eq!(layers, vec![blobs.join("aaaa1111bbbb2222")]);
+        assert_eq!(layer_digest_label(&layers[0], &td.path), "aaaa1111bbbb");
     }
 
     #[test]

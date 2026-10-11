@@ -198,4 +198,4 @@ For Jest:
 | Code | Meaning |
 |---|---|
 | `0` | Command ran successfully (may output zero affected tests) |
-| `1` | Git diff failed, glob compilation error, or other runtime error |
+| `4` | Git diff failed, glob compilation error, or other runtime error |

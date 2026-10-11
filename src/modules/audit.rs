@@ -54,8 +54,8 @@ impl Vulnerability {
             location: Location::Package {
                 ecosystem: self.ecosystem.to_string(),
                 name: self.package.clone(),
-                version: self.version.clone(),
-                source: self.source_file.clone(),
+                version: Some(self.version.clone()),
+                source: Some(self.source_file.clone()),
             },
             message: self.summary.clone(),
             remediation: self

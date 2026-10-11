@@ -8,6 +8,7 @@
 /// functions used by the CLI, so no subprocess spawning is needed.
 use crate::modules::scanner::{DiffMode, OutputFormat, ScanOpts};
 use crate::modules::tia::TiaFormat;
+use crate::report::{Check, OnIncomplete, Report, Status};
 use crate::utils::output::ReportFormat;
 use crate::utils::{config, terminal};
 use anyhow::Result;
@@ -15,7 +16,11 @@ use std::fmt::Display;
 use std::str::FromStr;
 
 /// Run the pipeline defined in `.greengate.toml`.
-pub fn run_pipeline(cfg: &config::Config) -> Result<()> {
+/// Run every configured step in order and merge their results into one
+/// report. Checks and findings keep their step as a prefix so the merged
+/// report says where each came from. Stops at the first step that does not
+/// pass under `on_incomplete`.
+pub fn run_pipeline(cfg: &config::Config, on_incomplete: OnIncomplete) -> Result<Report> {
     let steps = &cfg.pipeline.steps;
 
     if steps.is_empty() {
@@ -26,7 +31,7 @@ pub fn run_pipeline(cfg: &config::Config) -> Result<()> {
 
     terminal::info(&format!("Running pipeline: {} step(s)", steps.len()));
 
-    let mut failed = 0usize;
+    let mut merged = Report::new("run");
 
     for (i, step_str) in steps.iter().enumerate() {
         let step_num = i + 1;
@@ -44,33 +49,78 @@ pub fn run_pipeline(cfg: &config::Config) -> Result<()> {
             step_str
         );
 
-        let result = dispatch(command, &parts[1..], cfg);
-
-        match result {
-            Ok(()) => {
-                terminal::success(&format!("Step '{}' passed.", command));
-            }
+        let step = match dispatch(command, &parts[1..], cfg) {
+            Ok(report) => report,
             Err(e) => {
-                eprintln!("✗ Step '{}' FAILED: {}", command, e);
-                failed += 1;
-                // Stop pipeline on first failure
-                break;
+                eprintln!("✗ Step '{command}' could not run: {e:#}");
+                let mut failed = Report::new("run");
+                failed.checks.push(Check::error(command, format!("{e:#}")));
+                failed
             }
+        };
+        let status = step.status();
+        let passed = step.exit_code(on_incomplete) == 0;
+        merge_step(&mut merged, command, step);
+
+        if passed {
+            terminal::success(&format!("Step '{}' {}.", command, status_word(status)));
+        } else {
+            eprintln!("✗ Step '{}' FAILED: {}.", command, status_word(status));
+            // Stop pipeline on first failure
+            break;
         }
     }
 
     eprintln!();
-    if failed == 0 {
-        terminal::success(&format!("Pipeline passed ({} step(s)).", steps.len()));
-        Ok(())
+    if merged.exit_code(on_incomplete) == 0 {
+        terminal::success(&format!(
+            "Pipeline {} ({} step(s)).",
+            status_word(merged.status()),
+            steps.len()
+        ));
     } else {
-        anyhow::bail!("Pipeline failed.");
+        eprintln!("Pipeline failed: {}.", status_word(merged.status()));
+    }
+    Ok(merged)
+}
+
+fn merge_step(into: &mut Report, step: &str, report: Report) {
+    let prefix = |id: &str| {
+        if id == step {
+            id.to_string()
+        } else {
+            format!("{step}/{id}")
+        }
+    };
+    into.checks.extend(report.checks.into_iter().map(|mut c| {
+        c.id = prefix(&c.id);
+        c
+    }));
+    // A step that ran to completion is itself a check, so the merged report
+    // lists every step that ran, not just the ones that had something to say.
+    if !into
+        .checks
+        .iter()
+        .any(|c| c.id == step || c.id.starts_with(&format!("{step}/")))
+    {
+        into.checks.push(Check::passed(step));
+    }
+    into.findings.extend(report.findings);
+    into.suppressed.extend(report.suppressed);
+}
+
+fn status_word(status: Status) -> &'static str {
+    match status {
+        Status::Passed => "passed",
+        Status::Findings => "found policy violations",
+        Status::Incomplete => "was incomplete",
+        Status::Error => "failed to run",
     }
 }
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 
-fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
+fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report> {
     match command {
         "scan" => {
             let staged = args.contains(&"--staged");
@@ -113,14 +163,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
             crate::modules::coverage::run_coverage(&file, min)
         }
 
-        "audit" => {
-            let report =
-                crate::modules::audit::run_audit(&cfg.audit, crate::report::Format::Text)?;
-            match report.exit_code(cfg.policy.on_incomplete) {
-                0 => Ok(()),
-                _ => anyhow::bail!("audit {}", status_word(report.status())),
-            }
-        }
+        "audit" => crate::modules::audit::run_audit(&cfg.audit, crate::report::Format::Text),
 
         "lighthouse" => {
             use crate::modules::perf_lighthouse::{LighthouseOpts, LighthouseThresholds};
@@ -198,11 +241,12 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
                 },
                 &cfg.tia,
             )
+            .map(|()| Report::new("tia"))
         }
 
         "sbom" => {
             let output = flag_value(args, "--output").map(str::to_string);
-            crate::modules::sbom::run_sbom(output.as_deref())
+            crate::modules::sbom::run_sbom(output.as_deref()).map(|()| Report::new("sbom"))
         }
 
         "ci-lint" => {
@@ -224,15 +268,6 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
 }
 
 /// Extract the value following `--flag value` from an args slice.
-fn status_word(status: crate::report::Status) -> &'static str {
-    match status {
-        crate::report::Status::Passed => "passed",
-        crate::report::Status::Findings => "found policy violations",
-        crate::report::Status::Incomplete => "was incomplete",
-        crate::report::Status::Error => "failed to run",
-    }
-}
-
 fn flag_value<'a>(args: &[&'a str], flag: &str) -> Option<&'a str> {
     args.windows(2).find(|w| w[0] == flag).map(|w| w[1])
 }

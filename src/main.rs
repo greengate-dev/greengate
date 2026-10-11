@@ -18,6 +18,11 @@ struct Cli {
     #[arg(long, global = true)]
     profile: Option<Profile>,
 
+    /// Exit 0 even when some checks could not run (overrides [policy]
+    /// on_incomplete). The output still reports the run as incomplete.
+    #[arg(long, global = true)]
+    allow_incomplete: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -99,9 +104,6 @@ enum Commands {
         /// Output format (json writes a greengate.report/v1 document to stdout)
         #[arg(long, default_value = "text")]
         format: report::Format,
-        /// Exit 0 even when some checks could not run (overrides [policy] on_incomplete)
-        #[arg(long)]
-        allow_incomplete: bool,
     },
     /// Audits web performance via Google PageSpeed Insights (Lighthouse)
     Lighthouse {
@@ -320,8 +322,44 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             eprintln!("Error: {e:?}");
-            ExitCode::FAILURE
+            // A bad config is a usage error, like a bad flag (clap exits 2);
+            // anything else means the gate itself could not run.
+            if e.downcast_ref::<utils::config::ConfigError>().is_some() {
+                ExitCode::from(2)
+            } else {
+                ExitCode::from(report::Status::Error.exit_code())
+            }
         }
+    }
+}
+
+/// Turns a command's [`report::Report`] into the process exit code.
+struct Exit {
+    on_incomplete: report::OnIncomplete,
+    telemetry: utils::config::TelemetryConfig,
+    t0: std::time::Instant,
+}
+
+impl Exit {
+    fn finish(
+        &self,
+        command: &str,
+        result: anyhow::Result<report::Report>,
+    ) -> anyhow::Result<ExitCode> {
+        let code = result
+            .as_ref()
+            .map_or(report::Status::Error.exit_code(), |r| {
+                r.exit_code(self.on_incomplete)
+            });
+        modules::telemetry::emit(
+            &modules::telemetry::command_metrics(
+                command,
+                self.t0.elapsed().as_millis() as u64,
+                code == 0,
+            ),
+            &self.telemetry,
+        );
+        result.map(|_| ExitCode::from(code))
     }
 }
 
@@ -345,6 +383,16 @@ fn run() -> anyhow::Result<ExitCode> {
     if let Some(profile) = cli.profile {
         utils::config::apply_profile(&mut cfg, profile);
     }
+
+    let exit = Exit {
+        on_incomplete: if cli.allow_incomplete {
+            report::OnIncomplete::Warn
+        } else {
+            cfg.policy.on_incomplete
+        },
+        telemetry: cfg.telemetry.clone(),
+        t0,
+    };
 
     match cli.command {
         Commands::Scan {
@@ -392,11 +440,11 @@ fn run() -> anyhow::Result<ExitCode> {
                 }
             }
 
-            // Baseline: save mode
+            // Baseline: save mode — recording findings is the point, not a failure.
             if update_baseline {
                 modules::baseline::save_baseline(&findings)?;
-                return modules::scanner::emit_findings(&findings, format)
-                    .map(|()| ExitCode::SUCCESS);
+                modules::scanner::emit_findings(&findings, format)?;
+                return Ok(ExitCode::SUCCESS);
             }
 
             // Baseline: compare mode — only fail on new findings
@@ -410,10 +458,12 @@ fn run() -> anyhow::Result<ExitCode> {
                     total - findings.len(),
                 );
                 if !findings.is_empty() {
-                    return modules::scanner::emit_findings(&findings, format)
-                        .map(|()| ExitCode::SUCCESS);
+                    modules::scanner::emit_findings(&findings, format)?;
                 }
-                return Ok(ExitCode::SUCCESS);
+                return exit.finish(
+                    "scan",
+                    Ok(modules::scanner::findings_report("scan", &findings)),
+                );
             }
 
             // Telemetry — fire and forget, never fails the build
@@ -425,15 +475,26 @@ fn run() -> anyhow::Result<ExitCode> {
             // Triage path — LLM annotates each finding before printing
             if triage && cfg.triage.enabled {
                 let triage_results = modules::triage::triage_findings(&findings, &cfg.triage);
-                let effective = modules::triage::emit_triaged(
+                modules::triage::emit_triaged(
                     &findings,
                     &triage_results,
                     cfg.triage.auto_suppress_threshold,
                 );
-                if effective > 0 {
-                    std::process::exit(1);
+                let mut report = report::Report::new("scan");
+                for (f, t) in findings.iter().zip(&triage_results) {
+                    let suppressed = t.as_ref().is_some_and(|t| {
+                        modules::triage::should_auto_suppress(
+                            t,
+                            cfg.triage.auto_suppress_threshold,
+                        )
+                    });
+                    if suppressed {
+                        report.suppressed.push(f.to_report());
+                    } else {
+                        report.findings.push(f.to_report());
+                    }
                 }
-                return Ok(ExitCode::SUCCESS);
+                return exit.finish("scan", Ok(report));
             }
 
             // Normal scan path
@@ -444,59 +505,44 @@ fn run() -> anyhow::Result<ExitCode> {
                 eprintln!("greengate: warning: GitHub annotation failed: {}", e);
             }
             modules::scanner::emit_findings(&findings, format)?;
+            return exit.finish(
+                "scan",
+                Ok(modules::scanner::findings_report("scan", &findings)),
+            );
         }
         Commands::Lint { dir } => {
             let target = dir.unwrap_or(cfg.lint.target_dir);
-            modules::k8s_lint::run_lint(&target)?;
+            return exit.finish("lint", modules::k8s_lint::run_lint(&target));
         }
         Commands::DockerLint { file } => {
             let dockerfile = file.unwrap_or(cfg.docker.dockerfile);
-            modules::docker_lint::run_docker_lint(&dockerfile)?;
+            return exit.finish(
+                "docker-lint",
+                modules::docker_lint::run_docker_lint(&dockerfile),
+            );
         }
         Commands::Coverage { file, min } => {
             let lcov_file = file.unwrap_or(cfg.coverage.file);
             let threshold = min.unwrap_or(cfg.coverage.min);
-            let result = modules::coverage::run_coverage(&lcov_file, threshold);
-            modules::telemetry::emit(
-                &modules::telemetry::command_metrics(
-                    "coverage",
-                    t0.elapsed().as_millis() as u64,
-                    result.is_ok(),
-                ),
-                &cfg.telemetry,
+            return exit.finish(
+                "coverage",
+                modules::coverage::run_coverage(&lcov_file, threshold),
             );
-            result?;
         }
         Commands::InstallHooks { force } => {
             modules::hooks::run_install_hooks(force)?;
         }
-        Commands::Audit {
-            format,
-            allow_incomplete,
-        } => {
-            let report = modules::audit::run_audit(&cfg.audit, format);
-            let on_incomplete = if allow_incomplete {
-                report::OnIncomplete::Warn
-            } else {
-                cfg.policy.on_incomplete
-            };
-            let code = report.as_ref().map_or(1, |r| r.exit_code(on_incomplete));
-            modules::telemetry::emit(
-                &modules::telemetry::command_metrics(
-                    "audit",
-                    t0.elapsed().as_millis() as u64,
-                    code == 0,
-                ),
-                &cfg.telemetry,
-            );
-            let report = report?;
-            if format == report::Format::Json {
+        Commands::Audit { format } => {
+            let result = modules::audit::run_audit(&cfg.audit, format);
+            if format == report::Format::Json
+                && let Ok(report) = &result
+            {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&report.to_json(t0.elapsed().as_millis()))?
                 );
             }
-            return Ok(ExitCode::from(code));
+            return exit.finish("audit", result);
         }
         Commands::Lighthouse {
             url,
@@ -515,7 +561,7 @@ fn run() -> anyhow::Result<ExitCode> {
                 )
             })?;
 
-            modules::perf_lighthouse::run_lighthouse(LighthouseOpts {
+            let result = modules::perf_lighthouse::run_lighthouse(LighthouseOpts {
                 url: &resolved_url,
                 strategy: &strategy.unwrap_or(cfg.lighthouse.strategy),
                 thresholds: LighthouseThresholds {
@@ -526,7 +572,8 @@ fn run() -> anyhow::Result<ExitCode> {
                     seo: min_seo.unwrap_or(cfg.lighthouse.min_seo),
                 },
                 api_key: key.or(cfg.lighthouse.api_key),
-            })?;
+            });
+            return exit.finish("lighthouse", result);
         }
         Commands::Reassure {
             current,
@@ -545,11 +592,12 @@ fn run() -> anyhow::Result<ExitCode> {
                 None
             };
 
-            modules::reassure::run_reassure(ReassureOpts {
+            let result = modules::reassure::run_reassure(ReassureOpts {
                 current: &current_path,
                 baseline: baseline_opt,
                 threshold: resolved_threshold,
-            })?;
+            });
+            return exit.finish("reassure", result);
         }
         Commands::Init { force, ci } => {
             modules::init::run_init(force, ci.as_deref())?;
@@ -561,7 +609,8 @@ fn run() -> anyhow::Result<ExitCode> {
             })?;
         }
         Commands::Run => {
-            modules::pipeline::run_pipeline(&cfg)?;
+            let result = modules::pipeline::run_pipeline(&cfg, exit.on_incomplete);
+            return exit.finish("run", result);
         }
         Commands::CheckConfig => {
             modules::check_config::run_check_config()?;
@@ -584,7 +633,9 @@ fn run() -> anyhow::Result<ExitCode> {
                 let identity = certificate_identity
                     .as_deref()
                     .or(cfg.sbom.expected_identity.as_deref());
-                modules::sbom::run_sbom_verify(&sbom_file, &bundle_path, issuer, identity)?;
+                let result =
+                    modules::sbom::run_sbom_verify(&sbom_file, &bundle_path, issuer, identity);
+                return exit.finish("sbom-verify", result);
             } else if attest {
                 // Attest mode: generate SBOM then sign it.
                 let sbom_out = output.unwrap_or_else(|| cfg.sbom.default_output.clone());
@@ -596,7 +647,7 @@ fn run() -> anyhow::Result<ExitCode> {
             }
         }
         Commands::PipInstall { args, pip, no_fail } => {
-            modules::pip_audit::run_pip_install(modules::pip_audit::PipInstallOpts {
+            let result = modules::pip_audit::run_pip_install(modules::pip_audit::PipInstallOpts {
                 pip,
                 args,
                 no_fail,
@@ -605,10 +656,11 @@ fn run() -> anyhow::Result<ExitCode> {
                 slopsquat_min_age_days: cfg.supply_chain.slopsquat_min_age_days,
                 slopsquat_min_downloads: cfg.supply_chain.slopsquat_min_downloads,
                 internal_packages: cfg.supply_chain.internal_packages.clone(),
-            })?;
+            });
+            return exit.finish("pip-install", result);
         }
         Commands::CargoAdd { args, no_fail } => {
-            modules::cargo_audit::run_cargo_add(modules::cargo_audit::CargoAddOpts {
+            let result = modules::cargo_audit::run_cargo_add(modules::cargo_audit::CargoAddOpts {
                 args,
                 no_fail,
                 allow_crates: cfg.supply_chain.allow_cargo_crates,
@@ -616,36 +668,41 @@ fn run() -> anyhow::Result<ExitCode> {
                 slopsquat_min_age_days: cfg.supply_chain.slopsquat_min_age_days,
                 slopsquat_min_downloads: cfg.supply_chain.slopsquat_min_downloads,
                 internal_packages: cfg.supply_chain.internal_packages.clone(),
-            })?;
+            });
+            return exit.finish("cargo-add", result);
         }
         Commands::ImageScan {
             image,
             format,
             no_fail,
         } => {
-            modules::image_scan::run_image_scan(modules::image_scan::ImageScanOpts {
+            let result = modules::image_scan::run_image_scan(modules::image_scan::ImageScanOpts {
                 image,
                 format,
                 no_fail,
                 scan_cfg: &cfg.scan,
-            })?;
+            });
+            return exit.finish("image-scan", result);
         }
         Commands::WatchInstall {
             package_manager,
             args,
             no_fail,
         } => {
-            modules::watch_install::run_watch_install(modules::watch_install::WatchInstallOpts {
-                package_manager,
-                args,
-                block_phantom_scripts: !no_fail && cfg.supply_chain.block_phantom_scripts,
-                enforce_sandbox: cfg.supply_chain.enforce_sandbox,
-                allow_postinstall: cfg.supply_chain.allow_postinstall,
-                slopsquat_check: cfg.supply_chain.slopsquat_check,
-                slopsquat_min_age_days: cfg.supply_chain.slopsquat_min_age_days,
-                slopsquat_min_downloads: cfg.supply_chain.slopsquat_min_downloads,
-                internal_packages: cfg.supply_chain.internal_packages.clone(),
-            })?;
+            let result = modules::watch_install::run_watch_install(
+                modules::watch_install::WatchInstallOpts {
+                    package_manager,
+                    args,
+                    block_phantom_scripts: !no_fail && cfg.supply_chain.block_phantom_scripts,
+                    enforce_sandbox: cfg.supply_chain.enforce_sandbox,
+                    allow_postinstall: cfg.supply_chain.allow_postinstall,
+                    slopsquat_check: cfg.supply_chain.slopsquat_check,
+                    slopsquat_min_age_days: cfg.supply_chain.slopsquat_min_age_days,
+                    slopsquat_min_downloads: cfg.supply_chain.slopsquat_min_downloads,
+                    internal_packages: cfg.supply_chain.internal_packages.clone(),
+                },
+            );
+            return exit.finish("watch-install", result);
         }
         Commands::Tia {
             base,
@@ -664,26 +721,20 @@ fn run() -> anyhow::Result<ExitCode> {
         Commands::CiLint { format, file } => {
             let result =
                 modules::ci_lint::run_ci_lint(modules::ci_lint::CiLintOpts { format, file });
-            modules::telemetry::emit(
-                &modules::telemetry::command_metrics(
-                    "ci-lint",
-                    t0.elapsed().as_millis() as u64,
-                    result.is_ok(),
-                ),
-                &cfg.telemetry,
-            );
-            result?;
+            return exit.finish("ci-lint", result);
         }
         Commands::Provenance {
             base,
             max_ai_lines_pct,
             format,
         } => {
-            modules::provenance::run_provenance(modules::provenance::ProvenanceOpts {
-                base,
-                max_ai_lines_pct,
-                format,
-            })?;
+            let result =
+                modules::provenance::run_provenance(modules::provenance::ProvenanceOpts {
+                    base,
+                    max_ai_lines_pct,
+                    format,
+                });
+            return exit.finish("provenance", result);
         }
         Commands::Review {
             base,
@@ -694,7 +745,7 @@ fn run() -> anyhow::Result<ExitCode> {
             format,
             annotate,
         } => {
-            modules::pr_review::run_review(modules::pr_review::ReviewOpts {
+            let result = modules::pr_review::run_review(modules::pr_review::ReviewOpts {
                 base,
                 staged,
                 coverage_file,
@@ -702,7 +753,8 @@ fn run() -> anyhow::Result<ExitCode> {
                 complexity_budget: complexity_budget.unwrap_or(cfg.review.complexity_budget),
                 format,
                 annotate,
-            })?;
+            });
+            return exit.finish("review", result);
         }
     }
 

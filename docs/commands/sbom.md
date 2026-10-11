@@ -53,7 +53,8 @@ greengate sbom --attest
 # Custom paths
 greengate sbom --attest --output dist/sbom.json --bundle dist/sbom.bundle.json
 
-# Verify (accepts any valid Sigstore identity)
+# Verify the signature only. Any valid Sigstore identity is accepted, so the
+# signer is not checked: the run is reported as incomplete (exit 3).
 greengate sbom --verify sbom.json
 
 # Verify with strict policy (exact issuer + identity)

@@ -1515,9 +1515,10 @@ fn watch_install_pm_failure_fails_the_gate() {
         .unwrap();
 
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        !output.status.success(),
-        "failed pm must fail the gate; stderr: {stderr}"
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "failed pm is an error result; stderr: {stderr}"
     );
     assert!(
         stderr.contains("did not complete"),
@@ -1608,7 +1609,11 @@ fn pip_install_pip_failure_fails_the_gate() {
         .status()
         .unwrap();
 
-    assert!(!status.success(), "a failed pip install must fail the gate");
+    assert_eq!(
+        status.code(),
+        Some(4),
+        "a failed pip install is an error result"
+    );
 }
 
 #[test]
@@ -1633,4 +1638,113 @@ fn cargo_add_failure_fails_the_gate() {
         .unwrap();
 
     assert!(!status.success(), "a failed `cargo add` must fail the gate");
+}
+
+// ── Exit-code contract ────────────────────────────────────────────────────────
+//
+// 0 passed · 1 findings · 2 usage/config error · 3 incomplete · 4 error
+
+fn run_in(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(binary())
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn exit_code_findings_is_1() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM node:latest\n").unwrap();
+    let out = run_in(dir.path(), &["docker-lint"]);
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn exit_code_runtime_error_is_4() {
+    // The gate could not run at all: not a finding, not a pass.
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_in(dir.path(), &["coverage", "--file", "missing.info"]);
+    assert_eq!(out.status.code(), Some(4));
+}
+
+#[test]
+fn exit_code_invalid_config_is_2() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[scan]\nno_such_key = 1\n",
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["scan"]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn lint_unparseable_manifest_is_incomplete_but_templates_are_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("chart.yaml"),
+        "apiVersion: v1\nkind: Pod\nmetadata:\n  name: {{ .Values.name }}\n  labels: {{- toYaml . }}\n",
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["lint", "--dir", "."]);
+    assert_eq!(out.status.code(), Some(0), "templates are not manifests");
+
+    std::fs::write(
+        dir.path().join("broken.yaml"),
+        "kind: Pod\n  bad: [indent\n",
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["lint", "--dir", "."]);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a manifest that was never linted is not a pass"
+    );
+    let out = run_in(dir.path(), &["--allow-incomplete", "lint", "--dir", "."]);
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn ci_lint_json_is_valid_json_when_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".github/workflows")).unwrap();
+    std::fs::write(
+        dir.path().join(".github/workflows/ci.yml"),
+        "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n",
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["ci-lint", "--format", "json"]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not JSON ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(v["total"], 0);
+}
+
+#[test]
+fn run_reports_the_worst_step_result() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM node:latest\n").unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"docker-lint\"]\n",
+    )
+    .unwrap();
+    assert_eq!(run_in(dir.path(), &["run"]).status.code(), Some(1));
+
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"coverage --file missing.info\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        run_in(dir.path(), &["run"]).status.code(),
+        Some(4),
+        "a step that could not run is an error, not a finding"
+    );
 }

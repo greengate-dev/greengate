@@ -8,6 +8,7 @@
 /// | CI/ExpressionInjection           | critical | User-controlled `${{...}}` in a run: step      |
 /// | CI/PullRequestTargetWithCheckout | critical | `pull_request_target` + checkout of PR code    |
 use crate::modules::scanner::Severity;
+use crate::report::{Check, Finding, Report};
 use crate::utils::output::ReportFormat;
 use crate::utils::terminal;
 use anyhow::Result;
@@ -58,7 +59,8 @@ static RE_INJECTION: LazyLock<Regex> = LazyLock::new(|| {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_ci_lint(opts: CiLintOpts) -> Result<()> {
+pub fn run_ci_lint(opts: CiLintOpts) -> Result<Report> {
+    let mut report = Report::new("ci-lint");
     let files = match opts.file {
         Some(ref f) => vec![PathBuf::from(f)],
         None => find_workflow_files(),
@@ -66,34 +68,46 @@ pub fn run_ci_lint(opts: CiLintOpts) -> Result<()> {
 
     if files.is_empty() {
         terminal::info("No GitHub Actions workflow files found (.github/workflows/*.yml)");
-        return Ok(());
+    } else {
+        terminal::info(&format!(
+            "CI lint: scanning {} workflow file(s)...",
+            files.len()
+        ));
     }
-
-    terminal::info(&format!(
-        "CI lint: scanning {} workflow file(s)...",
-        files.len()
-    ));
 
     let mut all_findings: Vec<CiLintFinding> = Vec::new();
     for path in &files {
         match lint_workflow(path) {
             Ok(findings) => all_findings.extend(findings),
-            Err(e) => eprintln!("  ⚠️  Skipping {}: {}", path.display(), e),
+            Err(e) => {
+                eprintln!("  ⚠️  Skipping {}: {}", path.display(), e);
+                report.checks.push(Check::incomplete(
+                    format!("workflow:{}", path.display()),
+                    format!("could not be linted: {e}"),
+                ));
+            }
         }
     }
 
-    if all_findings.is_empty() {
-        terminal::success("CI lint: no issues found.");
-        return Ok(());
-    }
+    report.findings = all_findings
+        .iter()
+        .map(|f| Finding::in_file(f.rule_id, f.severity.into(), &f.path, f.line, &f.message))
+        .collect();
 
+    // Structured formats always print a document, even an empty one, so
+    // stdout stays parseable.
     match opts.format {
         ReportFormat::Json => emit_json(&all_findings)?,
         ReportFormat::Sarif => emit_sarif(&all_findings)?,
+        ReportFormat::Text if all_findings.is_empty() => {
+            if !files.is_empty() && report.unfinished().next().is_none() {
+                terminal::success("CI lint: no issues found.");
+            }
+        }
         ReportFormat::Text => emit_text(&all_findings),
     }
-
-    anyhow::bail!("CI lint: {} issue(s) found.", all_findings.len());
+    report.print_unfinished();
+    Ok(report)
 }
 
 // ── File discovery ────────────────────────────────────────────────────────────

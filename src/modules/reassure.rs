@@ -1,3 +1,4 @@
+use crate::report::{Finding, Report, Severity};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -29,7 +30,7 @@ struct ComponentResult {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_reassure(opts: ReassureOpts<'_>) -> Result<()> {
+pub fn run_reassure(opts: ReassureOpts<'_>) -> Result<Report> {
     terminal::info(&format!("Parsing Reassure report: {}", opts.current));
 
     let current = load_report(opts.current)?;
@@ -63,9 +64,10 @@ pub fn run_reassure(opts: ReassureOpts<'_>) -> Result<()> {
         }
         eprintln!();
         terminal::info("No baseline provided — metrics reported above (no gating applied).");
-        return Ok(());
+        return Ok(Report::new("reassure"));
     };
 
+    let mut report = Report::new("reassure");
     let mut regressions = 0usize;
 
     eprintln!();
@@ -88,6 +90,16 @@ pub fn run_reassure(opts: ReassureOpts<'_>) -> Result<()> {
                 let is_regressed = pct > opts.threshold || renders_increased;
                 if is_regressed {
                     regressions += 1;
+                    report.findings.push(Finding::in_file(
+                        "PERF/RenderRegression",
+                        Severity::Medium,
+                        opts.current,
+                        0,
+                        format!(
+                            "{name}: mean {:.1} ms ({pct:+.1}%), renders {:.1} → {:.1}",
+                            cur.mean_time, base_res.renders, cur.renders
+                        ),
+                    ));
                 }
                 let flag = if is_regressed { " ❌" } else { "" };
 
@@ -120,18 +132,18 @@ pub fn run_reassure(opts: ReassureOpts<'_>) -> Result<()> {
     eprintln!();
 
     if regressions > 0 {
-        anyhow::bail!(
+        eprintln!(
             "Reassure failed: {} component(s) exceed the {:.1}% regression threshold.",
-            regressions,
-            opts.threshold,
+            regressions, opts.threshold,
         );
+        return Ok(report);
     }
 
     terminal::success(&format!(
         "Reassure passed: no regressions detected (threshold: {:.1}%)",
         opts.threshold
     ));
-    Ok(())
+    Ok(report)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -143,10 +155,28 @@ fn load_report(path: &str) -> Result<PerfReport> {
         .with_context(|| format!("Failed to parse Reassure file: {}", path))
 }
 
+/// Shorten `s` to at most `max` characters. Counts chars, not bytes, so a
+/// non-ASCII component name cannot split a UTF-8 sequence and panic.
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", &s[..max - 1])
+        let head: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{head}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate;
+
+    #[test]
+    fn truncate_counts_characters_not_bytes() {
+        // A multi-byte char straddling the cut used to panic.
+        let name = format!("{}é-component", "a".repeat(38));
+        let out = truncate(&name, 40);
+        assert_eq!(out.chars().count(), 40);
+        assert!(out.ends_with('…'));
+        assert_eq!(truncate("short", 40), "short");
     }
 }

@@ -622,8 +622,18 @@ fn default_triage_context_lines() -> usize {
 /// # Errors
 /// Returns an error if `.greengate.toml` exists but cannot be read or parsed.
 /// A *missing* file is not an error — it yields the defaults.
+/// Marks a configuration error so `main` can exit with the usage-error code.
+#[derive(Debug)]
+pub struct ConfigError;
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("invalid .greengate.toml")
+    }
+}
+
 pub fn load() -> Result<Config> {
-    load_inner(true)
+    load_inner(true).context(ConfigError)
 }
 
 /// Like [`load`] but suppresses the "Loaded config" info message.
@@ -633,7 +643,7 @@ pub fn load() -> Result<Config> {
 /// # Errors
 /// As [`load`].
 pub fn load_silent() -> Result<Config> {
-    load_inner(false)
+    load_inner(false).context(ConfigError)
 }
 
 fn load_inner(verbose: bool) -> Result<Config> {

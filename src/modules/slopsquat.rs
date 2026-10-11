@@ -13,6 +13,8 @@
 //! — are ecosystem-agnostic, so the scoring is shared and only the metadata
 //! fetch differs per registry (crates.io wired first; npm/PyPI slot in later).
 
+use crate::report::{Check, Finding, Report, Severity};
+
 /// Ecosystem-agnostic package facts pulled from a registry.
 #[derive(Debug, Clone)]
 pub struct PackageMeta {
@@ -401,14 +403,16 @@ pub struct GuardPolicy {
 ///   that also resolves on the public registry is HIGH risk.
 /// * **Slopsquat** — an *external* name is scored on registry metadata.
 ///
-/// Returns only actionable (non-`Low`) reports; warns and skips on an unreachable
-/// registry (fail open).
+/// Returns only actionable (non-`Low`) reports. A package whose registry
+/// could not be reached is recorded in `checks` as incomplete — it was not
+/// screened, so it must not read as cleared.
 pub fn guard(
     eco: Ecosystem,
     names: &[String],
     allow: &[String],
     in_lockfile: &dyn Fn(&str) -> bool,
     policy: &GuardPolicy,
+    checks: &mut Vec<Check>,
 ) -> Vec<SlopReport> {
     let mut reports = Vec::new();
     for raw in names {
@@ -450,10 +454,16 @@ pub fn guard(
                     reports.push(r);
                 }
             }
-            None => crate::utils::terminal::warn(&format!(
-                "supply-chain: {} registry unreachable — skipped guard for '{name}'",
-                eco.label()
-            )),
+            None => {
+                crate::utils::terminal::warn(&format!(
+                    "supply-chain: {} registry unreachable — '{name}' was NOT screened",
+                    eco.label()
+                ));
+                checks.push(Check::incomplete(
+                    format!("registry:{}:{name}", eco.label()),
+                    "registry unreachable — package not screened",
+                ));
+            }
         }
     }
     reports
@@ -490,6 +500,29 @@ pub fn print_reports(eco: Ecosystem, reports: &[SlopReport]) -> usize {
         .iter()
         .filter(|r| r.suspicion == Suspicion::High)
         .count()
+}
+
+/// Add `reports` to `report`: HIGH suspicion blocks (a finding), anything
+/// lower is a warning.
+pub fn record(eco: Ecosystem, reports: &[SlopReport], report: &mut Report) {
+    for r in reports {
+        let finding = Finding::package(
+            format!("SUPPLY-CHAIN/{}", r.kind),
+            match r.suspicion {
+                Suspicion::High => Severity::High,
+                Suspicion::Medium => Severity::Medium,
+                Suspicion::Low => Severity::Low,
+            },
+            eco.label(),
+            &r.package,
+            r.reasons.join("; "),
+        );
+        if r.suspicion == Suspicion::High {
+            report.findings.push(finding);
+        } else {
+            report.warnings.push(finding);
+        }
+    }
 }
 
 /// Extract explicitly-requested package names from an npm/yarn/pnpm/bun command.

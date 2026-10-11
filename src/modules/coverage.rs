@@ -1,3 +1,4 @@
+use crate::report::{Finding, Report, Severity};
 use crate::utils::terminal;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -171,7 +172,7 @@ fn cobertura_to_line_map(content: &str) -> Result<HashMap<String, HashMap<u32, u
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-pub fn run_coverage(file: &str, min: f64) -> Result<()> {
+pub fn run_coverage(file: &str, min: f64) -> Result<Report> {
     terminal::info(&format!(
         "Analyzing coverage file: {} (threshold: {:.1}%)",
         file, min
@@ -217,23 +218,40 @@ pub fn run_coverage(file: &str, min: f64) -> Result<()> {
     let coverage_pct = (total_hit as f64 / total_found as f64) * 100.0;
     let files_scanned = records.len();
 
+    let mut report = Report::new("coverage");
     if coverage_pct < min {
         terminal::warn(&format!(
             "Coverage {:.1}% is below threshold {:.1}% ({} files, {}/{} lines covered)",
             coverage_pct, min, files_scanned, total_hit, total_found
         ));
-        anyhow::bail!("Coverage gate failed: {:.1}% < {:.1}%", coverage_pct, min);
+        eprintln!("Coverage gate failed: {:.1}% < {:.1}%", coverage_pct, min);
+        report.findings.push(Finding::in_file(
+            "COVERAGE/BelowThreshold",
+            Severity::Medium,
+            file,
+            0,
+            format!(
+                "coverage {coverage_pct:.1}% is below the {min:.1}% threshold \
+                 ({total_hit}/{total_found} lines covered)"
+            ),
+        ));
+        return Ok(report);
     }
 
     terminal::success(&format!(
         "Coverage {:.1}% meets threshold {:.1}% ({} files, {}/{} lines covered)",
         coverage_pct, min, files_scanned, total_hit, total_found
     ));
-    Ok(())
+    Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::report::{Report, Status};
+
+    fn status(result: anyhow::Result<Report>) -> Status {
+        result.expect("coverage should run").status()
+    }
     use std::io::Write;
     use tempfile::{Builder, NamedTempFile};
 
@@ -255,14 +273,22 @@ mod tests {
     fn test_passes_above_threshold() {
         let lcov = write_lcov("SF:src/main.rs\nLH:90\nLF:100\nend_of_record\n");
         let result = super::run_coverage(lcov.path().to_str().unwrap(), 80.0);
-        assert!(result.is_ok(), "expected pass at 90% with threshold 80%");
+        assert_eq!(
+            status(result),
+            Status::Passed,
+            "expected pass at 90% with threshold 80%"
+        );
     }
 
     #[test]
     fn test_fails_below_threshold() {
         let lcov = write_lcov("SF:src/main.rs\nLH:50\nLF:100\nend_of_record\n");
         let result = super::run_coverage(lcov.path().to_str().unwrap(), 80.0);
-        assert!(result.is_err(), "expected fail at 50% with threshold 80%");
+        assert_eq!(
+            status(result),
+            Status::Findings,
+            "expected fail at 50% with threshold 80%"
+        );
     }
 
     #[test]
@@ -271,7 +297,7 @@ mod tests {
             "SF:src/a.rs\nLH:80\nLF:100\nend_of_record\nSF:src/b.rs\nLH:80\nLF:100\nend_of_record\n",
         );
         let result = super::run_coverage(lcov.path().to_str().unwrap(), 80.0);
-        assert!(result.is_ok());
+        assert_eq!(status(result), Status::Passed);
     }
 
     #[test]
@@ -318,7 +344,10 @@ mod tests {
         // 4/5 lines hit = 80%
         let xml = cobertura_xml(&[("src/a.py", 4, 5)]);
         let f = write_cobertura(&xml);
-        assert!(super::run_coverage(f.path().to_str().unwrap(), 70.0).is_ok());
+        assert_eq!(
+            status(super::run_coverage(f.path().to_str().unwrap(), 70.0)),
+            Status::Passed
+        );
     }
 
     #[test]
@@ -326,7 +355,10 @@ mod tests {
         // 1/3 lines hit ≈ 33%
         let xml = cobertura_xml(&[("src/a.py", 1, 3)]);
         let f = write_cobertura(&xml);
-        assert!(super::run_coverage(f.path().to_str().unwrap(), 80.0).is_err());
+        assert_eq!(
+            status(super::run_coverage(f.path().to_str().unwrap(), 80.0)),
+            Status::Findings
+        );
     }
 
     #[test]
@@ -334,7 +366,10 @@ mod tests {
         // 4/5 + 4/5 = 8/10 = 80%
         let xml = cobertura_xml(&[("src/a.py", 4, 5), ("src/b.py", 4, 5)]);
         let f = write_cobertura(&xml);
-        assert!(super::run_coverage(f.path().to_str().unwrap(), 80.0).is_ok());
+        assert_eq!(
+            status(super::run_coverage(f.path().to_str().unwrap(), 80.0)),
+            Status::Passed
+        );
     }
 
     #[test]
