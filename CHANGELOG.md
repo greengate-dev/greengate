@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `greengate.report/v1` — one result model for every gate: `passed`, `findings`, `incomplete`, or `error`, with each check and its reason. `audit --format json` emits it.
 - `[policy] on_incomplete = "fail" | "warn"` and a global `--allow-incomplete` flag.
+- Global `--report <path>` on every gate: SARIF 2.1.0 for `*.sarif`, otherwise `greengate.report/v1` JSON. Written even when the gate errors. Incomplete checks appear in SARIF as tool-execution notifications with `executionSuccessful: false`. JSON Schema published at `/schema/report-v1.json`.
 - `GREENGATE_OSV_URL` to point `audit` at an OSV mirror.
 
 ### Changed

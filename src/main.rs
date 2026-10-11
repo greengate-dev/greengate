@@ -23,6 +23,11 @@ struct Cli {
     #[arg(long, global = true)]
     allow_incomplete: bool,
 
+    /// Also write the result as a report file: SARIF 2.1.0 when the path ends
+    /// in `.sarif`, otherwise greengate.report/v1 JSON. Works on every gate.
+    #[arg(long, global = true, value_name = "PATH")]
+    report: Option<std::path::PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -338,6 +343,7 @@ struct Exit {
     on_incomplete: report::OnIncomplete,
     telemetry: utils::config::TelemetryConfig,
     t0: std::time::Instant,
+    report_path: Option<std::path::PathBuf>,
 }
 
 impl Exit {
@@ -359,7 +365,37 @@ impl Exit {
             ),
             &self.telemetry,
         );
+        if let Some(path) = &self.report_path {
+            // A gate that errored still leaves a report saying so, so CI
+            // artifacts never go missing exactly when something broke.
+            let errored;
+            let written = match &result {
+                Ok(r) => r,
+                Err(e) => {
+                    let mut r = report::Report::new("greengate");
+                    r.checks
+                        .push(report::Check::error(command, format!("{e:#}")));
+                    errored = r;
+                    &errored
+                }
+            };
+            self.write_report(path, written)?;
+        }
         result.map(|_| ExitCode::from(code))
+    }
+
+    fn write_report(&self, path: &std::path::Path, report: &report::Report) -> anyhow::Result<()> {
+        use anyhow::Context;
+        let sarif = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("sarif"));
+        let doc = if sarif {
+            report.to_sarif()
+        } else {
+            report.to_json(self.t0.elapsed().as_millis())
+        };
+        std::fs::write(path, serde_json::to_string_pretty(&doc)? + "\n")
+            .with_context(|| format!("could not write report to {}", path.display()))
     }
 }
 
@@ -392,6 +428,7 @@ fn run() -> anyhow::Result<ExitCode> {
         },
         telemetry: cfg.telemetry.clone(),
         t0,
+        report_path: cli.report.clone(),
     };
 
     match cli.command {
@@ -758,5 +795,13 @@ fn run() -> anyhow::Result<ExitCode> {
         }
     }
 
+    // Only gates reach `exit.finish`; everything else (tia, init, sbom
+    // generation, …) has no pass/fail result to report.
+    if let Some(path) = &exit.report_path {
+        utils::terminal::warn(&format!(
+            "--report {} ignored: this command is not a gate and produces no report.",
+            path.display()
+        ));
+    }
     Ok(ExitCode::SUCCESS)
 }

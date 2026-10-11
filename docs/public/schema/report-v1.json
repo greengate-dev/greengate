@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://greengate-dev.github.io/greengate/schema/report-v1.json",
+  "title": "greengate.report/v1",
+  "description": "The result of one greengate gate (or a merged `greengate run`).",
+  "type": "object",
+  "required": ["schema", "tool", "command", "status", "duration_ms", "checks", "findings", "warnings", "suppressed"],
+  "properties": {
+    "schema": { "const": "greengate.report/v1" },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "greengate" },
+        "version": { "type": "string" }
+      }
+    },
+    "command": { "type": "string", "description": "The gate that produced the report, e.g. `audit`, `scan`, `run`." },
+    "status": { "$ref": "#/$defs/status" },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "checks": {
+      "type": "array",
+      "description": "Units of verification and whether they completed. A non-`passed` check always has a reason.",
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "$ref": "#/$defs/status" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "findings": { "type": "array", "description": "Policy violations; any finding makes the status `findings`.", "items": { "$ref": "#/$defs/finding" } },
+    "warnings": { "type": "array", "description": "Signals below the blocking threshold, or allowlisted. Never affect the status.", "items": { "$ref": "#/$defs/finding" } },
+    "suppressed": { "type": "array", "description": "Findings matched by a suppression. Never affect the status.", "items": { "$ref": "#/$defs/finding" } }
+  },
+  "$defs": {
+    "status": {
+      "enum": ["passed", "findings", "incomplete", "error"],
+      "description": "passed: everything checked, nothing violates policy · findings: policy violated · incomplete: some checks could not run · error: the gate could not run."
+    },
+    "severity": { "enum": ["unknown", "low", "medium", "high", "critical"] },
+    "finding": {
+      "type": "object",
+      "required": ["rule", "severity", "location", "message"],
+      "properties": {
+        "rule": { "type": "string" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "message": { "type": "string" },
+        "remediation": { "type": "string" },
+        "reference": { "type": "string" },
+        "location": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["kind", "path"],
+              "properties": {
+                "kind": { "const": "file" },
+                "path": { "type": "string" },
+                "line": { "type": "integer", "minimum": 1 }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["kind", "ecosystem", "name"],
+              "properties": {
+                "kind": { "const": "package" },
+                "ecosystem": { "type": "string" },
+                "name": { "type": "string" },
+                "version": { "type": "string" },
+                "source": { "type": "string", "description": "The dependency file the package was read from." }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["kind", "url"],
+              "properties": { "kind": { "const": "url" }, "url": { "type": "string" } }
+            },
+            {
+              "type": "object",
+              "required": ["kind"],
+              "properties": { "kind": { "const": "project" } }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

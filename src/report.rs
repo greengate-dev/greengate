@@ -301,6 +301,64 @@ impl Report {
         })
     }
 
+    /// The report as SARIF 2.1.0, for code-scanning uploads. Checks that did
+    /// not finish become tool-execution notifications and mark the run as not
+    /// successful, so a partial scan is never presented as a clean one.
+    pub fn to_sarif(&self) -> Value {
+        let mut rule_ids: Vec<&str> = self.findings.iter().map(|f| f.rule.as_str()).collect();
+        rule_ids.sort_unstable();
+        rule_ids.dedup();
+        let rules: Vec<Value> = rule_ids
+            .iter()
+            .map(|id| {
+                json!({
+                    "id": id,
+                    "shortDescription": { "text": id },
+                    "helpUri": "https://github.com/greengate-dev/greengate"
+                })
+            })
+            .collect();
+
+        let results: Vec<Value> = self.findings.iter().map(sarif_result).collect();
+        let notifications: Vec<Value> = self
+            .unfinished()
+            .map(|c| {
+                json!({
+                    "level": if c.status == Status::Error { "error" } else { "warning" },
+                    "descriptor": { "id": c.id },
+                    "message": {
+                        "text": format!(
+                            "{}: {}",
+                            c.id,
+                            c.reason.as_deref().unwrap_or("did not complete")
+                        )
+                    }
+                })
+            })
+            .collect();
+
+        json!({
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {
+                    "driver": {
+                        "name": "greengate",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "informationUri": "https://github.com/greengate-dev/greengate",
+                        "rules": rules
+                    }
+                },
+                "automationDetails": { "id": format!("greengate/{}/", self.command) },
+                "invocations": [{
+                    "executionSuccessful": notifications.is_empty(),
+                    "toolExecutionNotifications": notifications
+                }],
+                "results": results
+            }]
+        })
+    }
+
     /// Text summary of checks that did not finish, so "incomplete" is never
     /// mistaken for a pass in human-readable output either.
     pub fn print_unfinished(&self) {
@@ -326,6 +384,55 @@ impl Report {
             );
         }
     }
+}
+
+fn sarif_result(f: &Finding) -> Value {
+    let level = match f.severity {
+        Severity::Critical | Severity::High => "error",
+        Severity::Medium => "warning",
+        Severity::Low | Severity::Unknown => "note",
+    };
+    // SARIF locations are files; other findings point at the file that best
+    // explains them, or carry their subject in the message.
+    let file = match &f.location {
+        Location::File { path, line } => Some((path.as_path(), *line)),
+        Location::Package {
+            source: Some(source),
+            ..
+        } => Some((source.as_path(), None)),
+        _ => None,
+    };
+    let subject = match &f.location {
+        Location::Package { name, version, .. } => match version {
+            Some(v) => format!("{name}@{v}: "),
+            None => format!("{name}: "),
+        },
+        Location::Url { url } => format!("{url}: "),
+        _ => String::new(),
+    };
+    let mut text = format!("{subject}{}", f.message);
+    if let Some(fix) = &f.remediation {
+        text.push_str(&format!(" — {fix}"));
+    }
+    let mut result = json!({
+        "ruleId": f.rule,
+        "level": level,
+        "message": { "text": text },
+    });
+    if let Some((path, line)) = file {
+        let uri = path.to_string_lossy();
+        let mut physical = json!({
+            "artifactLocation": {
+                "uri": uri.strip_prefix("./").unwrap_or(&uri),
+                "uriBaseId": "%SRCROOT%"
+            }
+        });
+        if let Some(line) = line {
+            physical["region"] = json!({ "startLine": line });
+        }
+        result["locations"] = json!([{ "physicalLocation": physical }]);
+    }
+    result
 }
 
 /// Output format for commands that emit a [`Report`].
@@ -409,6 +516,95 @@ mod tests {
         assert_eq!(v["schema"], SCHEMA);
         assert_eq!(v["status"], "incomplete");
         assert_eq!(v["checks"][0]["reason"], "unreachable");
+    }
+
+    #[test]
+    fn sarif_marks_incomplete_runs_unsuccessful() {
+        let mut r = Report::new("audit");
+        assert_eq!(
+            r.to_sarif()["runs"][0]["invocations"][0]["executionSuccessful"],
+            true
+        );
+        r.checks.push(Check::incomplete("osv", "unreachable"));
+        r.findings
+            .push(Finding::in_file("R1", Severity::High, "./src/a.rs", 3, "m"));
+        let sarif = r.to_sarif();
+        let run = &sarif["runs"][0];
+        assert_eq!(run["invocations"][0]["executionSuccessful"], false);
+        assert_eq!(
+            run["invocations"][0]["toolExecutionNotifications"][0]["descriptor"]["id"],
+            "osv"
+        );
+        let loc = &run["results"][0]["locations"][0]["physicalLocation"];
+        assert_eq!(loc["artifactLocation"]["uri"], "src/a.rs");
+        assert_eq!(loc["region"]["startLine"], 3);
+        assert_eq!(run["results"][0]["level"], "error");
+    }
+
+    #[test]
+    fn json_matches_the_published_schema() {
+        // Drift guard for docs/public/schema/report-v1.json: the top-level
+        // keys, status values and location kinds the schema promises.
+        let schema: Value =
+            serde_json::from_str(include_str!("../docs/public/schema/report-v1.json")).unwrap();
+        let mut r = Report::new("t");
+        r.checks.push(Check::incomplete("c", "x"));
+        let doc = r.to_json(0);
+        let mut required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let mut actual: Vec<&str> = doc
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        required.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(required, actual);
+        assert_eq!(schema["properties"]["schema"]["const"], SCHEMA);
+
+        let statuses = &schema["$defs"]["status"]["enum"];
+        for s in [
+            Status::Passed,
+            Status::Findings,
+            Status::Incomplete,
+            Status::Error,
+        ] {
+            assert!(
+                statuses
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::to_value(s).unwrap()),
+                "{s:?}"
+            );
+        }
+        let kinds: Vec<&Value> = schema["$defs"]["finding"]["properties"]["location"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| &v["properties"]["kind"]["const"])
+            .collect();
+        for loc in [
+            Location::File {
+                path: "a".into(),
+                line: None,
+            },
+            Location::Url { url: "u".into() },
+            Location::Project,
+            Location::Package {
+                ecosystem: "npm".into(),
+                name: "n".into(),
+                version: None,
+                source: None,
+            },
+        ] {
+            let kind = serde_json::to_value(&loc).unwrap()["kind"].clone();
+            assert!(kinds.contains(&&kind), "{kind}");
+        }
     }
 
     #[test]

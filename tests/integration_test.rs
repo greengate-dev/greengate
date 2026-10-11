@@ -1748,3 +1748,55 @@ fn run_reports_the_worst_step_result() {
         "a step that could not run is an error, not a finding"
     );
 }
+
+// ── --report ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn report_flag_writes_json_for_any_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM node:latest\n").unwrap();
+    let out = run_in(dir.path(), &["docker-lint", "--report", "gate.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("gate.json")).unwrap()).unwrap();
+    assert_eq!(report["schema"], "greengate.report/v1");
+    assert_eq!(report["command"], "docker-lint");
+    assert_eq!(report["status"], "findings");
+    assert_eq!(report["findings"][0]["location"]["kind"], "file");
+}
+
+#[test]
+fn report_flag_writes_sarif_by_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM node:latest\n").unwrap();
+    run_in(dir.path(), &["docker-lint", "--report", "gate.sarif"]);
+    let sarif: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("gate.sarif")).unwrap()).unwrap();
+    assert_eq!(sarif["version"], "2.1.0");
+    let run = &sarif["runs"][0];
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    assert_eq!(
+        run["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "Dockerfile"
+    );
+}
+
+#[test]
+fn report_flag_still_writes_when_the_gate_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_in(
+        dir.path(),
+        &[
+            "coverage",
+            "--file",
+            "missing.info",
+            "--report",
+            "gate.json",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(4));
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("gate.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "error");
+    assert_eq!(report["checks"][0]["id"], "coverage");
+}
