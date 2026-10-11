@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use utils::config::Profile;
 use utils::output::ReportFormat;
 
+mod deps;
 mod modules;
 mod report;
 mod utils;
@@ -114,6 +115,11 @@ enum Commands {
         #[arg(long)]
         offline: bool,
     },
+    /// Inspect the dependency graph read from the project's lockfiles
+    Deps {
+        #[command(subcommand)]
+        action: DepsAction,
+    },
     /// Manage offline vulnerability data (OSV snapshots used by `audit`)
     Db {
         #[command(subcommand)]
@@ -178,10 +184,14 @@ enum Commands {
     Run,
     /// Validates .greengate.toml and prints all resolved configuration values
     CheckConfig,
-    /// Generates a CycloneDX 1.5 SBOM from the project's lock file.
+    /// Generates a CycloneDX 1.5 SBOM from the project's dependency files.
     /// Use --attest to sign with Sigstore keyless signing (requires cosign in PATH).
     /// Use --verify to check an existing SBOM against a cosign bundle.
     Sbom {
+        /// Build the SBOM from this dependency file only, instead of every one
+        /// found under the current directory
+        #[arg(long, value_name = "FILE")]
+        lockfile: Option<String>,
         /// Write SBOM to a file instead of stdout (default when --attest is set: sbom.json)
         #[arg(short, long)]
         output: Option<String>,
@@ -328,6 +338,28 @@ enum Commands {
         /// Output format
         #[arg(long, default_value = "text")]
         format: ReportFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum DepsAction {
+    /// List every package in every dependency file under a directory
+    List {
+        /// Directory to search (default: current directory)
+        #[arg(long, default_value = ".")]
+        path: std::path::PathBuf,
+        /// Output format
+        #[arg(long, default_value = "text")]
+        format: report::Format,
+    },
+    /// Show how a package ends up in the project: the chain from a direct
+    /// dependency to it
+    Why {
+        /// Package name, optionally with @version
+        package: String,
+        /// Directory to search (default: current directory)
+        #[arg(long, default_value = ".")]
+        path: std::path::PathBuf,
     },
 }
 
@@ -599,6 +631,14 @@ fn run() -> anyhow::Result<ExitCode> {
         Commands::InstallHooks { force } => {
             modules::hooks::run_install_hooks(force)?;
         }
+        Commands::Deps { action } => match action {
+            DepsAction::List { path, format } => {
+                modules::deps_cmd::run_list(&path, &cfg.deps.exclude_patterns, format)?
+            }
+            DepsAction::Why { package, path } => {
+                modules::deps_cmd::run_why(&path, &cfg.deps.exclude_patterns, &package)?
+            }
+        },
         Commands::Db { action } => match action {
             DbAction::Update { ecosystems, all } => {
                 let ecosystems: Vec<String> = if all {
@@ -607,7 +647,10 @@ fn run() -> anyhow::Result<ExitCode> {
                         .map(|e| e.to_string())
                         .collect()
                 } else if ecosystems.is_empty() {
-                    let found = modules::audit::project_ecosystems(std::path::Path::new("."));
+                    let found = modules::audit::project_ecosystems(
+                        std::path::Path::new("."),
+                        &cfg.deps.exclude_patterns,
+                    );
                     anyhow::ensure!(
                         !found.is_empty(),
                         "No supported dependency files here. Pass --ecosystem or --all."
@@ -623,7 +666,8 @@ fn run() -> anyhow::Result<ExitCode> {
             }
         },
         Commands::Audit { format, offline } => {
-            let result = modules::audit::run_audit(&cfg.audit, format, offline);
+            let result =
+                modules::audit::run_audit(&cfg.audit, &cfg.deps.exclude_patterns, format, offline);
             if format == report::Format::Json
                 && let Ok(report) = &result
             {
@@ -707,6 +751,7 @@ fn run() -> anyhow::Result<ExitCode> {
         }
         Commands::Sbom {
             output,
+            lockfile,
             attest,
             bundle,
             verify,
@@ -730,10 +775,18 @@ fn run() -> anyhow::Result<ExitCode> {
                 // Attest mode: generate SBOM then sign it.
                 let sbom_out = output.unwrap_or_else(|| cfg.sbom.default_output.clone());
                 let bundle_out = bundle.unwrap_or_else(|| format!("{}.bundle.json", sbom_out));
-                modules::sbom::run_sbom(Some(&sbom_out))?;
+                modules::sbom::run_sbom(modules::sbom::SbomOpts {
+                    output: Some(&sbom_out),
+                    lockfile: lockfile.as_deref(),
+                    exclude: &cfg.deps.exclude_patterns,
+                })?;
                 modules::sbom::run_sbom_attest(&sbom_out, &bundle_out)?;
             } else {
-                modules::sbom::run_sbom(output.as_deref())?;
+                modules::sbom::run_sbom(modules::sbom::SbomOpts {
+                    output: output.as_deref(),
+                    lockfile: lockfile.as_deref(),
+                    exclude: &cfg.deps.exclude_patterns,
+                })?;
             }
         }
         Commands::PipInstall { args, pip, no_fail } => {

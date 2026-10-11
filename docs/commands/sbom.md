@@ -1,11 +1,11 @@
 ---
 title: 'sbom — SBOM Generation & Sigstore Attestation'
-description: 'Generate a CycloneDX 1.5 SBOM from your lock file and optionally sign it with Sigstore keyless signing for SLSA compliance and EU Cyber Resilience Act readiness. No private key required.'
+description: 'Generate a CycloneDX 1.5 SBOM — components, dependency graph, scopes and hashes — from your lockfiles, and optionally sign it with Sigstore keyless signing for SLSA compliance and EU Cyber Resilience Act readiness. No private key required.'
 ---
 
 # sbom — SBOM Generation & Sigstore Attestation
 
-Generates a [CycloneDX 1.5](https://cyclonedx.org/specification/overview/) Software Bill of Materials (SBOM) from your project's lock file. No internet access required — the lock file is parsed locally.
+Generates a [CycloneDX 1.5](https://cyclonedx.org/specification/overview/) Software Bill of Materials (SBOM) from your project's dependency files. No internet access required — the lockfiles are parsed locally, and the output validates against the CycloneDX 1.5 JSON Schema.
 
 Optionally signs the SBOM using [Sigstore](https://sigstore.dev) keyless signing (`--attest`) and verifies signed SBOMs (`--verify`). This covers SLSA Level 2+ provenance requirements and the EU Cyber Resilience Act's software provenance requirements.
 
@@ -27,16 +27,33 @@ Options:
   -h, --help                             Print help
 ```
 
-## Supported lock files
+## What goes in
 
-Checked in order — the first one found is used:
+Every supported dependency file under the current directory, or just one
+with `--lockfile <file>`:
 
-| Lock file | Ecosystem | purl format |
-|---|---|---|
-| `Cargo.lock` | crates.io | `pkg:cargo/<name>@<version>` |
-| `package-lock.json` | npm | `pkg:npm/<name>@<version>` |
-| `requirements.txt` | PyPI | `pkg:pypi/<name>@<version>` |
-| `go.sum` | Go | `pkg:golang/<module>@<version>` |
+| Ecosystem | Dependency files |
+|---|---|
+| Node.js | `package-lock.json` / `npm-shrinkwrap.json` (v1–v3), `yarn.lock` (Yarn 1 and Berry), `pnpm-lock.yaml` (v5–v9), `bun.lock` |
+| Python | `uv.lock`, `poetry.lock`, `pylock.toml` (PEP 751), `requirements.txt` (`==` pins) |
+| Rust | `Cargo.lock` |
+| Go | `go.mod` (Go 1.17+, with `replace` directives), else `go.sum` |
+
+Two lockfiles for one ecosystem in one directory are an error — an SBOM
+states what ships, so greengate will not guess which one is installed. Pick
+one with `--lockfile`, or exclude the other with `[deps] exclude_patterns`.
+
+Each component carries:
+
+| Field | From |
+|---|---|
+| `purl` (also the `bom-ref`) | `pkg:npm/%40scope/name@1.0.0`, `pkg:pypi/…`, `pkg:cargo/…`, `pkg:golang/…`; a `repository_url`, `vcs_url` or `download_url` qualifier when the package does not come from the default registry |
+| `scope` | `required` for runtime, `optional`, or `excluded` for development-only dependencies |
+| `hashes` | the lockfile's integrity value (SRI `sha512-…` or `sha256:…`) |
+
+The `dependencies` section records the graph: which component depends on
+which, with the project itself (`bom-ref: root`) depending on the direct
+dependencies.
 
 ## Examples
 
@@ -46,6 +63,9 @@ greengate sbom
 
 # Write SBOM to a file
 greengate sbom --output sbom.json
+
+# Only one dependency file
+greengate sbom --lockfile frontend/pnpm-lock.yaml --output sbom.json
 
 # Generate and sign (writes sbom.json + sbom.json.bundle.json)
 greengate sbom --attest

@@ -309,7 +309,13 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<Report> {
                 },
                 internal_patterns: opts.internal_packages.clone(),
             };
-            let in_lock = |name: &str| Path::new("node_modules").join(name).is_dir();
+            // "Already vetted" means pinned in the project's lockfile; with no
+            // lockfile, an installed copy in node_modules/ is the fallback.
+            let locked = locked_npm_names();
+            let in_lock = |name: &str| match &locked {
+                Some(names) => names.contains(name),
+                None => Path::new("node_modules").join(name).is_dir(),
+            };
             let reports = slopsquat::guard(
                 Ecosystem::Npm,
                 &names,
@@ -516,6 +522,26 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<Report> {
     }
 
     Ok(report)
+}
+
+/// Package names pinned by the JS lockfiles in the current directory, or
+/// `None` when there is none.
+fn locked_npm_names() -> Option<HashSet<String>> {
+    let mut names = HashSet::new();
+    let mut any = false;
+    for file in [
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lock",
+    ] {
+        if let Ok(lock) = crate::deps::load(Path::new(file)) {
+            any = true;
+            names.extend(lock.dependencies().map(|p| p.name.clone()));
+        }
+    }
+    any.then_some(names)
 }
 
 /// Add lifecycle-script threats to `report`; allowlisted packages warn.

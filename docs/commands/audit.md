@@ -9,16 +9,23 @@ Audits project dependencies for known vulnerabilities by querying the [OSV datab
 
 ## Supported ecosystems
 
-| Ecosystem | Manifest file |
+| Ecosystem | Dependency files |
 |---|---|
+| Node.js | `package-lock.json` / `npm-shrinkwrap.json` (v1–v3), `yarn.lock` (Yarn 1 and Berry), `pnpm-lock.yaml` (v5–v9), `bun.lock` |
+| Python | `uv.lock`, `poetry.lock`, `pylock.toml` (PEP 751), `requirements.txt` (`==` pins) |
 | Rust | `Cargo.lock` |
-| Node.js | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` |
-| Python | `requirements.txt` (only `==` pinned versions) |
-| Go | `go.sum` |
+| Go | `go.mod` (Go 1.17+, with `replace` directives), else `go.sum` |
 
-Maven (`pom.xml`), .NET/NuGet (`*.csproj`, `packages.lock.json`), Ruby
-(`Gemfile.lock`), and Python lockfiles (`Pipfile.lock`, `poetry.lock`, `uv.lock`)
-are not currently supported.
+Every package in the lockfile is audited, including nested copies
+(`node_modules/a/node_modules/b`) and transitive dependencies. Git, URL and
+local-path dependencies have no registry version for OSV to match and are
+listed but not audited. Maven (`pom.xml`), .NET/NuGet, Ruby (`Gemfile.lock`),
+`Pipfile.lock` and the binary `bun.lockb` are not supported.
+
+Two lockfiles for one ecosystem in one directory (say `package-lock.json`
+beside `yarn.lock`) are both audited, with a warning that it is ambiguous
+which one is installed. Skip dependency files — test fixtures, vendored
+examples — with `[deps] exclude_patterns`.
 
 OSV batch responses are cached for 24 hours.
 
@@ -50,7 +57,8 @@ is never reported as a pass. Causes:
 - OSV truncated a package's advisory list (paginated response)
 - A dependency file could not be read
 - `requirements.txt` lines that are not `==` pinned, `-r` includes, and
-  editable (`-e`) installs — these name packages whose versions are unknown
+  editable (`-e`) installs, a `pylock.toml` entry without a version, and a
+  binary `bun.lockb` — these name packages whose versions are unknown
 
 Every incomplete check is listed with its reason. Findings still win: a run
 that found vulnerabilities exits `1` even if some checks were incomplete.

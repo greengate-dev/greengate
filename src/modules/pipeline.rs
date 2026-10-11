@@ -165,6 +165,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
 
         "audit" => crate::modules::audit::run_audit(
             &cfg.audit,
+            &cfg.deps.exclude_patterns,
             crate::report::Format::Text,
             args.contains(&"--offline"),
         ),
@@ -250,7 +251,12 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
 
         "sbom" => {
             let output = flag_value(args, "--output").map(str::to_string);
-            crate::modules::sbom::run_sbom(output.as_deref()).map(|()| Report::new("sbom"))
+            crate::modules::sbom::run_sbom(crate::modules::sbom::SbomOpts {
+                output: output.as_deref(),
+                lockfile: flag_value(args, "--lockfile"),
+                exclude: &cfg.deps.exclude_patterns,
+            })
+            .map(|()| Report::new("sbom"))
         }
 
         "ci-lint" => {

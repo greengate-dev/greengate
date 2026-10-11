@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Global `--report <path>` on every gate: SARIF 2.1.0 for `*.sarif`, otherwise `greengate.report/v1` JSON. Written even when the gate errors. Incomplete checks appear in SARIF as tool-execution notifications with `executionSuccessful: false`. JSON Schema published at `/schema/report-v1.json`.
 - `GREENGATE_OSV_URL` to point `audit` at an OSV mirror.
 - Offline vulnerability data: `greengate db update` downloads and indexes OSV snapshots (ETag-revalidated); `greengate db status` shows their age. `audit --offline` / `[audit] source = "offline"` match locally; the default `source = "auto"` falls back to a snapshot no older than `max_db_age_hours` (24) when the API fails. Matching follows the OSV schema with SemVer and PEP 440 ordering, and returned the same 464 findings as the API on 11 real npm, pnpm, Cargo, Go and PyPI lockfiles.
+- One dependency model for `audit`, `sbom`, `cargo-add` and `watch-install`, with new formats: `bun.lock`, `uv.lock`, `poetry.lock`, `pylock.toml` (PEP 751), `npm-shrinkwrap.json`, `package-lock.json` v1, Yarn Berry, pnpm v5–v9 and `go.mod` (with `replace`). It records direct vs transitive, dev/optional scope, source (registry, git, URL, path), integrity and workspace members. Checked against 17 real lockfiles (5,650 packages): every count matches, no orphaned packages.
+- `greengate deps list` and `greengate deps why <pkg>`.
+- `[deps] exclude_patterns` to skip dependency files such as test fixtures.
+- `sbom` covers every dependency file (or `--lockfile <file>`), with the dependency graph, scopes (dev → `excluded`), hashes, and `repository_url`/`vcs_url`/`download_url` purl qualifiers.
 - Checks in the report can carry a `source` — e.g. which snapshot answered and how old it was.
 - `GREENGATE_CACHE_DIR` relocates greengate's cache.
 
@@ -26,8 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Action: new `report` input and `status`, `incomplete` and `report-path` outputs; the existing `findings` output, which was never set, now is. Inputs reach the script through environment variables instead of `${{ }}` interpolation.
 - Telemetry records `greengate_command_*` metrics for every gate, not only `audit`, `coverage` and `ci-lint`.
 - `audit` only reads files whose names it supports, rather than every file in the repository.
+- **Breaking:** `sbom` stops with an error when one directory holds two lockfiles for the same ecosystem, instead of using whichever it found first.
+- PyPI package names are normalized (PEP 503, lowercase) in audit queries and SBOM purls.
 
 ### Fixed
+- `audit` never checked scoped packages in pnpm lockfiles that quote their keys (`'@babel/core@7.29.0':`, as pnpm 9 writes them): the name was read as `'`. In one real lockfile that was 502 of 781 packages.
+- `audit` queried nested npm copies (`node_modules/a/node_modules/b`) under the name `a/node_modules/b`, so advisories for them never matched.
+- `sbom` wrote a `serialNumber` that is not a UUID (`urn:uuid:greengate-<timestamp>`), failing the CycloneDX schema; it also read only the first lockfile in the current directory.
 - `image-scan` found no layers in archives written by Docker 25+ (OCI layout), scanned nothing, and passed. Layers are now read from `manifest.json`, which both layouts include.
 - `cargo-add` matched build scripts by name prefix, so adding `serde` could scan `serde_json`'s `build.rs`, or another cached version; it now scans exactly the added `name-version`, and honours a custom `build = "…"` path.
 - `image-scan --no-fail` still exited `1` on findings.

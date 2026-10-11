@@ -82,6 +82,7 @@ export default defineConfig({
           { text: 'image-scan', link: '/commands/image-scan' },
           { text: 'audit', link: '/commands/audit' },
           { text: 'db', link: '/commands/db' },
+          { text: 'deps', link: '/commands/deps' },
           { text: 'sbom', link: '/commands/sbom' },
         ],
       },

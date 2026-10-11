@@ -36,6 +36,19 @@ pub struct Config {
     pub triage: TriageConfig,
     #[serde(default)]
     pub policy: PolicyConfig,
+    #[serde(default)]
+    pub deps: DepsConfig,
+}
+
+/// Dependency discovery, under `[deps]`: shared by `audit`, `sbom` and
+/// `greengate deps`.
+#[derive(Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct DepsConfig {
+    /// Globs (relative to the scanned directory) of dependency files to
+    /// ignore, e.g. test fixtures: `["tests/fixtures/**"]`.
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
 }
 
 /// Gate-wide policy loaded from `.greengate.toml` under `[policy]`.

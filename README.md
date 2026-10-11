@@ -91,8 +91,9 @@ Commands are grouped by concern. Each runs standalone or as a step in `greengate
 
 | Command | What it does |
 |---|---|
-| `greengate audit` | Query the [OSV database](https://osv.dev) for known vulnerabilities in your project's dependencies. Recursively discovers `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, pinned `requirements.txt`, and `go.sum`. Works offline from snapshots downloaded by `greengate db update`, and falls back to them when the API is down. |
-| `greengate sbom` | Generate a [CycloneDX 1.5](https://cyclonedx.org) SBOM from the project's lock file. |
+| `greengate audit` | Query the [OSV database](https://osv.dev) for known vulnerabilities in your project's dependencies. Recursively discovers npm, Yarn, pnpm and Bun lockfiles, `uv.lock`, `poetry.lock`, `pylock.toml`, pinned `requirements.txt`, `Cargo.lock`, and `go.mod`/`go.sum`. Works offline from snapshots downloaded by `greengate db update`, and falls back to them when the API is down. |
+| `greengate sbom` | Generate a [CycloneDX 1.5](https://cyclonedx.org) SBOM from the project's dependency files, with the dependency graph, scopes and hashes. |
+| `greengate deps list` / `deps why <pkg>` | Show every package greengate reads from the lockfiles, and the chain that pulls a package in. |
 | `greengate sbom --attest` | Generate a SBOM and sign it with [Sigstore](https://sigstore.dev) keyless signing. Produces a bundle file anchored in the Rekor public transparency log. No private key required. |
 | `greengate sbom --verify <file>` | Verify a SBOM against a cosign bundle. Fails if the signature is invalid or the bundle is missing from the Rekor log. |
 
@@ -165,17 +166,17 @@ TIA walks the import graph using AST parsing to find which test files transitive
 
 ### Dependency audit (OSV)
 
-| Ecosystem | Lock file |
+| Ecosystem | Dependency files |
 |---|---|
-| Node.js (npm) | `package-lock.json` |
-| Node.js (Yarn) | `yarn.lock` |
-| Node.js (pnpm) | `pnpm-lock.yaml` |
+| Node.js | `package-lock.json` / `npm-shrinkwrap.json` (v1–v3), `yarn.lock` (Yarn 1 and Berry), `pnpm-lock.yaml` (v5–v9), `bun.lock` |
+| Python | `uv.lock`, `poetry.lock`, `pylock.toml` (PEP 751), `requirements.txt` (`==` pins) |
 | Rust | `Cargo.lock` |
-| Python | `requirements.txt` |
-| Go | `go.sum` |
+| Go | `go.mod` (Go 1.17+, with `replace` directives), else `go.sum` |
 
-Maven, .NET/NuGet, Ruby, and Python lockfiles such as `Pipfile.lock`,
-`poetry.lock`, and `uv.lock` are not currently supported by `audit`.
+`audit`, `sbom` and `greengate deps` read these through one dependency model,
+so they agree on what is direct, transitive, dev-only, and where each package
+came from. Maven, .NET/NuGet, Ruby, `Pipfile.lock` and the binary `bun.lockb`
+are not supported.
 
 ### Supply chain wrapping
 

@@ -2109,3 +2109,168 @@ fn db_update_needs_dependency_files_or_an_ecosystem() {
     assert_eq!(out.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&out.stderr).contains("--ecosystem"));
 }
+
+// ── Shared dependency model: audit, sbom, deps ────────────────────────────────
+
+fn fixture_dir(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/deps")
+        .join(name)
+}
+
+/// Copy a fixture directory's files into a fresh temp dir.
+fn copy_fixture(name: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(fixture_dir(name)).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    dir
+}
+
+/// The (name, version) pairs a fake OSV was asked about.
+type Queried = std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
+/// A fake OSV that answers every batch with "no advisories" for each query
+/// and records the (name, version) pairs it was asked about.
+fn recording_osv() -> (String, Queried) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut len = 0;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; len];
+            reader.read_exact(&mut body).unwrap();
+            let req: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let queries = req["queries"].as_array().cloned().unwrap_or_default();
+            for q in &queries {
+                log.lock().unwrap().push((
+                    q["package"]["name"].as_str().unwrap_or("").to_string(),
+                    q["version"].as_str().unwrap_or("").to_string(),
+                ));
+            }
+            let results: Vec<serde_json::Value> =
+                queries.iter().map(|_| serde_json::json!({})).collect();
+            let resp = serde_json::json!({ "results": results }).to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}",
+                resp.len()
+            );
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+#[test]
+fn audit_queries_nested_npm_copies_and_quoted_scoped_pnpm_names() {
+    for fixture in ["npm", "pnpm", "bun", "yarn1"] {
+        let dir = copy_fixture(fixture);
+        let (osv, seen) = recording_osv();
+        let (code, report) = audit_json(dir.path(), &osv, &[]);
+        assert_eq!(code, Some(0), "{fixture}: {report}");
+        let seen = seen.lock().unwrap().clone();
+        for (name, version) in [
+            ("ms", "2.0.0"),
+            ("ms", "2.1.3"),
+            ("@sindresorhus/is", "4.6.0"),
+        ] {
+            assert!(
+                seen.contains(&(name.to_string(), version.to_string())),
+                "{fixture}: {name}@{version} was never queried; queried {seen:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn audit_reads_python_lockfiles() {
+    for fixture in ["uv", "poetry", "pylock"] {
+        let dir = copy_fixture(fixture);
+        let (osv, seen) = recording_osv();
+        let (code, report) = audit_json(dir.path(), &osv, &[]);
+        assert_eq!(code, Some(0), "{fixture}: {report}");
+        assert!(
+            seen.lock()
+                .unwrap()
+                .contains(&("requests".to_string(), "2.31.0".to_string())),
+            "{fixture}"
+        );
+    }
+}
+
+#[test]
+fn sbom_from_bun_has_the_graph() {
+    let dir = copy_fixture("bun");
+    let out = run_in(dir.path(), &["sbom", "--output", "bom.json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let bom: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("bom.json")).unwrap()).unwrap();
+    assert_eq!(bom["components"].as_array().unwrap().len(), 5);
+    let serial = bom["serialNumber"].as_str().unwrap();
+    assert!(
+        serial.starts_with("urn:uuid:") && serial.len() == 45,
+        "{serial}"
+    );
+    let debug = bom["dependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["ref"] == "pkg:npm/debug@2.6.9")
+        .unwrap();
+    assert_eq!(debug["dependsOn"], serde_json::json!(["pkg:npm/ms@2.0.0"]));
+}
+
+#[test]
+fn sbom_refuses_to_guess_between_lockfiles() {
+    let dir = copy_fixture("npm");
+    std::fs::copy(
+        fixture_dir("yarn1").join("yarn.lock"),
+        dir.path().join("yarn.lock"),
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["sbom"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--lockfile"));
+    let out = run_in(
+        dir.path(),
+        &["sbom", "--lockfile", "yarn.lock", "--output", "b.json"],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn deps_why_explains_a_transitive_package() {
+    let dir = copy_fixture("pnpm");
+    let out = run_in(dir.path(), &["deps", "why", "ms@2.0.0"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("fixture → debug@2.6.9 → ms@2.0.0"),
+        "{stdout}"
+    );
+    let out = run_in(dir.path(), &["deps", "why", "left-pad"]);
+    assert_eq!(out.status.code(), Some(4));
+}

@@ -18,10 +18,11 @@
 //! is flagged for manual review (common indicator of over-bundled or suspicious
 //! crates).
 
+use crate::deps::Source;
 use crate::report::{Check, Finding, Report, Severity};
 use crate::utils::terminal;
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -221,8 +222,8 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<Report> {
             .iter()
             .map(|k| k.split('@').next().unwrap_or(k).to_string())
             .collect();
-        let lock = parse_cargo_lock("Cargo.lock");
-        let in_lock = |name: &str| lock.iter().any(|e| e.split(' ').next() == Some(name));
+        let lock = lock_crates("Cargo.lock");
+        let in_lock = |name: &str| lock.keys().any(|e| e.split(' ').next() == Some(name));
         let reports = slopsquat::guard(
             Ecosystem::Cargo,
             &names,
@@ -242,7 +243,7 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<Report> {
     }
 
     // ── Pre-add Cargo.lock snapshot ───────────────────────────────────────────
-    let pre_lock_crates = parse_cargo_lock("Cargo.lock");
+    let pre_lock_crates: HashSet<String> = lock_crates("Cargo.lock").into_keys().collect();
 
     // ── Run cargo add ─────────────────────────────────────────────────────────
     let status = std::process::Command::new("cargo") // greengate: ignore — intentionally wrapping cargo to intercept the add
@@ -283,7 +284,8 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<Report> {
     }
 
     // ── Layer 3: Dependency explosion guard ───────────────────────────────────
-    let post_lock_crates = parse_cargo_lock("Cargo.lock");
+    let post_lock = lock_crates("Cargo.lock");
+    let post_lock_crates: HashSet<String> = post_lock.keys().cloned().collect();
     let new_crates: Vec<String> = post_lock_crates
         .difference(&pre_lock_crates)
         .cloned()
@@ -305,7 +307,6 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<Report> {
     let registry_src = locate_cargo_registry_src();
     let mut build_threats: Vec<BuildRsThreat> = Vec::new();
 
-    let sources = lock_sources("Cargo.lock");
     let mut not_scanned: Vec<String> = Vec::new();
     for crate_id in &new_crates {
         // Lock entries are "name version", e.g. "serde 1.0.197".
@@ -313,10 +314,10 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<Report> {
         let (Some(name_only), Some(version)) = (parts.next(), parts.next()) else {
             continue;
         };
-        let build_rs = match sources.get(crate_id).map(Option::as_deref) {
-            // No `source`: a path or workspace crate — the project's own code.
-            Some(None) => continue,
-            Some(Some(src)) if src.starts_with("registry+") || src.starts_with("sparse+") => {
+        let build_rs = match post_lock.get(crate_id) {
+            // The project's own code (a workspace or path crate).
+            Some((_, true)) => continue,
+            Some((Source::Registry { .. }, _)) => {
                 match find_build_script(&registry_src, name_only, version) {
                     CrateSource::BuildScript(path) => path,
                     CrateSource::NoBuildScript => continue,
@@ -326,7 +327,7 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<Report> {
                     }
                 }
             }
-            Some(Some(_)) => {
+            Some(_) => {
                 not_scanned.push(format!("{crate_id} (git/other source)"));
                 continue;
             }
@@ -501,35 +502,17 @@ fn check_typosquat(krate: &str) -> Option<String> {
     None
 }
 
-/// Parse crate names+versions from a Cargo.lock file (TOML v3 format).
-/// Returns a set of "name version" strings, e.g. `{"serde 1.0.197"}`.
-fn parse_cargo_lock(path: &str) -> HashSet<String> {
-    let mut set = HashSet::new();
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return set;
-    };
-
-    // Cargo.lock v3 has `[[package]]` sections with `name = "..."` and `version = "..."`.
-    let mut current_name: Option<String> = None;
-    let mut current_version: Option<String> = None;
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line == "[[package]]" {
-            if let (Some(n), Some(v)) = (current_name.take(), current_version.take()) {
-                set.insert(format!("{} {}", n, v));
-            }
-        } else if let Some(rest) = line.strip_prefix("name = ") {
-            current_name = Some(rest.trim_matches('"').to_string());
-        } else if let Some(rest) = line.strip_prefix("version = ") {
-            current_version = Some(rest.trim_matches('"').to_string());
-        }
-    }
-    // Flush last package
-    if let (Some(n), Some(v)) = (current_name, current_version) {
-        set.insert(format!("{} {}", n, v));
-    }
-    set
+/// Every package in a `Cargo.lock`, as `"name version"` → (source, whether
+/// it is the project's own code). Empty when there is no readable lockfile.
+fn lock_crates(path: &str) -> HashMap<String, (Source, bool)> {
+    crate::deps::load(Path::new(path))
+        .map(|lock| {
+            lock.packages
+                .into_iter()
+                .map(|p| (format!("{} {}", p.name, p.version), (p.source, p.member)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Locate the cargo registry source cache directory.
@@ -596,28 +579,6 @@ fn build_script_path(crate_dir: &Path) -> Option<PathBuf> {
         Some(toml::Value::String(path)) => Some(crate_dir.join(path)),
         _ => Some(crate_dir.join("build.rs")).filter(|p| p.is_file()),
     }
-}
-
-/// Map each `"name version"` in a Cargo.lock to its `source`, if any.
-fn lock_sources(path: &str) -> std::collections::HashMap<String, Option<String>> {
-    let table = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|c| c.parse::<toml::Table>().ok());
-    let packages = table
-        .as_ref()
-        .and_then(|t| t.get("package"))
-        .and_then(|p| p.as_array())
-        .cloned()
-        .unwrap_or_default();
-    packages
-        .iter()
-        .filter_map(|p| {
-            let name = p.get("name")?.as_str()?;
-            let version = p.get("version")?.as_str()?;
-            let source = p.get("source").and_then(|s| s.as_str()).map(str::to_string);
-            Some((format!("{name} {version}"), source))
-        })
-        .collect()
 }
 
 fn scan_build_rs_signals(source: &str) -> Vec<String> {
@@ -764,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_cargo_lock_basic() {
+    fn lock_crates_reads_names_versions_and_sources() {
         let lock = r#"
 [[package]]
 name = "serde"
@@ -776,12 +737,15 @@ name = "tokio"
 version = "1.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 "#;
-        let tmp = std::env::temp_dir().join("greengate_test_Cargo.lock");
-        std::fs::write(&tmp, lock).unwrap();
-        let set = parse_cargo_lock(tmp.to_str().unwrap());
-        assert!(set.contains("serde 1.0.197"));
-        assert!(set.contains("tokio 1.37.0"));
-        std::fs::remove_file(&tmp).ok();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.lock");
+        std::fs::write(&path, lock).unwrap();
+        let set = lock_crates(path.to_str().unwrap());
+        assert!(matches!(
+            set.get("serde 1.0.197"),
+            Some((Source::Registry { .. }, false))
+        ));
+        assert!(set.contains_key("tokio 1.37.0"));
     }
 
     #[test]

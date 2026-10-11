@@ -86,6 +86,11 @@ complexity_budget = 0
 # still reports the run as incomplete. See the exit codes reference.
 on_incomplete = "fail"
 
+[deps]
+# Dependency files to ignore (globs relative to the scanned directory) — used
+# by audit, sbom and `greengate deps`. Typical: test fixtures, examples.
+exclude_patterns = ["tests/fixtures/**"]
+
 [audit]
 # GHSA/CVE advisory IDs to suppress — use for known-acceptable transitive
 # dependency vulnerabilities that cannot be fixed by upgrading a direct dep.

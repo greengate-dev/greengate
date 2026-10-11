@@ -35,6 +35,11 @@ entropy = true
 entropy_threshold = 4.5
 entropy_min_length = 20
 
+[deps]
+# Parser fixtures pin old, deliberately vulnerable versions; they are not
+# greengate's dependencies.
+exclude_patterns = ["tests/fixtures/**", "bench/**"]
+
 [sast]
 # Disable rules that generate expected false positives in greengate's own source:
 # - RustUnwrap/RustExpect: used on compiled regexes and in test helpers where
