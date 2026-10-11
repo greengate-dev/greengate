@@ -1,6 +1,6 @@
 ---
 title: 'install — Inspect Before Any Package Code Runs'
-description: 'Install npm, pnpm, pip and Cargo dependencies with no package code running before greengate has checked the complete tree: plan, fetch with scripts off, inspect every install script, then run approved scripts in a bubblewrap sandbox with no network, confined writes and masked credentials.'
+description: 'Install npm, pnpm, Yarn, Bun, pip, uv and Cargo dependencies with no package code running before greengate has checked the complete tree: plan, fetch with scripts off, inspect every install script, then run approved scripts in a bubblewrap sandbox with no network, confined writes and masked credentials.'
 ---
 
 # install — Inspect Before Any Package Code Runs
@@ -12,13 +12,17 @@ transitive, including `npm ci` installs that name no packages.
 ```bash
 greengate install npm ci
 greengate install pnpm install --frozen-lockfile
+greengate install yarn install
+greengate install bun install
 greengate install pip install -r requirements.txt     # --pip venv/bin/pip
+greengate install uv sync
 greengate install cargo add serde
 greengate install --plan npm install some-new-package   # look, change nothing
 ```
 
-npm, pnpm, pip and Cargo are supported. For Yarn and Bun, use
-[`watch-install`](watch-install.md) for now.
+`watch-install`, `pip-install` and `cargo-add` are deprecated and run
+through `greengate install` when they wrap one of these managers; they will
+be removed in 0.5.
 
 ## Per package manager
 
@@ -26,7 +30,11 @@ npm, pnpm, pip and Cargo are supported. For Yarn and Bun, use
 |---|---|---|---|
 | **npm** | `npm install --package-lock-only --ignore-scripts` in a scratch copy | `npm ci --ignore-scripts` | each approved package's install scripts via `npm rebuild <name>@<version>`, sandboxed |
 | **pnpm** | `pnpm install/add --lockfile-only --ignore-scripts` in a scratch copy | `pnpm install --frozen-lockfile --ignore-scripts` | only builds pnpm itself allows (`onlyBuiltDependencies`; pnpm 10 builds nothing by default), via `pnpm rebuild <name>`, sandboxed: the project is writable for pnpm's own state, but the package store and `.git` are read-only except the running package |
+| **Yarn 1** | an `--ignore-scripts` install in a scratch copy (Yarn 1 has no lockfile-only mode) | `yarn install --frozen-lockfile --ignore-scripts` | like npm: each package via `npm rebuild <name>@<version>`, sandboxed |
+| **Yarn Berry** | `yarn install --mode=update-lockfile` in a scratch copy | `yarn install --immutable --mode=skip-build`, which unplugs the packages that need building | Berry builds every package in one step, so isolation keeps builds from the rest of the system but not from each other. A suspicious-looking build is therefore held back even when isolated — allowlist it, or set `dependenciesMeta.<name>.built: false` so Yarn never builds it — and then no builds run, since Berry would build it too. |
+| **Bun** | `bun install/add --lockfile-only` in a scratch copy | `bun install --frozen-lockfile --ignore-scripts` | only packages Bun trusts (`trustedDependencies` and its built-in list; `bun pm untrusted` names the rest), each via `npm rebuild`, sandboxed |
 | **pip** | `pip install --dry-run --report` — **in the sandbox**, because resolving an sdist runs its build backend | greengate downloads every artifact itself and checks its sha256 against the index | sdists are built into wheels in the sandbox (with network, for build requirements; writes confined to a scratch directory); then only wheels are installed, which runs no package code |
+| **uv** | `uv lock` / `uv add --no-sync` — **in the sandbox**, because locking runs sdist build backends; manifests are backed up | `uv sync --frozen --no-install-project` in the sandbox (uv checks every hash; sdist builds run there) | new `.pth` startup files are checked before any Python starts and suspicious ones quarantined; then the project itself is installed |
 | **Cargo** | `cargo add` / `update` (manifests are backed up) | `cargo fetch --locked` (cargo checks every checksum) | nothing: build scripts and proc-macros run at `cargo build`, after the gate. New crates' build scripts and proc-macro sources are inspected; networking, shell invocations or encoded payloads block (`allow_cargo_crates` to allowlist). A blocked plan restores `Cargo.toml` and `Cargo.lock`. |
 
 pip wheels are also inspected for `.pth` files with executable lines — they
@@ -99,7 +107,7 @@ Plus every `deps check` rule from the plan phase.
 ## Options
 
 ```
-greengate install [--plan] [--isolate auto|bwrap|none] [--no-fail] [--pip PIP] <npm|pnpm|pip|cargo> <COMMAND> [ARGS…]
+greengate install [--plan] [--isolate auto|bwrap|none] [--no-fail] [--pip PIP] <npm|pnpm|yarn|bun|pip|uv|cargo> <COMMAND> [ARGS…]
 ```
 
 ```toml

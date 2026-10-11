@@ -3,7 +3,7 @@
 //! (`cargo add` / `update`), apply policy, `cargo fetch --locked`, and inspect
 //! every new crate's build script and proc-macro source before anyone builds.
 
-use super::{InstallOpts, Scratch, package_finding, plan_policy, print_install};
+use super::{Backup, InstallOpts, Scratch, package_finding, plan_policy, print_install};
 use crate::deps::{self, Source};
 use crate::modules::cargo_audit::{
     self, CrateSource, extract_crate_names, find_build_script, locate_cargo_registry_src,
@@ -58,38 +58,6 @@ fn manifests(project: &Path) -> Vec<PathBuf> {
     out
 }
 
-struct Backup(Vec<(PathBuf, Option<Vec<u8>>)>);
-
-impl Backup {
-    fn take(project: &Path) -> Backup {
-        let mut files: Vec<(PathBuf, Option<Vec<u8>>)> = manifests(project)
-            .into_iter()
-            .map(|p| {
-                let b = std::fs::read(&p).ok();
-                (p, b)
-            })
-            .collect();
-        // A lockfile that does not exist yet must not exist after a restore.
-        let lock = project.join("Cargo.lock");
-        if !lock.exists() {
-            files.push((lock, None));
-        }
-        Backup(files)
-    }
-
-    fn restore(&self) -> Result<()> {
-        for (path, bytes) in &self.0 {
-            match bytes {
-                Some(b) => std::fs::write(path, b)?,
-                None => {
-                    let _ = std::fs::remove_file(path);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
 /// `<registry src>/<index>/<name>-<version>` for a fetched registry crate.
 fn crate_dir(registry_src: &Path, name: &str, version: &str) -> Option<PathBuf> {
     std::fs::read_dir(registry_src)
@@ -142,7 +110,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
 
     // ── 1. Plan ──────────────────────────────────────────────────────────────
     terminal::info("Plan: updating the lockfile (no crate code runs)...");
-    let backup = Backup::take(&project);
+    let backup = Backup::take(manifests(&project), &[project.join("Cargo.lock")]);
     let current = deps::load(&project.join("Cargo.lock")).ok();
     let plan_cmd: Vec<String> = match sub.as_str() {
         "fetch" if current.is_some() => Vec::new(),

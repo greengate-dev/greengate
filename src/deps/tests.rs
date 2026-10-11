@@ -447,3 +447,24 @@ fn private_index_is_recorded_as_the_registry() {
         }
     );
 }
+
+#[test]
+fn bun_local_tarballs_are_path_sources() {
+    let lock = inline(
+        "bun.lock",
+        r#"{"lockfileVersion": 1, "workspaces": {"": {"name": "app", "dependencies": {"a": "file:a-1.0.0.tgz", "b": "file:./b-1.0.0.tgz"}}},
+            "packages": {"a": ["a@a-1.0.0.tgz", {}, "sha512-x"], "b": ["b@./b-1.0.0.tgz", {}, "sha512-y"], "c": ["c@2.0.0", "", {}, "sha512-z"]}}"#,
+        &[],
+    );
+    let src = |n: &str| {
+        lock.packages
+            .iter()
+            .find(|p| p.name == n)
+            .unwrap()
+            .source
+            .clone()
+    };
+    assert!(matches!(src("a"), Source::Path { .. }));
+    assert!(matches!(src("b"), Source::Path { .. }));
+    assert_eq!(src("c"), Source::registry());
+}

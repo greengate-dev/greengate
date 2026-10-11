@@ -18,13 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `greengate deps check` (also a `deps-check` pipeline step): release-risk policy for packages new or upgraded since a base revision — release younger than a cooldown (24 h), a new install script, provenance regression (npm attestations, PEP 740, crates.io trusted publishing), a publisher who never published the package before, yanked/deprecated releases — plus offline lockfile policy on every package: `[[supply_chain.registries]]` binding, dependency confusion from `internal_packages`, unpinned git / URL / path sources, missing integrity. Each signal is `off`/`warn`/`fail` under `[supply_chain.release]` and `[supply_chain.sources]`; `--profile strict` turns warnings into failures. A cooldown hit that fixes an advisory in the replaced version is a warning, not a block. Registry metadata is cached for 6 hours.
 - `[deps] exclude_patterns` to skip dependency files such as test fixtures.
 - `sbom` covers every dependency file (or `--lockfile <file>`), with the dependency graph, scopes (dev → `excluded`), hashes, and `repository_url`/`vcs_url`/`download_url` purl qualifiers.
-- `greengate install <npm|pnpm|pip|cargo> …`: no package code runs before the complete tree is checked. It plans the install without running code and applies `deps check` policy, fetches with scripts off, inspects every install script, build script and `.pth` file, then runs approved scripts one package at a time. `--plan` stops after inspection and changes nothing.
+- `greengate install <npm|pnpm|yarn|bun|pip|uv|cargo> …`: no package code runs before the complete tree is checked. It plans the install without running code and applies `deps check` policy, fetches with scripts off, inspects every install script, build script and `.pth` file, then runs approved scripts one package at a time. `--plan` stops after inspection and changes nothing.
   - With bubblewrap, each script runs with the system read-only except its own package, no network (unless listed in `script_network`) and credential files masked. Suspicious-looking scripts run there with a warning instead of being blocked, so ordinary installers such as esbuild's still work; a write outside the package is refused and reported.
   - Without isolation, suspicious scripts are held back unless allowlisted, and writes outside a package are caught by before/after comparison and a filesystem watcher. `require_isolation = true` refuses to run scripts without a sandbox.
   - Credential-like environment variables (`*_TOKEN`, `*_SECRET`, `AWS_*`, …) are removed from install scripts; keep specific ones with `env_allow`.
   - pnpm: only builds pnpm itself allows (`onlyBuiltDependencies`) run.
   - pip: planning runs in the sandbox, because resolving an sdist runs its build backend. greengate downloads and sha256-checks every artifact, builds sdists in the sandbox and installs wheels only; a wheel whose `.pth` startup code looks suspicious is blocked.
   - Cargo: new crates' build scripts and proc-macros are inspected before anything builds; a blocked plan restores `Cargo.toml` and `Cargo.lock`.
+  - Yarn 1 and Bun: npm-shaped trees, scripts run per package; Bun's trust list (`trustedDependencies`) is respected.
+  - Yarn Berry: builds run together in one sandboxed step, so a suspicious-looking build is held back even when isolated (allowlist it or set `dependenciesMeta.<name>.built: false`).
+  - uv: locking and `uv sync` run in the sandbox because both run sdist build backends; new `.pth` startup files are quarantined before any Python starts if they look suspicious.
 - Checks in the report can carry a `source` — e.g. which snapshot answered and how old it was.
 - `GREENGATE_CACHE_DIR` relocates greengate's cache.
 
@@ -38,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Action: new `report` input and `status`, `incomplete` and `report-path` outputs; the existing `findings` output, which was never set, now is. Inputs reach the script through environment variables instead of `${{ }}` interpolation.
 - Telemetry records `greengate_command_*` metrics for every gate, not only `audit`, `coverage` and `ci-lint`.
 - `audit` only reads files whose names it supports, rather than every file in the repository.
+- **Breaking:** `watch-install`, `pip-install` and `cargo-add` are deprecated and run through `greengate install` when they wrap npm, pnpm, Yarn, Bun, pip ≥ 22.2 or a Cargo project — install scripts then run sandboxed without network; list packages that need it in `[supply_chain] script_network`. Other commands keep the old behaviour with a notice. All three are removed in 0.5.
 - **Breaking:** `sbom` stops with an error when one directory holds two lockfiles for the same ecosystem, instead of using whichever it found first.
 - PyPI package names are normalized (PEP 503, lowercase) in audit queries and SBOM purls.
 

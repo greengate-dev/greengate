@@ -249,7 +249,7 @@ enum Commands {
     /// has checked the complete tree: plan (resolve + policy), fetch with
     /// scripts off, inspect every install script, then run approved scripts
     /// in a sandbox (bubblewrap: no network, writes confined, credentials
-    /// masked) and verify the result. npm, pnpm, pip and cargo.
+    /// masked) and verify the result. npm, pnpm, yarn, bun, pip, uv and cargo.
     /// Example: greengate install npm ci
     ///          greengate install --plan npm install left-pad
     Install {
@@ -266,7 +266,7 @@ enum Commands {
         /// pip binary for `install pip …` (e.g. a venv's pip)
         #[arg(long, default_value = "pip")]
         pip: String,
-        /// Package manager: npm, pnpm, pip or cargo
+        /// Package manager: npm, pnpm, yarn, bun, pip, uv or cargo
         manager: String,
         /// The install command, e.g. `ci` or `install left-pad`
         #[arg(
@@ -430,6 +430,28 @@ enum DbAction {
         #[arg(long, default_value = "text")]
         format: report::Format,
     },
+}
+
+/// `greengate install` options for a legacy wrapper's command line.
+fn install_opts<'a>(
+    manager: &str,
+    args: Vec<String>,
+    no_fail: bool,
+    pip: String,
+    policy: &'a utils::config::SupplyChainConfig,
+) -> modules::install::InstallOpts<'a> {
+    modules::install::InstallOpts {
+        manager: manager.to_string(),
+        args,
+        plan_only: false,
+        isolate: modules::install::sandbox::IsolateMode::Auto,
+        no_fail,
+        pip,
+        policy,
+        now: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+    }
 }
 
 fn main() -> ExitCode {
@@ -854,6 +876,23 @@ fn run() -> anyhow::Result<ExitCode> {
             }
         }
         Commands::PipInstall { args, pip, no_fail } => {
+            if modules::install::pip_supports_report(&pip) {
+                let mut routed = vec!["install".to_string()];
+                routed.extend(args.iter().filter(|a| *a != "install").cloned());
+                modules::install::deprecation(
+                    "pip-install",
+                    Some(&format!("pip {}", routed.join(" "))),
+                );
+                let result = modules::install::run_install(install_opts(
+                    "pip",
+                    routed,
+                    no_fail,
+                    pip,
+                    &cfg.supply_chain,
+                ));
+                return exit.finish("pip-install", result);
+            }
+            modules::install::deprecation("pip-install", None);
             let result = modules::pip_audit::run_pip_install(modules::pip_audit::PipInstallOpts {
                 pip,
                 args,
@@ -867,6 +906,25 @@ fn run() -> anyhow::Result<ExitCode> {
             return exit.finish("pip-install", result);
         }
         Commands::CargoAdd { args, no_fail } => {
+            // `install cargo` needs a manifest here; without one, the legacy
+            // path reports the same error it always did.
+            if std::path::Path::new("Cargo.toml").is_file() {
+                let mut routed = vec!["add".to_string()];
+                routed.extend(args.iter().cloned());
+                modules::install::deprecation(
+                    "cargo-add",
+                    Some(&format!("cargo {}", routed.join(" "))),
+                );
+                let result = modules::install::run_install(install_opts(
+                    "cargo",
+                    routed,
+                    no_fail,
+                    "pip".into(),
+                    &cfg.supply_chain,
+                ));
+                return exit.finish("cargo-add", result);
+            }
+            modules::install::deprecation("cargo-add", None);
             let result = modules::cargo_audit::run_cargo_add(modules::cargo_audit::CargoAddOpts {
                 args,
                 no_fail,
@@ -918,6 +976,21 @@ fn run() -> anyhow::Result<ExitCode> {
             args,
             no_fail,
         } => {
+            if modules::install::accepts(&package_manager, &args) {
+                modules::install::deprecation(
+                    "watch-install",
+                    Some(&format!("{package_manager} {}", args.join(" "))),
+                );
+                let result = modules::install::run_install(install_opts(
+                    &package_manager,
+                    args,
+                    no_fail || !cfg.supply_chain.block_phantom_scripts,
+                    "pip".into(),
+                    &cfg.supply_chain,
+                ));
+                return exit.finish("watch-install", result);
+            }
+            modules::install::deprecation("watch-install", None);
             let result = modules::watch_install::run_watch_install(
                 modules::watch_install::WatchInstallOpts {
                     package_manager,

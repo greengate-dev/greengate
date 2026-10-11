@@ -19,6 +19,7 @@
 //!
 //! `--plan` stops after phase 4 and changes nothing in the project.
 
+mod bun;
 mod cargo;
 mod inspect;
 mod js;
@@ -26,6 +27,8 @@ mod npm;
 mod pip;
 mod pnpm;
 pub mod sandbox;
+mod uv;
+mod yarn;
 
 use crate::deps::Lockfile;
 use crate::modules::{deps_check, slopsquat};
@@ -67,6 +70,42 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Copies of files a plan step edits in place, restored when the install
+/// is halted or only planned.
+struct Backup(Vec<(PathBuf, Option<Vec<u8>>)>);
+
+impl Backup {
+    /// Back up `files`; each of `must_not_exist` that is absent now is
+    /// removed again on restore.
+    fn take(files: Vec<PathBuf>, must_not_exist: &[PathBuf]) -> Backup {
+        let mut saved: Vec<(PathBuf, Option<Vec<u8>>)> = files
+            .into_iter()
+            .map(|p| {
+                let bytes = std::fs::read(&p).ok();
+                (p, bytes)
+            })
+            .collect();
+        for p in must_not_exist {
+            if !p.exists() && !saved.iter().any(|(s, _)| s == p) {
+                saved.push((p.clone(), None));
+            }
+        }
+        Backup(saved)
+    }
+
+    fn restore(&self) -> Result<()> {
+        for (path, bytes) in &self.0 {
+            match bytes {
+                Some(b) => std::fs::write(path, b)?,
+                None => {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -152,14 +191,65 @@ fn plan_policy(
     Ok(())
 }
 
+/// Whether `greengate install <manager> <args…>` can take over a legacy
+/// wrapper's command line (`watch-install`, `pip-install`, `cargo-add`).
+pub fn accepts(manager: &str, args: &[String]) -> bool {
+    match manager {
+        "npm" => npm::parse_args(args).is_ok(),
+        "pnpm" => pnpm::parse_args(args).is_ok(),
+        "yarn" => yarn::parse_args(args).is_ok(),
+        "bun" => bun::parse_args(args).is_ok(),
+        _ => false,
+    }
+}
+
+/// pip 22.2+ writes the `--report` that `install pip` plans from.
+pub fn pip_supports_report(pip: &str) -> bool {
+    std::process::Command::new(pip) // greengate: ignore — reading pip's version
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| {
+            let out = String::from_utf8_lossy(&o.stdout).into_owned();
+            let version = out
+                .strip_prefix("pip ")?
+                .split_whitespace()
+                .next()?
+                .to_string();
+            let mut parts = version.split('.').filter_map(|p| p.parse::<u32>().ok());
+            Some((parts.next()?, parts.next().unwrap_or(0)))
+        })
+        .is_some_and(|v| v >= (22, 2))
+}
+
+/// The one-line notice the legacy wrappers print.
+pub fn deprecation(old: &str, routed: Option<&str>) {
+    match routed {
+        Some(new) => terminal::warn(&format!(
+            "`greengate {old}` is deprecated and will be removed in 0.5 — running `greengate install {new}` \
+             (install scripts run sandboxed; see `greengate install --help`)."
+        )),
+        None => terminal::warn(&format!(
+            "`greengate {old}` is deprecated and will be removed in 0.5; use `greengate install` \
+             (npm, pnpm, yarn, bun, pip, uv, cargo)."
+        )),
+    }
+}
+
 pub fn run_install(opts: InstallOpts<'_>) -> Result<Report> {
     match opts.manager.as_str() {
         "npm" => js::run(js::Js::Npm, opts),
         "pnpm" => js::run(js::Js::Pnpm, opts),
+        "bun" => js::run(js::Js::Bun, opts),
+        "yarn" => {
+            let berry = yarn::is_berry(&std::env::current_dir()?);
+            js::run(if berry { js::Js::Berry } else { js::Js::Yarn1 }, opts)
+        }
         "pip" | "pip3" => pip::run(opts),
         "cargo" => cargo::run(opts),
+        "uv" => uv::run(opts),
         other => bail!(
-            "greengate install supports npm, pnpm, pip and cargo; for `{other}`, use `greengate watch-install {other}`"
+            "greengate install supports npm, pnpm, yarn, bun, pip, uv and cargo, not `{other}`"
         ),
     }
 }

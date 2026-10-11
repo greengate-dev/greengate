@@ -895,6 +895,16 @@ pub fn bun(path: &Path, content: &str) -> Result<Lockfile> {
             || spec.starts_with("http")
         {
             (source_from_resolved(spec), arr.get(1), None)
+        } else if semver::Version::parse(spec).is_err() {
+            // Not a version: a local tarball or directory (`./x.tgz`,
+            // `x-1.0.0.tgz`, `../pkg`), recorded as [ident, info, integrity].
+            (
+                Source::Path {
+                    path: spec.to_string(),
+                },
+                arr.get(1),
+                arr.get(2).and_then(Value::as_str),
+            )
         } else {
             let registry = arr.get(1).and_then(Value::as_str).unwrap_or("");
             let source = if registry.is_empty() {

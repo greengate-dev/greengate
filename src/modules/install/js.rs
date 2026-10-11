@@ -2,7 +2,9 @@
 
 use super::inspect::{self, Installed, ScriptPackage};
 use super::sandbox::{self, Isolation, Sandbox};
-use super::{InstallOpts, Scratch, npm, package_finding, plan_policy, pnpm, print_install, rel};
+use super::{
+    InstallOpts, Scratch, bun, npm, package_finding, plan_policy, pnpm, print_install, rel, yarn,
+};
 use crate::deps::{self, Lockfile};
 use crate::report::{Check, Report, Severity};
 use crate::utils::terminal;
@@ -14,20 +16,28 @@ use std::path::{Path, PathBuf};
 pub enum Js {
     Npm,
     Pnpm,
+    Yarn1,
+    Berry,
+    Bun,
 }
 
 enum Sub {
     Npm(npm::Sub),
     Pnpm(pnpm::Sub),
+    Yarn(yarn::Sub),
+    Bun(bun::Sub),
 }
 
 impl Js {
     fn program(self) -> &'static str {
         match (self, cfg!(windows)) {
-            (Js::Npm, false) => "npm",
-            (Js::Npm, true) => "npm.cmd",
+            // Yarn 1 and Bun install npm-shaped trees: npm rebuilds them.
+            (Js::Npm | Js::Yarn1 | Js::Bun, false) => "npm",
+            (Js::Npm | Js::Yarn1 | Js::Bun, true) => "npm.cmd",
             (Js::Pnpm, false) => "pnpm",
             (Js::Pnpm, true) => "pnpm.cmd",
+            (Js::Berry, false) => "yarn",
+            (Js::Berry, true) => "yarn.cmd",
         }
     }
 
@@ -35,6 +45,9 @@ impl Js {
         match self {
             Js::Npm => npm::MANIFESTS,
             Js::Pnpm => pnpm::MANIFESTS,
+            Js::Yarn1 => yarn::MANIFESTS_V1,
+            Js::Berry => yarn::MANIFESTS_BERRY,
+            Js::Bun => bun::MANIFESTS,
         }
     }
 
@@ -42,14 +55,19 @@ impl Js {
         let names: &[&str] = match self {
             Js::Npm => &["package-lock.json", "npm-shrinkwrap.json"],
             Js::Pnpm => &["pnpm-lock.yaml"],
+            Js::Yarn1 | Js::Berry => &["yarn.lock"],
+            Js::Bun => &["bun.lock"],
         };
         names.iter().map(|f| dir.join(f)).find(|p| p.is_file())
     }
 
     fn installed(self, dir: &Path) -> Vec<Installed> {
         match self {
-            Js::Npm => inspect::installed_packages(&dir.join("node_modules")),
+            Js::Npm | Js::Yarn1 | Js::Bun => {
+                inspect::installed_packages(&dir.join("node_modules"))
+            }
             Js::Pnpm => pnpm::installed_packages(&dir.join("node_modules")),
+            Js::Berry => yarn::installed_packages(dir),
         }
     }
 }
@@ -59,6 +77,8 @@ fn apply_plan(js: Js, work: &Path, project: &Path) -> Result<()> {
     let changed: &[&str] = match js {
         Js::Npm => &["package.json", "package-lock.json", "npm-shrinkwrap.json"],
         Js::Pnpm => &["package.json", "pnpm-lock.yaml"],
+        Js::Yarn1 | Js::Berry => &["package.json", "yarn.lock"],
+        Js::Bun => &["package.json", "bun.lock"],
     };
     let mut stack = vec![work.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -126,6 +146,8 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
     let sub = match js {
         Js::Npm => Sub::Npm(npm::parse_args(&opts.args)?),
         Js::Pnpm => Sub::Pnpm(pnpm::parse_args(&opts.args)?),
+        Js::Yarn1 | Js::Berry => Sub::Yarn(yarn::parse_args(&opts.args)?),
+        Js::Bun => Sub::Bun(bun::parse_args(&opts.args)?),
     };
     let project = std::env::current_dir()?;
     let mut report = Report::new("install");
@@ -138,9 +160,16 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
     terminal::info("Plan: resolving the full dependency tree (no package code runs)...");
     npm::stage(&project, &work, js.manifests())?;
     npm::link_local_specs(&project, &work, &opts.args)?;
+    if js == Js::Berry {
+        for dir in yarn::BERRY_DIRS {
+            copy_dir(&project.join(dir), &work.join(dir))?;
+        }
+    }
     match &sub {
         Sub::Npm(s) => npm::plan(&work, s)?,
         Sub::Pnpm(s) => pnpm::plan(&work, s)?,
+        Sub::Yarn(s) => yarn::plan(&work, s, js == Js::Berry)?,
+        Sub::Bun(s) => bun::plan(&work, s)?,
     }
     let planned = deps::load(
         &js.lockfile_in(&work)
@@ -175,6 +204,8 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
     match &sub {
         Sub::Npm(s) => npm::fetch(&target, s)?,
         Sub::Pnpm(s) => pnpm::fetch(&target, s)?,
+        Sub::Yarn(s) => yarn::fetch(&target, s, js == Js::Berry)?,
+        Sub::Bun(s) => bun::fetch(&target, s)?,
     }
     report.checks.push(Check::passed("install:fetch"));
 
@@ -213,6 +244,7 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
     // ── 4. Inspect ───────────────────────────────────────────────────────────
     let isolation = sandbox::detect(opts.isolate)?;
     let pnpm_policy = (js == Js::Pnpm).then(|| pnpm::build_policy(&target));
+    let bun_untrusted = (js == Js::Bun).then(|| bun::untrusted(&target));
     let mut approved: Vec<ScriptPackage> = Vec::new();
     for sp in inspect::script_packages(&installed) {
         if let Some(policy) = &pnpm_policy
@@ -232,6 +264,22 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
             ));
             continue;
         }
+        if let Some(untrusted) = &bun_untrusted
+            && untrusted.contains(&sp.pkg.dir)
+        {
+            report.warnings.push(package_finding(
+                "INSTALL/BuildNotAllowed",
+                Severity::Low,
+                &sp.pkg.name,
+                &sp.pkg.version,
+                &sp.pkg.dir,
+                format!(
+                    "{} — not run: Bun does not trust it (trustedDependencies)",
+                    sp.evidence()
+                ),
+            ));
+            continue;
+        }
         let allowlisted = opts
             .policy
             .allow_postinstall
@@ -240,9 +288,11 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
         let verb = if opts.plan_only { "would run" } else { "runs" };
         if !sp.suspicious() {
             approved.push(sp);
-        } else if allowlisted || isolation == Isolation::Bwrap {
+        } else if allowlisted || (isolation == Isolation::Bwrap && js != Js::Berry) {
             // Isolated, a script can reach nothing its package's own code
             // could not reach at runtime; report it and let it run there.
+            // Yarn Berry builds every package in one step, where isolation
+            // cannot keep packages apart, so Berry holds these back instead.
             report.warnings.push(package_finding(
                 "INSTALL/SuspiciousScript",
                 Severity::Medium,
@@ -268,12 +318,17 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
                 &sp.pkg.version,
                 &sp.pkg.dir,
                 format!(
-                    "{} — {} (no isolation available; allowlist it to run it)",
+                    "{} — {} ({})",
                     sp.evidence(),
                     if opts.plan_only {
                         "would not run"
                     } else {
                         "not run"
+                    },
+                    if js == Js::Berry {
+                        "Yarn builds all packages in one step; allowlist it, or set dependenciesMeta.<name>.built = false so Yarn never builds it"
+                    } else {
+                        "no isolation available; allowlist it to run it"
                     }
                 ),
             ));
@@ -320,7 +375,10 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
         .iter()
         .any(|s| opts.policy.script_network.contains(&s.pkg.name));
     let mut done: HashSet<String> = HashSet::new();
-    for sp in &order {
+    if js == Js::Berry {
+        run_berry_builds(&mut report, &target, &tmp, &order, isolation, &opts);
+    }
+    for sp in order.iter().filter(|_| js != Js::Berry) {
         // pnpm rebuilds every installed copy of a name at once.
         if js == Js::Pnpm && !done.insert(sp.pkg.name.clone()) {
             continue;
@@ -329,7 +387,7 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
         let id = format!("{}@{}", sp.pkg.name, sp.pkg.version);
         terminal::info(&format!("Running install scripts of {id}..."));
         let own: Vec<PathBuf> = match js {
-            Js::Npm => vec![sp.pkg.dir.clone()],
+            Js::Npm | Js::Yarn1 | Js::Bun | Js::Berry => vec![sp.pkg.dir.clone()],
             Js::Pnpm => installed
                 .iter()
                 .filter(|p| p.name == sp.pkg.name)
@@ -340,7 +398,7 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
         // in the project, so the project is writable but the store and .git
         // are not, and project-root writes are checked afterwards.
         let (writable, read_only) = match js {
-            Js::Npm => (Vec::new(), Vec::new()),
+            Js::Npm | Js::Yarn1 | Js::Bun | Js::Berry => (Vec::new(), Vec::new()),
             Js::Pnpm => (
                 vec![target.clone()],
                 vec![target.join("node_modules/.pnpm"), target.join(".git")],
@@ -372,7 +430,9 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
             monitoring_gaps.push(format!("{id}: filesystem watcher unavailable"));
         }
         let args = match js {
-            Js::Npm => npm::rebuild_args(&sp.pkg.name, &sp.pkg.version),
+            Js::Npm | Js::Yarn1 | Js::Bun | Js::Berry => {
+                npm::rebuild_args(&sp.pkg.name, &sp.pkg.version)
+            }
             Js::Pnpm => pnpm::rebuild_args(&sp.pkg.name),
         };
         let output = sandbox
@@ -465,6 +525,8 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
         for hook in npm::root_hooks(&manifest) {
             let result = match js {
                 Js::Npm => npm::run_root_hook(&project, &hook),
+                Js::Yarn1 | Js::Berry => yarn::run_root_hook(&project, &hook),
+                Js::Bun => bun::run_root_hook(&project, &hook),
                 Js::Pnpm => pnpm::run_root_hook(&project, &hook),
             };
             if let Err(e) = result {
@@ -484,6 +546,154 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
         )));
     print_install(&report, "");
     Ok(report)
+}
+
+/// Copy a directory tree (Berry's `.yarn/releases` and friends).
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    if !from.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)?.flatten() {
+        let dest = to.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_dir(&e.path(), &dest)?;
+        } else {
+            std::fs::copy(e.path(), dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// Berry builds every approved package in one `yarn rebuild`: it cannot
+/// target one without rewriting the lockfile. The project is writable for
+/// Berry's state; `.git`, the cache and every unplugged package except the
+/// ones building are read-only, and project-root writes are checked after.
+fn run_berry_builds(
+    report: &mut Report,
+    target: &Path,
+    tmp: &Path,
+    order: &[ScriptPackage],
+    isolation: Isolation,
+    opts: &InstallOpts<'_>,
+) {
+    if order.is_empty() {
+        return;
+    }
+    if report
+        .findings
+        .iter()
+        .any(|f| f.rule == "INSTALL/SuspiciousScript")
+    {
+        report.checks.push(Check::incomplete(
+            "install:execute",
+            "a held-back script blocks the Yarn build step, which would also build it; no builds ran — builds stay pending, and a plain `yarn install` would run them all",
+        ));
+        return;
+    }
+    let network = order
+        .iter()
+        .any(|s| opts.policy.script_network.contains(&s.pkg.name));
+    let sandbox = Sandbox {
+        isolation,
+        project: target,
+        tmp,
+        writable: vec![target.to_path_buf()],
+        read_only: vec![
+            target.join(".git"),
+            target.join(".yarn/unplugged"),
+            target.join(".yarn/cache"),
+        ],
+        inner: order.iter().map(|s| s.pkg.dir.clone()).collect(),
+        network,
+        env_allow: &opts.policy.env_allow,
+    };
+    let skip: &[&str] = &[".git", ".yarn", "node_modules"];
+    let before = inspect::snapshot(target, skip);
+    terminal::info(&format!(
+        "Running install scripts of {} package(s) (Yarn builds them together)...",
+        order.len()
+    ));
+    let mut cmd = sandbox.command("yarn", &["rebuild".to_string()]);
+    cmd.env("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0");
+    match cmd.output() {
+        Ok(out) if !out.status.success() => {
+            let log = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            // Yarn reports each failed build as `YN0009: │ <locator> couldn't be
+            // built successfully (…, logs can be found here: <path>)`; the
+            // script's own error is in that log.
+            let mut refused = false;
+            for line in log.lines().filter(|l| l.contains("YN0009")) {
+                let locator = line.split('│').nth(1).unwrap_or(line).trim();
+                // `name@<range>`; a scoped name starts with its own `@`.
+                let name = locator
+                    .get(1..)
+                    .and_then(|l| l.find('@'))
+                    .map_or(locator, |i| &locator[..=i]);
+                let build_log = line
+                    .split("logs can be found here: ")
+                    .nth(1)
+                    .map(|p| p.trim_end_matches(')').trim())
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .unwrap_or_default();
+                if build_log.contains("EROFS") || build_log.contains("read-only file system") {
+                    refused = true;
+                    report.findings.push(package_finding(
+                        "INSTALL/BlockedWrite",
+                        Severity::High,
+                        name.trim_end_matches('@'),
+                        "",
+                        target,
+                        "its install script tried to write outside its own package directory; the sandbox refused".into(),
+                    ));
+                }
+            }
+            if !refused {
+                report.checks.push(Check::error(
+                    "install:execute",
+                    format!(
+                        "a build failed: {}",
+                        log.lines().rev().take(4).collect::<Vec<_>>().join(" | ")
+                    ),
+                ));
+            }
+        }
+        Ok(_) => {}
+        Err(e) => report.checks.push(Check::error(
+            "install:execute",
+            format!("could not run yarn rebuild: {e}"),
+        )),
+    }
+    let c = inspect::changes(&before, &inspect::snapshot(target, skip));
+    let changed: Vec<String> = c
+        .created
+        .iter()
+        .chain(&c.modified)
+        .chain(&c.deleted)
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(".pnp."))
+        })
+        .take(5)
+        .map(|p| rel(p, target))
+        .collect();
+    if !changed.is_empty() {
+        report.findings.push(package_finding(
+            "INSTALL/ForeignWrite",
+            Severity::High,
+            "yarn build",
+            "",
+            target,
+            format!(
+                "install scripts changed files in the project: {}",
+                changed.join(", ")
+            ),
+        ));
+    }
 }
 
 /// A failed script: a refused write is a finding; anything else an error,
