@@ -18,7 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `greengate deps check` (also a `deps-check` pipeline step): release-risk policy for packages new or upgraded since a base revision — release younger than a cooldown (24 h), a new install script, provenance regression (npm attestations, PEP 740, crates.io trusted publishing), a publisher who never published the package before, yanked/deprecated releases — plus offline lockfile policy on every package: `[[supply_chain.registries]]` binding, dependency confusion from `internal_packages`, unpinned git / URL / path sources, missing integrity. Each signal is `off`/`warn`/`fail` under `[supply_chain.release]` and `[supply_chain.sources]`; `--profile strict` turns warnings into failures. A cooldown hit that fixes an advisory in the replaced version is a warning, not a block. Registry metadata is cached for 6 hours.
 - `[deps] exclude_patterns` to skip dependency files such as test fixtures.
 - `sbom` covers every dependency file (or `--lockfile <file>`), with the dependency graph, scopes (dev → `excluded`), hashes, and `repository_url`/`vcs_url`/`download_url` purl qualifiers.
-- `greengate install npm …`: no package code runs before the complete tree is checked. Plan in a scratch copy (`--package-lock-only`) and apply `deps check` policy to everything the install adds or changes; fetch with `npm ci --ignore-scripts`; check nothing unplanned was installed; inspect every install script in the tree, nested packages and the helper files scripts run included; then run approved scripts one package at a time, dependencies first. With bubblewrap, each runs with the system read-only except its own directory, no network (unless listed in `script_network`), and credential files masked — suspicious-looking scripts run there with a warning instead of being blocked, so ordinary installers such as esbuild's still work. Without isolation, suspicious scripts are held back unless allowlisted, and writes outside a package are detected by before/after comparison and a filesystem watcher. Credential-like environment variables are removed from install scripts in both modes. `--plan` changes nothing in the project.
+- `greengate install <npm|pnpm|pip|cargo> …`: no package code runs before the complete tree is checked. It plans the install without running code and applies `deps check` policy, fetches with scripts off, inspects every install script, build script and `.pth` file, then runs approved scripts one package at a time. `--plan` stops after inspection and changes nothing.
+  - With bubblewrap, each script runs with the system read-only except its own package, no network (unless listed in `script_network`) and credential files masked. Suspicious-looking scripts run there with a warning instead of being blocked, so ordinary installers such as esbuild's still work; a write outside the package is refused and reported.
+  - Without isolation, suspicious scripts are held back unless allowlisted, and writes outside a package are caught by before/after comparison and a filesystem watcher. `require_isolation = true` refuses to run scripts without a sandbox.
+  - Credential-like environment variables (`*_TOKEN`, `*_SECRET`, `AWS_*`, …) are removed from install scripts; keep specific ones with `env_allow`.
+  - pnpm: only builds pnpm itself allows (`onlyBuiltDependencies`) run.
+  - pip: planning runs in the sandbox, because resolving an sdist runs its build backend. greengate downloads and sha256-checks every artifact, builds sdists in the sandbox and installs wheels only; a wheel whose `.pth` startup code looks suspicious is blocked.
+  - Cargo: new crates' build scripts and proc-macros are inspected before anything builds; a blocked plan restores `Cargo.toml` and `Cargo.lock`.
 - Checks in the report can carry a `source` — e.g. which snapshot answered and how old it was.
 - `GREENGATE_CACHE_DIR` relocates greengate's cache.
 
@@ -46,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `reassure` panicked on component names with multi-byte characters near the 40-character column.
 - `requirements.txt` pins with extras (`pkg[extra]==1.0`), environment markers, `--hash` options, line continuations or `===` were mis-parsed into wrong names or versions.
 
-## [0.3.4] - Unreleased
+## [0.3.4] - 2026-10-11
 
 ### Added
 - Slopsquat / hallucinated-package guard on every install wrapper, scoring registry existence, age, adoption and source repo. HIGH blocks, MEDIUM warns.
