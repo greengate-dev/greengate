@@ -245,6 +245,34 @@ enum Commands {
         #[arg(long)]
         no_fail: bool,
     },
+    /// Installs dependencies with no package code running before greengate
+    /// has checked the complete tree: plan (resolve + policy), fetch with
+    /// scripts off, inspect every install script, then run approved scripts
+    /// in a sandbox (bubblewrap: no network, writes confined, credentials
+    /// masked) and verify the result. npm so far.
+    /// Example: greengate install npm ci
+    ///          greengate install --plan npm install left-pad
+    Install {
+        /// Stop after inspection: resolve, fetch and inspect in a scratch
+        /// copy, change nothing in the project, run no package code
+        #[arg(long)]
+        plan: bool,
+        /// How install scripts are isolated
+        #[arg(long, value_enum, default_value = "auto")]
+        isolate: modules::install::sandbox::IsolateMode,
+        /// Report findings but do not exit non-zero
+        #[arg(long)]
+        no_fail: bool,
+        /// Package manager: npm
+        manager: String,
+        /// The install command, e.g. `ci` or `install left-pad`
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "ARGS"
+        )]
+        args: Vec<String>,
+    },
     /// Wraps a package manager install and monitors for phantom dependencies
     /// (postinstall scripts that drop and delete binaries) and executable drops.
     /// Example: greengate watch-install npm install
@@ -859,6 +887,26 @@ fn run() -> anyhow::Result<ExitCode> {
                 scan_cfg: &cfg.scan,
             });
             return exit.finish("image-scan", result);
+        }
+        Commands::Install {
+            plan,
+            isolate,
+            no_fail,
+            manager,
+            args,
+        } => {
+            let result = modules::install::run_install(modules::install::InstallOpts {
+                manager,
+                args,
+                plan_only: plan,
+                isolate,
+                no_fail,
+                policy: &cfg.supply_chain,
+                now: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            });
+            return exit.finish("install", result);
         }
         Commands::WatchInstall {
             package_manager,

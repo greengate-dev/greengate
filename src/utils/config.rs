@@ -463,6 +463,18 @@ pub struct SupplyChainConfig {
     /// `[supply_chain.sources]`.
     #[serde(default)]
     pub sources: SourcePolicy,
+    /// `greengate install`: fail (incomplete) instead of running install
+    /// scripts unisolated when no sandbox is available.
+    #[serde(default)]
+    pub require_isolation: bool,
+    /// Packages whose install scripts may use the network inside the
+    /// sandbox (e.g. ones that download a prebuilt binary).
+    #[serde(default)]
+    pub script_network: Vec<String>,
+    /// Credential-looking environment variables to pass to install scripts
+    /// anyway (all others matching `*_TOKEN`, `*_SECRET`, `AWS_*`, … are removed).
+    #[serde(default)]
+    pub env_allow: Vec<String>,
 }
 
 /// How a policy signal is enforced.
@@ -582,6 +594,9 @@ impl Default for SupplyChainConfig {
             release: ReleasePolicy::default(),
             registries: Vec::new(),
             sources: SourcePolicy::default(),
+            require_isolation: false,
+            script_network: Vec::new(),
+            env_allow: Vec::new(),
         }
     }
 }

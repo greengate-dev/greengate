@@ -343,6 +343,19 @@ impl Lockfile {
     }
 }
 
+#[cfg(test)]
+impl Lockfile {
+    pub fn new_for_tests() -> Lockfile {
+        Lockfile::new(Path::new("test.lock"), Format::PackageLock, Ecosystem::Npm)
+    }
+    pub fn add(&mut self, package: Package) -> usize {
+        self.push(package)
+    }
+    pub fn link(&mut self, from: usize, to: usize) {
+        self.edge(from, to, EdgeKind::Normal);
+    }
+}
+
 // ── Discovery ─────────────────────────────────────────────────────────────────
 
 /// Recognise a dependency file by name.

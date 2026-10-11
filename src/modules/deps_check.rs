@@ -411,9 +411,45 @@ pub fn run_deps_check(opts: CheckOpts<'_>) -> Result<Report> {
     };
     terminal::info(&format!("Release-risk checks cover {base_label}."));
 
+    let previous: Vec<Option<HashMap<String, Vec<String>>>> = found
+        .lockfiles
+        .iter()
+        .map(|lock| match &base {
+            Base::All(_) => None,
+            Base::Rev { rev, .. } => Some(
+                at_revision(lock, rev)
+                    .as_ref()
+                    .map_or_else(HashMap::new, versions_by_name),
+            ),
+        })
+        .collect();
+    let checked = evaluate(
+        &found.lockfiles,
+        &previous,
+        &base_label,
+        opts.policy,
+        opts.now,
+        &mut report,
+    )?;
+    print_report(&report, checked);
+    Ok(report)
+}
+
+/// Evaluate supply-chain policy on `lockfiles`. `previous[i]` holds the
+/// versions each package name had at the base for `lockfiles[i]`; `None`
+/// checks every package's release against the registry. Returns how many
+/// releases were looked up.
+pub fn evaluate(
+    lockfiles: &[Lockfile],
+    previous: &[Option<HashMap<String, Vec<String>>>],
+    base_label: &str,
+    policy: &SupplyChainConfig,
+    now: u64,
+    report: &mut Report,
+) -> Result<usize> {
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut private: usize = 0;
-    for (li, lock) in found.lockfiles.iter().enumerate() {
+    for (li, lock) in lockfiles.iter().enumerate() {
         if !lock.unresolved.is_empty() {
             report.checks.push(Check::incomplete(
                 format!("lockfile:{}", lock.path.display()),
@@ -423,20 +459,9 @@ pub fn run_deps_check(opts: CheckOpts<'_>) -> Result<Report> {
                 ),
             ));
         }
-        lockfile_policies(lock, opts.policy, &mut report);
+        lockfile_policies(lock, policy, report);
 
-        let previous: Option<HashMap<String, Vec<String>>> = match &base {
-            Base::All(_) => None,
-            Base::Rev { rev, .. } => {
-                Some(at_revision(lock, rev).map_or_else(HashMap::new, |old| {
-                    let mut m: HashMap<String, Vec<String>> = HashMap::new();
-                    for p in old.dependencies() {
-                        m.entry(p.name.clone()).or_default().push(p.version.clone());
-                    }
-                    m
-                }))
-            }
-        };
+        let previous = previous.get(li).and_then(Option::as_ref);
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut changed = 0usize;
         for (pi, p) in lock.packages.iter().enumerate() {
@@ -446,7 +471,7 @@ pub fn run_deps_check(opts: CheckOpts<'_>) -> Result<Report> {
             {
                 continue;
             }
-            let replaces = match &previous {
+            let replaces = match previous {
                 Some(prev) => match prev.get(&p.name) {
                     Some(versions) if versions.contains(&p.version) => continue,
                     Some(versions) => registry::highest(lock.ecosystem, versions),
@@ -485,7 +510,7 @@ pub fn run_deps_check(opts: CheckOpts<'_>) -> Result<Report> {
         candidates
             .par_iter()
             .map(|c| {
-                let lock = &found.lockfiles[c.lock];
+                let lock = &lockfiles[c.lock];
                 let p = &lock.packages[c.pkg];
                 registry::lookup(lock.ecosystem, &p.name, &p.version, None)
             })
@@ -496,11 +521,11 @@ pub fn run_deps_check(opts: CheckOpts<'_>) -> Result<Report> {
     // (finding index into report.findings or warnings, candidate) for cooldown exemptions
     let mut young: Vec<(usize, Level, Finding)> = Vec::new();
     for (ci, (c, lookup)) in candidates.iter().zip(lookups).enumerate() {
-        let lock = &found.lockfiles[c.lock];
+        let lock = &lockfiles[c.lock];
         let p = &lock.packages[c.pkg];
         match lookup {
             Lookup::Found(h) => {
-                for s in release_signals(&h, &opts.policy.release, opts.now) {
+                for s in release_signals(&h, &policy.release, now) {
                     let mut finding = package_finding(s.rule, s.level, lock, p, s.message);
                     if let Some(from) = &c.replaces {
                         finding
@@ -510,16 +535,16 @@ pub fn run_deps_check(opts: CheckOpts<'_>) -> Result<Report> {
                     if s.rule == "RELEASE/YoungRelease" && c.replaces.is_some() {
                         young.push((ci, s.level, finding));
                     } else {
-                        record(&mut report, s.level, finding);
+                        record(report, s.level, finding);
                     }
                 }
             }
             Lookup::Missing => record(
-                &mut report,
-                opts.policy.release.withdrawn,
+                report,
+                policy.release.withdrawn,
                 package_finding(
                     "RELEASE/Withdrawn",
-                    opts.policy.release.withdrawn,
+                    policy.release.withdrawn,
                     lock,
                     p,
                     "this version is not on the registry (unpublished or never published there)"
@@ -537,7 +562,7 @@ pub fn run_deps_check(opts: CheckOpts<'_>) -> Result<Report> {
             .iter()
             .flat_map(|(ci, _, _)| {
                 let c = &candidates[*ci];
-                let lock = &found.lockfiles[c.lock];
+                let lock = &lockfiles[c.lock];
                 let p = &lock.packages[c.pkg];
                 let eco = lock.ecosystem.osv();
                 [
@@ -556,13 +581,13 @@ pub fn run_deps_check(opts: CheckOpts<'_>) -> Result<Report> {
                 })
                 .unwrap_or_default();
             if fixed.is_empty() {
-                record(&mut report, level, finding);
+                record(report, level, finding);
             } else {
                 finding.message.push_str(&format!(
                     " — exempt from the cooldown: it fixes {} affecting the version it replaces",
                     fixed.join(", ")
                 ));
-                record(&mut report, Level::Warn, finding);
+                record(report, Level::Warn, finding);
             }
         }
     }
@@ -586,11 +611,19 @@ pub fn run_deps_check(opts: CheckOpts<'_>) -> Result<Report> {
         report.checks.push(Check::passed("registry-metadata"));
     }
 
-    print_report(&report, candidates.len());
-    Ok(report)
+    Ok(candidates.len())
 }
 
-fn print_report(report: &Report, checked: usize) {
+/// Package name → versions, for comparing a lockfile against an older one.
+pub fn versions_by_name(lock: &Lockfile) -> HashMap<String, Vec<String>> {
+    let mut m: HashMap<String, Vec<String>> = HashMap::new();
+    for p in lock.dependencies() {
+        m.entry(p.name.clone()).or_default().push(p.version.clone());
+    }
+    m
+}
+
+pub(crate) fn print_report(report: &Report, checked: usize) {
     let line = |f: &Finding| {
         let what = match &f.location {
             Location::Package {

@@ -68,6 +68,7 @@ Commands are grouped by concern. Each runs standalone or as a step in `greengate
 
 | Command | What it does |
 |---|---|
+| `greengate install npm <ci\|install …>` | Install with **no package code running before the complete tree is checked**: plan (resolve + `deps check` policy), fetch with scripts off, inspect every install script including the files it runs, then run approved scripts one by one in a bubblewrap sandbox — no network, writes confined to the package, credentials masked. `--plan` looks without changing anything. npm so far. |
 | `greengate watch-install <pm> <args>` | Wrap any npm/yarn/pnpm/bun install. **Slopsquat guard** on every requested package, pre-flight lifecycle script scan (entropy + network/eval patterns), runtime phantom-file detection (files created then deleted by postinstall), and post-install exec-drop detection. |
 | `greengate pip-install <args>` | Wrap `pip install`. Requested-name **slopsquat guard** + typosquat checks can halt before pip runs; `.dist-info/RECORD` Python source and executable-drop checks run after installation. |
 | `greengate cargo-add <args>` | Wrap `cargo add`. **Slopsquat guard** + typosquat detection against the 60 most-downloaded crates.io crates, `build.rs` static analysis for every newly added crate (network access, subprocess spawning, env exfiltration), transitive dependency explosion guard (> 50 new transitive deps triggers a warning). |

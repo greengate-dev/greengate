@@ -139,6 +139,18 @@ internal_packages = [
   # "@acme", "acme-*",
 ]
 
+# `greengate install`: refuse to run dependency install scripts without a
+# sandbox (the run is then incomplete instead of running them unisolated).
+require_isolation = false
+# Packages whose install scripts may use the network inside the sandbox.
+script_network = [
+  # "puppeteer",
+]
+# Credential-looking environment variables still passed to install scripts.
+env_allow = [
+  # "NODE_EXTRA_CA_CERTS",
+]
+
 # Release-risk policy for new or upgraded packages (`greengate deps check`).
 # Each signal is "off", "warn" or "fail". `--profile strict` turns every
 # "warn" here (and in [supply_chain.sources]) into "fail".

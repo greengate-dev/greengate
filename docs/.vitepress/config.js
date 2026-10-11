@@ -74,6 +74,7 @@ export default defineConfig({
       {
         text: 'Commands — Security',
         items: [
+          { text: '🛡️ install', link: '/commands/install' },
           { text: '🔒 watch-install', link: '/commands/watch-install' },
           { text: '🐍 pip-install', link: '/commands/pip-install' },
           { text: '🦀 cargo-add', link: '/commands/cargo-add' },

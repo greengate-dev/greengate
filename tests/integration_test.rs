@@ -2605,3 +2605,171 @@ fn deps_check_cooldown_exempts_a_security_fix() {
         "{warning}"
     );
 }
+
+// ── greengate install (real npm; skipped where npm is unavailable) ────────────
+
+fn tool_available(cmd: &str, args: &[&str]) -> bool {
+    Command::new(cmd)
+        .args(args)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// A project with local tarball dependencies, each `(name, scripts JSON)`.
+/// Packages ship `index.js` with `module.exports = "<name>"`.
+fn npm_project(packages: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join(".src");
+    let mut deps = Vec::new();
+    for (name, scripts) in packages {
+        let pkg = src.join(name);
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            format!(r#"{{"name":"{name}","version":"1.0.0","scripts":{scripts}}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("index.js"),
+            format!("module.exports = \"{name}\";\n"),
+        )
+        .unwrap();
+        let ok = Command::new("npm")
+            .args(["pack", "--silent", "--pack-destination"])
+            .arg(dir.path())
+            .current_dir(&pkg)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "npm pack {name}");
+        deps.push(format!(r#""{name}":"file:{name}-1.0.0.tgz""#));
+    }
+    std::fs::write(
+        dir.path().join("package.json"),
+        format!(
+            r#"{{"name":"app","version":"1.0.0","scripts":{{"postinstall":"node -e \"require('fs').writeFileSync('root-ran','1')\""}},"dependencies":{{{}}}}}"#,
+            deps.join(",")
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\nslopsquat_check = false\n",
+    )
+    .unwrap();
+    dir
+}
+
+const TAMPER: &str =
+    r#"{"postinstall":"node -e \"require('fs').writeFileSync('../victim/index.js','pwned')\""}"#;
+const BUILD: &str = r#"{"postinstall":"node -e \"require('fs').mkdirSync('build',{recursive:true});require('fs').writeFileSync('build/out','ok')\""}"#;
+const LEAK: &str = r#"{"postinstall":"node -e \"require('fs').writeFileSync('leak', String(process.env.NPM_TOKEN))\""}"#;
+
+fn install(dir: &std::path::Path, args: &[&str]) -> (Option<i32>, serde_json::Value, String) {
+    let out = Command::new(binary())
+        .args(["install", "--report", "r.json"])
+        .args(args)
+        .env("NPM_TOKEN", "secret-token-value")
+        .env("npm_config_cache", dir.join(".npm-cache"))
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let report = std::fs::read(dir.join("r.json"))
+        .map(|b| serde_json::from_slice(&b).unwrap())
+        .unwrap_or(serde_json::Value::Null);
+    (out.status.code(), report, stderr)
+}
+
+#[test]
+fn install_isolated_refuses_writes_outside_the_package() {
+    if !tool_available("npm", &["--version"]) || !tool_available("bwrap", &["--version"]) {
+        eprintln!("skipped: needs npm and bubblewrap");
+        return;
+    }
+    let dir = npm_project(&[("victim", "{}"), ("tamper", TAMPER), ("builder", BUILD)]);
+    let (code, report, stderr) = install(dir.path(), &["--isolate", "bwrap", "npm", "install"]);
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    assert!(
+        rules_of(&report, "findings").contains(&"INSTALL/BlockedWrite".to_string()),
+        "{report}"
+    );
+    let victim = std::fs::read_to_string(dir.path().join("node_modules/victim/index.js")).unwrap();
+    assert_eq!(
+        victim, "module.exports = \"victim\";\n",
+        "the write was refused"
+    );
+    assert!(
+        dir.path().join("node_modules/builder/build/out").is_file(),
+        "benign build still ran"
+    );
+    assert!(
+        dir.path().join("root-ran").is_file(),
+        "the project's own postinstall ran"
+    );
+}
+
+#[test]
+fn install_unisolated_detects_writes_outside_the_package() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("victim", "{}"), ("tamper", TAMPER)]);
+    let (code, report, stderr) = install(dir.path(), &["--isolate", "none", "npm", "install"]);
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    // `../` in the script is flagged before it runs; unisolated, it is held back.
+    let findings = rules_of(&report, "findings");
+    assert!(
+        findings.contains(&"INSTALL/SuspiciousScript".to_string()),
+        "{report}"
+    );
+    let victim = std::fs::read_to_string(dir.path().join("node_modules/victim/index.js")).unwrap();
+    assert_eq!(victim, "module.exports = \"victim\";\n");
+}
+
+#[test]
+fn install_scrubs_credentials_from_scripts() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("leaky", LEAK)]);
+    // Reading process.env is flagged; allowlisting lets it run unisolated,
+    // which is where scrubbing is the only protection.
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\nslopsquat_check = false\nallow_postinstall = [\"leaky\"]\n",
+    )
+    .unwrap();
+    let (code, report, stderr) = install(dir.path(), &["--isolate", "none", "npm", "install"]);
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    let leaked = std::fs::read_to_string(dir.path().join("node_modules/leaky/leak")).unwrap();
+    assert_eq!(
+        leaked, "undefined",
+        "NPM_TOKEN must not reach install scripts"
+    );
+}
+
+#[test]
+fn install_plan_changes_nothing() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("builder", BUILD)]);
+    let (code, report, stderr) = install(dir.path(), &["--plan", "npm", "install"]);
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    assert!(!dir.path().join("node_modules").exists());
+    assert!(!dir.path().join("package-lock.json").exists());
+    assert!(!dir.path().join("root-ran").exists());
+}
+
+#[test]
+fn install_rejects_non_install_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let (code, _, stderr) = install(dir.path(), &["npm", "run", "build"]);
+    assert_eq!(code, Some(4));
+    assert!(stderr.contains("not an install"), "{stderr}");
+}

@@ -191,11 +191,7 @@ fn scan_package_scripts(node_modules: &Path) -> Vec<ScriptThreat> {
                     continue;
                 };
 
-                let signals: Vec<String> = SCRIPT_SIGNALS
-                    .iter()
-                    .filter(|(_, needle)| script.contains(needle))
-                    .map(|(name, _)| name.to_string())
-                    .collect();
+                let signals = script_signals(script);
 
                 let max_entropy = max_script_entropy(script);
                 const ENTROPY_THRESHOLD: f64 = 4.8;
@@ -215,9 +211,21 @@ fn scan_package_scripts(node_modules: &Path) -> Vec<ScriptThreat> {
     threats
 }
 
+/// Names of the suspicious patterns (network, dynamic code, shell, env
+/// access, obfuscation) that occur in a script or helper file.
+pub(crate) fn script_signals(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = SCRIPT_SIGNALS
+        .iter()
+        .filter(|(_, needle)| text.contains(needle))
+        .map(|(name, _)| name.to_string())
+        .collect();
+    out.dedup();
+    out
+}
+
 /// Compute the maximum Shannon entropy over all 64-character sliding windows
 /// of `text`. Returns 0.0 for inputs shorter than 32 chars.
-fn max_script_entropy(text: &str) -> f64 {
+pub(crate) fn max_script_entropy(text: &str) -> f64 {
     const WINDOW: usize = 64;
     let bytes = text.as_bytes();
     if bytes.len() < 32 {

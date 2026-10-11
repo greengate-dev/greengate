@@ -11,6 +11,7 @@ pub mod github;
 pub mod hooks;
 pub mod image_scan;
 pub mod init;
+pub mod install;
 pub mod k8s_lint;
 pub mod osv_db;
 pub mod perf_lighthouse;
