@@ -55,7 +55,7 @@ Cross-reference the post-install `node_modules/` tree against the project's Cycl
 
 - **Python taint tracking** — extend the existing JS/TS taint engine to Python (Flask/Django request sources → SQL/command injection sinks)
 - **Go taint tracking** — similar, targeting `net/http` request sources
-- **Rust SAST** — `unsafe` block detection, `std::process::Command` with unsanitised input
+- **Rust taint tracking** — existing AST rules already flag `unsafe`, `Command::new`, `.unwrap()`, and `.expect()`; future analysis would track untrusted input into command arguments
 
 ---
 

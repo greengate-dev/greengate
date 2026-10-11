@@ -13,11 +13,11 @@
 
 ---
 
-CVE scanners and lock-file diffing share a blind spot: they only catch *known* vulnerabilities in packages that are *already* installed. They cannot see a malicious `postinstall` or `build.rs` script that drops a binary, exfiltrates your secrets, and deletes itself before the install finishes — the "phantom dropper" pattern. greengate watches the install as it happens and catches exactly that class of attack, for **npm, yarn, pnpm, bun, pip, and cargo**, in one static binary. No Docker, no daemon, no known-CVE database required.
+CVE scanners match dependencies against known advisories; lock-file diffs show dependency changes. Those checks alone do not observe what install scripts do. greengate adds script checks and filesystem observation: **npm, yarn, pnpm, and bun** installs can be watched for files created then deleted, while **pip and Cargo** wrappers provide separate package/script checks. These signals can fail the gate, but do not isolate the installer or guarantee that malicious code never executes. No Docker or daemon is required for these checks.
 
-**Built for the AI-coding era.** When an agent writes your code, it also *picks your dependencies* — and LLMs hallucinate package names that don't exist. Attackers register those names ("**slopsquatting**") and wait for the next agent to install them. Edit-distance typosquat checks miss it, because the invented name isn't close to anything real. greengate's [slopsquat guard](#slopsquat--hallucinated-package-guard) scores registry metadata (does it exist? how new? how adopted?) on every package an install introduces, and halts before a hallucinated dependency lands.
+**Built for the AI-coding era.** When an agent writes your code, it also *picks your dependencies* — and LLMs can hallucinate package names. Attackers can register those names ("**slopsquatting**"). Edit-distance checks may miss invented names that are not close to real ones. greengate's [slopsquat guard](#slopsquat--hallucinated-package-guard) scores registry metadata for explicitly requested package names and can block high-suspicion requests before installation. It does not inspect every transitive dependency or expand lockfile/requirements-only installs.
 
-Once it's in your pipeline, the same binary also runs the rest of your security and quality gates — secret scanning, AST-based SAST, dependency CVE audit, SBOM attestation, coverage, and CI-config hygiene — so you don't string together six separate tools. But the reason to reach for greengate first is the supply-chain gate the others don't have.
+The same binary also runs secret scanning, AST-based SAST, dependency CVE audit, SBOM attestation, coverage, and CI-config hygiene. Its focus is combining local install signals with security and quality gates in one portable CLI.
 
 No Node. No Python. No JVM. The core gates need no Docker either — just copy the binary and run. (A few opt-in features add a dependency: image scanning needs Docker, SBOM signing needs cosign, and the registry/CVE checks need network access.)
 
@@ -43,14 +43,14 @@ No Node. No Python. No JVM. The core gates need no Docker either — just copy t
 
 ## Why greengate?
 
-**The gap incumbents leave open.** `npm audit`, Dependabot, and Trivy answer one question: *"do any installed packages have a known CVE?"* They are blind to a package that has no CVE but runs a malicious install script — the attack pattern behind most recent npm/PyPI compromises. That script writes and executes a payload, then deletes it, so a lock-file diff sees nothing and the CVE database has nothing to match. This is the gate greengate adds.
+**Beyond known-advisory checks.** A package without a known advisory may still have a suspicious install script. greengate adds local script checks and filesystem signals to dependency audits. Other tools, including [Socket Firewall](https://docs.socket.dev/docs/safe-npm-faq), also offer install-time protection; greengate's approach is a portable CLI combining these signals with other repository gates.
 
-**How the supply-chain gate works:** wrap your install (`greengate watch-install npm ci`, `greengate pip-install ...`, `greengate cargo-add ...`) and greengate runs three layers — a pre-flight static scan of lifecycle/`build.rs` scripts for network + eval + exfiltration patterns, runtime detection of files created-then-deleted during the install window (the phantom dropper), and post-install executable-drop detection — halting **before** the compromised code can reach the rest of your pipeline. No known-CVE database, no Docker required.
+**How the supply-chain gate works:** `watch-install` scans existing lifecycle script strings before starting the package manager, polls `node_modules` for created-then-deleted files, then checks installed script strings and executable drops directly in the project root. New-package checks and runtime findings can fail the gate **after installer execution**. `pip-install` checks requested names before installation and installed source/artifacts afterward; `cargo-add` checks names before adding dependencies and scans fetched `build.rs` files afterward.
 
 **Then it replaces the rest of your stack too.** A typical pipeline also strings together `gitleaks`, `semgrep`, `trivy`, `jest --coverage`, and a CI-config linter — each installed separately, version-pinned separately, and emitting a different output format. greengate runs all of those gates from the same binary, one config file, one exit code. Breadth is what keeps it in your pipeline; the supply-chain gate is why it earns a place there.
 
 **Key properties:**
-- **Catches install-time supply-chain attacks** — the phantom-dropper / malicious-lifecycle-script class that CVE scanners and lock-file diffing structurally cannot detect, across npm/yarn/pnpm/bun/pip/cargo.
+- **Adds install-time signals** — lifecycle script checks, polled phantom-file detection for npm-family installs, and separate pip/Cargo package and artifact checks. See the [install benchmark](bench/INSTALL_RESULTS.md) for detection timing, misses, and native-build false positives.
 - **Single static binary** — ships as a single musl-linked executable for Linux, macOS, and Windows. Copy it to `/usr/local/bin` and it works. Every release binary is keyless-signed with Sigstore ([verify it](#verifying-a-release-binary)).
 - **AST-accurate SAST** — uses tree-sitter to parse real ASTs instead of fragile regex over source text. No false positives from comments or string literals.
 - **CI-native output** — emits SARIF, JUnit XML, GitLab SAST JSON, and GitHub Check Run annotations with per-line findings. Plugs into Code Scanning, GitLab Security Dashboard, and SonarQube out of the box.
@@ -62,19 +62,19 @@ No Node. No Python. No JVM. The core gates need no Docker either — just copy t
 
 ## What it does
 
-Commands are grouped by concern. Each runs standalone or as a step in `greengate run`. The supply-chain gate is listed first because it's the one incumbent tools don't provide.
+Commands are grouped by concern. Each runs standalone or as a step in `greengate run`. Install protection is listed first as the project's primary focus.
 
 ### Supply Chain Protection
 
 | Command | What it does |
 |---|---|
 | `greengate watch-install <pm> <args>` | Wrap any npm/yarn/pnpm/bun install. **Slopsquat guard** on every requested package, pre-flight lifecycle script scan (entropy + network/eval patterns), runtime phantom-file detection (files created then deleted by postinstall), and post-install exec-drop detection. |
-| `greengate pip-install <args>` | Wrap `pip install`. **Slopsquat guard** + typosquat detection against the 60 most-downloaded PyPI packages, post-install `.dist-info/RECORD` Python source scan, executable-drop detection. Halts before pip runs. |
+| `greengate pip-install <args>` | Wrap `pip install`. Requested-name **slopsquat guard** + typosquat checks can halt before pip runs; `.dist-info/RECORD` Python source and executable-drop checks run after installation. |
 | `greengate cargo-add <args>` | Wrap `cargo add`. **Slopsquat guard** + typosquat detection against the 60 most-downloaded crates.io crates, `build.rs` static analysis for every newly added crate (network access, subprocess spawning, env exfiltration), transitive dependency explosion guard (> 50 new transitive deps triggers a warning). |
 
 > **What is the slopsquat guard?** See [Slopsquat / hallucinated-package guard](#slopsquat--hallucinated-package-guard) below — the AI-era defense that catches invented package names typosquat detection can't.
 
-> **Scope of the runtime check:** phantom-file detection polls the install tree while the package manager runs, so it catches droppers that touch disk. A payload that exfiltrates purely over the network without writing a file is *not* caught by this layer — pair it with the pre-flight script scan (which flags network/eval patterns) and CI-runner egress controls. Full network isolation is on the [roadmap](https://greengate-dev.github.io/greengate/reference/roadmap) as `sandbox-install`.
+> **Scope of the runtime check:** phantom-file detection polls `node_modules` every 250 ms. Files created and deleted between polls can be missed; executable-drop checks inspect only files directly in the project root. This layer does not inspect network traffic or prevent installer execution. Full network isolation is on the [roadmap](https://greengate-dev.github.io/greengate/reference/roadmap) as `sandbox-install`. The [install benchmark](bench/INSTALL_RESULTS.md) reports these gaps and legitimate native-build behavior.
 
 ### Secrets & Code Security
 
@@ -91,7 +91,7 @@ Commands are grouped by concern. Each runs standalone or as a step in `greengate
 
 | Command | What it does |
 |---|---|
-| `greengate audit` | Query the [OSV database](https://osv.dev) for known vulnerabilities in your project's dependencies. Supports `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `requirements.txt`, `go.sum`, `pom.xml`, and `*.csproj`. |
+| `greengate audit` | Query the [OSV database](https://osv.dev) for known vulnerabilities in your project's dependencies. Recursively discovers `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, pinned `requirements.txt`, and `go.sum`. |
 | `greengate sbom` | Generate a [CycloneDX 1.5](https://cyclonedx.org) SBOM from the project's lock file. |
 | `greengate sbom --attest` | Generate a SBOM and sign it with [Sigstore](https://sigstore.dev) keyless signing. Produces a bundle file anchored in the Rekor public transparency log. No private key required. |
 | `greengate sbom --verify <file>` | Verify a SBOM against a cosign bundle. Fails if the signature is invalid or the bundle is missing from the Rekor log. |
@@ -173,8 +173,9 @@ TIA walks the import graph using AST parsing to find which test files transitive
 | Rust | `Cargo.lock` |
 | Python | `requirements.txt` |
 | Go | `go.sum` |
-| Java (Maven) | `pom.xml` |
-| .NET | `*.csproj` |
+
+Maven, .NET/NuGet, Ruby, and Python lockfiles such as `Pipfile.lock`,
+`poetry.lock`, and `uv.lock` are not currently supported by `audit`.
 
 ### Supply chain wrapping
 
@@ -448,7 +449,12 @@ Any model that supports the OpenAI `/v1/chat/completions` format works: Mistral,
 
 AI coding assistants confidently suggest packages that **don't exist**. Attackers harvest these hallucinated names from public prompts and model outputs, register them on npm / PyPI / crates.io, and ship malware to whoever installs them next — a supply-chain attack class known as **slopsquatting**. Because the invented name isn't a near-miss of any real package, classic edit-distance typosquat detection can't see it.
 
-greengate's install wrappers score **registry metadata** for every package an install *introduces* (packages already pinned in your lock file are trusted and skipped):
+greengate's install wrappers score **registry metadata** for explicitly requested
+package names. The npm wrapper skips scoring names already present in
+`node_modules`, and the Cargo wrapper skips names already pinned in `Cargo.lock`.
+The guard does not expand the full dependency tree, `npm ci`, or pip requirements
+files. Package registration age is a signal, not the age or safety of a specific
+release:
 
 | Signal | Why it matters |
 |---|---|

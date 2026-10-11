@@ -18,7 +18,7 @@ hero:
 
 features:
   - title: 🔒 Zero-Trust Supply Chain
-    details: "Intercepts npm, yarn, pnpm, bun, pip, and cargo installs before malicious code reaches your machine. Three layers: pre-flight script scanning (entropy + network/eval signals), runtime phantom-file detection, and post-install exec-drop analysis. Catches the typosquatting, obfuscated postinstall, and build.rs attack vectors."
+    details: "Wraps npm-family installs with lifecycle-script checks and polled filesystem observation, plus separate pip/Cargo package and artifact checks. Some checks block before installation; others detect signals after execution. See the benchmark for misses and native-build false positives."
   - title: 🔍 Secret & SAST Scanning
     details: "26 built-in secret patterns (AWS, GitHub, Stripe, GCP, Azure, JWT, private keys…) plus Shannon entropy detection for unrecognised credentials. AST-based SAST via tree-sitter for JS, TS, Python, Go, and Rust — no false positives from comments or string literals in other languages."
   - title: 🤖 AI False-Positive Triage
@@ -38,7 +38,7 @@ features:
   - title: Zero Runtime Dependencies
     details: "A single musl-linked binary for Linux, macOS, and Windows. Copy it to /usr/local/bin and it works. No Node, Python, JVM, or Docker required. Drop it into Alpine-based CI images with zero setup overhead."
   - title: 🔎 Dependency Audit (OSV)
-    details: "Queries the OSV vulnerability database for known CVEs across npm, Cargo, PyPI, Go, Maven, and NuGet. Suppress known-acceptable transitive advisories per-ID. Offline-capable."
+    details: "Queries OSV for known vulnerabilities across npm, Cargo, pinned PyPI requirements, and Go. Recursively discovers supported dependency files, caches responses for 24 hours, and supports per-advisory suppression."
   - title: ☸️ Kubernetes & Docker Linting
     details: "Validates Kubernetes manifests for missing resource limits, probes, unpinned images, and root containers. Audits Dockerfiles for unpinned base images, missing USER, missing HEALTHCHECK, and exposed dangerous ports."
   - title: 📈 Coverage Gates

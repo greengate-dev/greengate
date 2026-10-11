@@ -1,11 +1,11 @@
 ---
 title: 'audit — Dependency Vulnerability Audit'
-description: 'Audit project dependencies for known CVEs via the OSV database. Supports npm, Cargo, PyPI, Go, Maven, and NuGet. Offline-capable with local caching.'
+description: 'Audit project dependencies for known vulnerabilities via OSV. Supports npm, Cargo, pinned PyPI requirements, and Go, with a 24-hour response cache.'
 ---
 
 # audit — Dependency Vulnerability Audit
 
-Audits project dependencies for known vulnerabilities by querying the [OSV database](https://osv.dev) (Open Source Vulnerabilities). Supports 6 ecosystems and auto-detects the manifest file.
+Audits project dependencies for known vulnerabilities by querying the [OSV database](https://osv.dev) (Open Source Vulnerabilities). Recursively discovers supported dependency files across the repository, including monorepo subprojects, and deduplicates packages before querying OSV.
 
 ## Supported ecosystems
 
@@ -13,10 +13,17 @@ Audits project dependencies for known vulnerabilities by querying the [OSV datab
 |---|---|
 | Rust | `Cargo.lock` |
 | Node.js | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` |
-| Python | `requirements.txt`, `Pipfile.lock`, `poetry.lock` |
+| Python | `requirements.txt` (only `==` pinned versions) |
 | Go | `go.sum` |
-| Ruby | `Gemfile.lock` |
-| .NET | `packages.lock.json` |
+
+Maven (`pom.xml`), .NET/NuGet (`*.csproj`, `packages.lock.json`), Ruby
+(`Gemfile.lock`), and Python lockfiles (`Pipfile.lock`, `poetry.lock`, `uv.lock`)
+are not currently supported.
+
+OSV batch responses are cached for 24 hours. If a query fails and no fresh
+cache entry is available, the command warns that it skipped the audit and
+returns exit code `0`; this does not mean the dependencies were checked or
+found safe. This cache is not an offline vulnerability database.
 
 ## Usage
 
