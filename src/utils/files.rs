@@ -14,8 +14,13 @@ pub fn cache_root() -> Option<std::path::PathBuf> {
 }
 
 pub fn get_walker<P: AsRef<Path>>(dir: P) -> Walk {
-    // Respects .gitignore rules; hidden(false) ensures dotfiles like .env are included
-    WalkBuilder::new(dir).hidden(false).build()
+    // Respects .gitignore rules; hidden(false) ensures dotfiles like .env are
+    // included. Git's own directory is not project content: its config and
+    // reflogs hold every committer's email address.
+    WalkBuilder::new(dir)
+        .hidden(false)
+        .filter_entry(|e| e.file_name() != ".git")
+        .build()
 }
 
 /// How far into a file to look for a NUL byte when deciding it is binary — the
