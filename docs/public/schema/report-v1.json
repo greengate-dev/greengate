@@ -27,7 +27,8 @@
         "properties": {
           "id": { "type": "string" },
           "status": { "$ref": "#/$defs/status" },
-          "reason": { "type": "string" }
+          "reason": { "type": "string" },
+          "source": { "type": "string", "description": "Where the check's data came from and how fresh it was, e.g. an offline snapshot's age." }
         }
       }
     },

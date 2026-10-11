@@ -85,14 +85,23 @@ pub struct Check {
     pub status: Status,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Where the data behind the check came from, and how fresh it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 impl Check {
+    pub fn with_source(mut self, source: impl Into<String>) -> Check {
+        self.source = Some(source.into());
+        self
+    }
+
     pub fn passed(id: impl Into<String>) -> Check {
         Check {
             id: id.into(),
             status: Status::Passed,
             reason: None,
+            source: None,
         }
     }
 
@@ -101,6 +110,7 @@ impl Check {
             id: id.into(),
             status: Status::Incomplete,
             reason: Some(reason.into()),
+            source: None,
         }
     }
 
@@ -109,6 +119,7 @@ impl Check {
             id: id.into(),
             status: Status::Error,
             reason: Some(reason.into()),
+            source: None,
         }
     }
 }

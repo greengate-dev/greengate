@@ -91,7 +91,7 @@ Commands are grouped by concern. Each runs standalone or as a step in `greengate
 
 | Command | What it does |
 |---|---|
-| `greengate audit` | Query the [OSV database](https://osv.dev) for known vulnerabilities in your project's dependencies. Recursively discovers `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, pinned `requirements.txt`, and `go.sum`. |
+| `greengate audit` | Query the [OSV database](https://osv.dev) for known vulnerabilities in your project's dependencies. Recursively discovers `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, pinned `requirements.txt`, and `go.sum`. Works offline from snapshots downloaded by `greengate db update`, and falls back to them when the API is down. |
 | `greengate sbom` | Generate a [CycloneDX 1.5](https://cyclonedx.org) SBOM from the project's lock file. |
 | `greengate sbom --attest` | Generate a SBOM and sign it with [Sigstore](https://sigstore.dev) keyless signing. Produces a bundle file anchored in the Rekor public transparency log. No private key required. |
 | `greengate sbom --verify <file>` | Verify a SBOM against a cosign bundle. Fails if the signature is invalid or the bundle is missing from the Rekor log. |
@@ -463,7 +463,7 @@ release:
 | **How adopted is it?** | Near-zero downloads on a package your agent just reached for is a red flag. |
 | **Any source repo?** | Legitimate packages almost always declare one. |
 
-Signals combine into a suspicion level: **HIGH blocks the install, MEDIUM warns.** If the registry is unreachable the check fails **open** — it never breaks an offline or air-gapped build.
+Signals combine into a suspicion level: **HIGH blocks the install, MEDIUM warns.** These are suspicion signals, not proof that a package is malicious. If the registry is unreachable, the package is reported as **not screened** and the run is incomplete (exit `3`) rather than passing; set `[policy] on_incomplete = "warn"` or pass `--allow-incomplete` for offline or air-gapped builds.
 
 ```bash
 # An agent suggested a plausible-but-invented crate:

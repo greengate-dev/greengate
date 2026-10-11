@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `[policy] on_incomplete = "fail" | "warn"` and a global `--allow-incomplete` flag.
 - Global `--report <path>` on every gate: SARIF 2.1.0 for `*.sarif`, otherwise `greengate.report/v1` JSON. Written even when the gate errors. Incomplete checks appear in SARIF as tool-execution notifications with `executionSuccessful: false`. JSON Schema published at `/schema/report-v1.json`.
 - `GREENGATE_OSV_URL` to point `audit` at an OSV mirror.
+- Offline vulnerability data: `greengate db update` downloads and indexes OSV snapshots (ETag-revalidated); `greengate db status` shows their age. `audit --offline` / `[audit] source = "offline"` match locally; the default `source = "auto"` falls back to a snapshot no older than `max_db_age_hours` (24) when the API fails. Matching follows the OSV schema with SemVer and PEP 440 ordering, and returned the same 464 findings as the API on 11 real npm, pnpm, Cargo, Go and PyPI lockfiles.
+- Checks in the report can carry a `source` — e.g. which snapshot answered and how old it was.
+- `GREENGATE_CACHE_DIR` relocates greengate's cache.
 
 ### Changed
 - **Breaking:** `audit` exits `3` when it could not check every dependency, instead of warning and exiting `0`. That covers an unreachable or short OSV response, a truncated advisory list, an unreadable lockfile, and `requirements.txt` entries that are not `==` pinned (ranges, `-r` includes, editable installs). Findings still exit `1`; set `on_incomplete = "warn"` to keep exiting `0`.

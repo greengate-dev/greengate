@@ -725,13 +725,19 @@ fn audit_unreachable_osv_is_incomplete_not_a_pass() {
     let (code, report) = audit_json(dir.path(), &closed_port_url(), &[]);
     assert_eq!(code, Some(3), "{report}");
     assert_eq!(report["status"], "incomplete");
+    // No offline snapshot to fall back on, so the check says both.
     let osv = report["checks"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|c| c["id"] == "osv")
-        .expect("an osv check");
+        .find(|c| c["id"] == "osv-db:npm")
+        .expect("an osv-db check");
     assert_eq!(osv["status"], "incomplete");
+    let reason = osv["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("OSV API failed") && reason.contains("greengate db update"),
+        "{reason}"
+    );
 }
 
 #[test]
@@ -1889,4 +1895,217 @@ fn image_scan_clean_image_passes_with_json_on_stdout() {
         )
     });
     assert_eq!(v["total"], 0);
+}
+
+// ── Offline OSV data (db update / audit --offline) ────────────────────────────
+
+/// An OSV `all.zip` holding one npm advisory for lodash < 4.17.21.
+fn lodash_snapshot_zip() -> Vec<u8> {
+    let doc = serde_json::json!({
+        "id": "GHSA-offline-0001",
+        "summary": "Prototype pollution in lodash",
+        "database_specific": { "severity": "HIGH" },
+        "affected": [{
+            "package": { "ecosystem": "npm", "name": "lodash" },
+            "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }, { "fixed": "4.17.21" }] }]
+        }]
+    });
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    w.start_file("GHSA-offline-0001.json", opts).unwrap();
+    std::io::Write::write_all(&mut w, doc.to_string().as_bytes()).unwrap();
+    w.finish().unwrap().into_inner()
+}
+
+/// Serve `body` at any path with an ETag, answering 304 to a matching
+/// `If-None-Match`. Returns the base URL and a counter of 304 responses.
+fn fake_snapshot_server(
+    body: Vec<u8>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let not_modified = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = not_modified.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut matched = false;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                    break;
+                }
+                if line.to_ascii_lowercase().starts_with("if-none-match:")
+                    && line.contains("\"v1\"")
+                {
+                    matched = true;
+                }
+            }
+            if matched {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                );
+            } else {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(&body);
+            }
+        }
+    });
+    (format!("http://{addr}"), not_modified)
+}
+
+/// `greengate db <args>` with the snapshot server and HOME in `dir`.
+fn db(dir: &std::path::Path, server: &str, args: &[&str]) -> std::process::Output {
+    Command::new(binary())
+        .arg("db")
+        .args(args)
+        .env("GREENGATE_OSV_DB_URL", server)
+        .env("HOME", dir)
+        .env_remove("GREENGATE_CACHE_DIR")
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+fn check<'a>(report: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .unwrap_or_else(|| panic!("no {id} check in {report}"))
+}
+
+#[test]
+fn offline_audit_matches_a_downloaded_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path()); // lodash 4.17.20
+    let (server, _) = fake_snapshot_server(lodash_snapshot_zip());
+
+    // Default ecosystems come from the project's dependency files.
+    let out = db(dir.path(), &server, &["update"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &["--offline"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(report["findings"][0]["rule"], "OSV/GHSA-offline-0001");
+    assert_eq!(report["findings"][0]["severity"], "high");
+    assert_eq!(
+        report["findings"][0]["remediation"],
+        "upgrade to >= 4.17.21"
+    );
+    let db_check = check(&report, "osv-db:npm");
+    assert_eq!(db_check["status"], "passed");
+    assert!(
+        db_check["source"]
+            .as_str()
+            .unwrap()
+            .contains("offline OSV snapshot")
+    );
+}
+
+#[test]
+fn offline_audit_without_a_snapshot_is_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &["--offline"]);
+    assert_eq!(code, Some(3), "{report}");
+    assert_eq!(check(&report, "osv-db:npm")["status"], "incomplete");
+}
+
+#[test]
+fn auto_source_falls_back_to_the_snapshot_when_the_api_is_down() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (server, _) = fake_snapshot_server(lodash_snapshot_zip());
+    assert!(
+        db(dir.path(), &server, &["update", "--ecosystem", "npm"])
+            .status
+            .success()
+    );
+
+    // No --offline: the API is unreachable, the snapshot answers instead.
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &[]);
+    assert_eq!(code, Some(1), "{report}");
+    let source = check(&report, "osv-db:npm")["source"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(source.contains("OSV API failed"), "{source}");
+}
+
+#[test]
+fn stale_snapshot_is_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (server, _) = fake_snapshot_server(lodash_snapshot_zip());
+    assert!(db(dir.path(), &server, &["update"]).status.success());
+
+    // Age the snapshot past the 24 h default.
+    let meta_path = dir.path().join(".cache/greengate/osv-db/npm/meta.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+    meta["checked_at"] = serde_json::json!(0);
+    std::fs::write(&meta_path, meta.to_string()).unwrap();
+
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &["--offline"]);
+    assert_eq!(code, Some(3), "{report}");
+    let reason = check(&report, "osv-db:npm")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(reason.contains("h old"), "{reason}");
+}
+
+#[test]
+fn db_update_revalidates_with_etag_and_reports_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let (server, not_modified) = fake_snapshot_server(lodash_snapshot_zip());
+    assert!(
+        db(dir.path(), &server, &["update", "--ecosystem", "npm"])
+            .status
+            .success()
+    );
+    assert!(
+        db(dir.path(), &server, &["update", "--ecosystem", "npm"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        not_modified.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the second update must revalidate rather than re-download"
+    );
+
+    let out = db(dir.path(), &server, &["status", "--format", "json"]);
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let npm = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["ecosystem"] == "npm")
+        .unwrap();
+    assert_eq!(npm["advisories"], 1);
+    assert_eq!(npm["packages"], 1);
+}
+
+#[test]
+fn db_update_needs_dependency_files_or_an_ecosystem() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = db(dir.path(), "http://127.0.0.1:1", &["update"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--ecosystem"));
 }

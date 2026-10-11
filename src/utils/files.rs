@@ -2,6 +2,17 @@ use ignore::{Walk, WalkBuilder};
 use std::io;
 use std::path::Path;
 
+/// Root of greengate's on-disk cache: `$GREENGATE_CACHE_DIR`, else
+/// `~/.cache/greengate` (`%USERPROFILE%\.cache\greengate` on Windows).
+pub fn cache_root() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("GREENGATE_CACHE_DIR").filter(|d| !d.is_empty()) {
+        return Some(dir.into());
+    }
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| std::path::PathBuf::from(home).join(".cache/greengate"))
+}
+
 pub fn get_walker<P: AsRef<Path>>(dir: P) -> Walk {
     // Respects .gitignore rules; hidden(false) ensures dotfiles like .env are included
     WalkBuilder::new(dir).hidden(false).build()

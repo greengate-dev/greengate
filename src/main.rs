@@ -109,6 +109,15 @@ enum Commands {
         /// Output format (json writes a greengate.report/v1 document to stdout)
         #[arg(long, default_value = "text")]
         format: report::Format,
+        /// Use only the offline OSV snapshots (`greengate db update`); never
+        /// query the API. Overrides [audit] source.
+        #[arg(long)]
+        offline: bool,
+    },
+    /// Manage offline vulnerability data (OSV snapshots used by `audit`)
+    Db {
+        #[command(subcommand)]
+        action: DbAction,
     },
     /// Audits web performance via Google PageSpeed Insights (Lighthouse)
     Lighthouse {
@@ -319,6 +328,27 @@ enum Commands {
         /// Output format
         #[arg(long, default_value = "text")]
         format: ReportFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum DbAction {
+    /// Download or refresh OSV snapshots. Defaults to the ecosystems of the
+    /// dependency files in the current directory.
+    Update {
+        /// Ecosystem to update (repeatable)
+        #[arg(long = "ecosystem", value_name = "ECOSYSTEM",
+              value_parser = ["npm", "crates.io", "PyPI", "Go"])]
+        ecosystems: Vec<String>,
+        /// Update every supported ecosystem
+        #[arg(long, conflicts_with = "ecosystems")]
+        all: bool,
+    },
+    /// Show each snapshot's age and size
+    Status {
+        /// Output format
+        #[arg(long, default_value = "text")]
+        format: report::Format,
     },
 }
 
@@ -569,8 +599,31 @@ fn run() -> anyhow::Result<ExitCode> {
         Commands::InstallHooks { force } => {
             modules::hooks::run_install_hooks(force)?;
         }
-        Commands::Audit { format } => {
-            let result = modules::audit::run_audit(&cfg.audit, format);
+        Commands::Db { action } => match action {
+            DbAction::Update { ecosystems, all } => {
+                let ecosystems: Vec<String> = if all {
+                    modules::osv_db::ECOSYSTEMS
+                        .iter()
+                        .map(|e| e.to_string())
+                        .collect()
+                } else if ecosystems.is_empty() {
+                    let found = modules::audit::project_ecosystems(std::path::Path::new("."));
+                    anyhow::ensure!(
+                        !found.is_empty(),
+                        "No supported dependency files here. Pass --ecosystem or --all."
+                    );
+                    found.iter().map(|e| e.to_string()).collect()
+                } else {
+                    ecosystems
+                };
+                modules::osv_db::run_update(&ecosystems)?;
+            }
+            DbAction::Status { format } => {
+                modules::osv_db::run_status(format == report::Format::Json)?;
+            }
+        },
+        Commands::Audit { format, offline } => {
+            let result = modules::audit::run_audit(&cfg.audit, format, offline);
             if format == report::Format::Json
                 && let Ok(report) = &result
             {

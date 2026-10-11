@@ -425,18 +425,9 @@ fn cache_key(body: &str) -> String {
 }
 
 fn cache_dir() -> Option<PathBuf> {
-    let base = std::env::var("HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(dirs_home)?;
-    let dir = base.join(".cache/greengate/osv");
+    let dir = files::cache_root()?.join("osv");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
-}
-
-/// Windows fallback: reads %USERPROFILE% when $HOME is unset.
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var("USERPROFILE").ok().map(PathBuf::from)
 }
 
 fn cache_read(key: &str) -> Option<Value> {
@@ -685,9 +676,124 @@ fn query_osv(packages: &[Package], checks: &mut Vec<Check>) -> Result<Vec<Vulner
     Ok(vulns)
 }
 
+/// Match `packages` against the offline OSV snapshots. Every ecosystem gets a
+/// check: passed with the snapshot's age as its source, or incomplete when the
+/// snapshot is missing or too old, or a version could not be evaluated.
+/// `online_error` is set when this is a fallback for a failed API query.
+fn query_offline(
+    packages: &[Package],
+    max_age: Duration,
+    online_error: Option<&str>,
+    checks: &mut Vec<Check>,
+) -> Vec<Vulnerability> {
+    use crate::modules::osv_db::{Snapshot, Unavailable};
+
+    let fallback_note = online_error
+        .map(|e| format!(" — used because the OSV API failed: {e}"))
+        .unwrap_or_default();
+    let mut ecosystems: Vec<&'static str> = packages.iter().map(|p| p.ecosystem).collect();
+    ecosystems.sort_unstable();
+    ecosystems.dedup();
+
+    let mut vulns = Vec::new();
+    for eco in ecosystems {
+        let id = format!("osv-db:{eco}");
+        let in_eco: Vec<&Package> = packages.iter().filter(|p| p.ecosystem == eco).collect();
+        let mut snapshot = match Snapshot::open(eco, max_age) {
+            Ok(s) => s,
+            Err(why) => {
+                let why = match why {
+                    Unavailable::Missing => "no offline snapshot".to_string(),
+                    Unavailable::Stale(age) => format!(
+                        "offline snapshot is {} h old (limit {} h)",
+                        age.as_secs() / 3600,
+                        max_age.as_secs() / 3600
+                    ),
+                };
+                let online = online_error
+                    .map(|e| format!("OSV API failed ({e}) and "))
+                    .unwrap_or_default();
+                checks.push(Check::incomplete(
+                    id,
+                    format!(
+                        "{online}{why} — {} package(s) not checked; run `greengate db update`",
+                        in_eco.len()
+                    ),
+                ));
+                continue;
+            }
+        };
+        let source = format!(
+            "offline OSV snapshot, checked {} h ago{fallback_note}",
+            snapshot.meta.age().as_secs() / 3600
+        );
+        let mut unknown: Vec<String> = Vec::new();
+        for pkg in in_eco {
+            match snapshot.lookup(&pkg.name, &pkg.version) {
+                Ok(entries) => vulns.extend(entries.into_iter().map(|e| Vulnerability {
+                    package: pkg.name.clone(),
+                    version: pkg.version.clone(),
+                    fixed_in: e.fixed_in().map(str::to_string),
+                    vuln_id: e.id,
+                    summary: if e.summary.is_empty() {
+                        "No summary available".to_string()
+                    } else {
+                        e.summary
+                    },
+                    severity: e.severity,
+                    reference_url: e.reference,
+                    source_file: pkg.source_file.clone(),
+                    ecosystem: pkg.ecosystem,
+                })),
+                Err(reason) => unknown.push(reason),
+            }
+        }
+        if unknown.is_empty() {
+            checks.push(Check::passed(id).with_source(source));
+        } else {
+            checks.push(
+                Check::incomplete(
+                    id,
+                    format!(
+                        "{} package(s) not evaluated: {}",
+                        unknown.len(),
+                        unknown.join("; ")
+                    ),
+                )
+                .with_source(source),
+            );
+        }
+    }
+    vulns
+}
+
+/// The OSV ecosystems of the dependency files under `root`, without parsing
+/// them — what `greengate db update` downloads by default.
+pub fn project_ecosystems(root: &Path) -> Vec<&'static str> {
+    let mut found: Vec<&'static str> = files::get_walker(root)
+        .filter_map(|e| e.ok())
+        .filter_map(|e| match e.file_name().to_str()? {
+            "Cargo.lock" => Some("crates.io"),
+            "package-lock.json" | "yarn.lock" | "pnpm-lock.yaml" => Some("npm"),
+            "requirements.txt" => Some("PyPI"),
+            "go.sum" => Some("Go"),
+            _ => None,
+        })
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_audit(cfg: &config::AuditConfig, format: Format) -> Result<Report> {
+pub fn run_audit(cfg: &config::AuditConfig, format: Format, offline: bool) -> Result<Report> {
+    let source = if offline {
+        config::AuditSource::Offline
+    } else {
+        cfg.source
+    };
+    let max_age = Duration::from_secs(cfg.max_db_age_hours.saturating_mul(3600));
     let text = format == Format::Text;
     let ignored: HashSet<String> = cfg
         .ignore_advisories
@@ -742,32 +848,45 @@ pub fn run_audit(cfg: &config::AuditConfig, format: Format) -> Result<Report> {
         })
         .collect();
 
-    // OSV batch API supports up to 1000 queries; chunk if needed
-    let bar = terminal::create_progress_bar(1);
-    bar.set_message("Querying OSV API...");
-
     let mut all_vulns: Vec<Vulnerability> = Vec::new();
-    let chunks = to_query.chunks(1000).count();
-    for (i, chunk) in to_query.chunks(1000).enumerate() {
-        match query_osv(chunk, &mut report.checks) {
-            Ok(vulns) => all_vulns.extend(vulns),
-            Err(e) => {
-                // A failed query leaves its packages unchecked — that is not a
-                // pass. Keep going: other chunks may still answer.
-                let id = if chunks > 1 {
-                    format!("osv:batch-{}", i + 1)
-                } else {
-                    "osv".to_string()
-                };
-                report.checks.push(Check::incomplete(
-                    id,
-                    format!("{} package(s) not checked: {e:#}", chunk.len()),
-                ));
+    if source == config::AuditSource::Offline {
+        all_vulns = query_offline(&to_query, max_age, None, &mut report.checks);
+    } else {
+        // OSV batch API supports up to 1000 queries; chunk if needed
+        let bar = terminal::create_progress_bar(1);
+        bar.set_message("Querying OSV API...");
+        let chunks = to_query.chunks(1000).count();
+        for (i, chunk) in to_query.chunks(1000).enumerate() {
+            match query_osv(chunk, &mut report.checks) {
+                Ok(vulns) => all_vulns.extend(vulns),
+                Err(e) if source == config::AuditSource::Auto => {
+                    // The API failed; a fresh offline snapshot can still
+                    // answer. If none can, query_offline says so.
+                    let reason = format!("{e:#}");
+                    all_vulns.extend(query_offline(
+                        chunk,
+                        max_age,
+                        Some(&reason),
+                        &mut report.checks,
+                    ));
+                }
+                Err(e) => {
+                    // A failed query leaves its packages unchecked — that is not a
+                    // pass. Keep going: other chunks may still answer.
+                    let id = if chunks > 1 {
+                        format!("osv:batch-{}", i + 1)
+                    } else {
+                        "osv".to_string()
+                    };
+                    report.checks.push(Check::incomplete(
+                        id,
+                        format!("{} package(s) not checked: {e:#}", chunk.len()),
+                    ));
+                }
             }
         }
+        bar.finish_and_clear();
     }
-
-    bar.finish_and_clear();
 
     // Split into suppressed vs. actionable
     let (suppressed, actionable): (Vec<_>, Vec<_>) = all_vulns

@@ -163,7 +163,11 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
             crate::modules::coverage::run_coverage(&file, min)
         }
 
-        "audit" => crate::modules::audit::run_audit(&cfg.audit, crate::report::Format::Text),
+        "audit" => crate::modules::audit::run_audit(
+            &cfg.audit,
+            crate::report::Format::Text,
+            args.contains(&"--offline"),
+        ),
 
         "lighthouse" => {
             use crate::modules::perf_lighthouse::{LighthouseOpts, LighthouseThresholds};

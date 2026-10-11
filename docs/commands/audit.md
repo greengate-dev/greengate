@@ -20,8 +20,24 @@ Maven (`pom.xml`), .NET/NuGet (`*.csproj`, `packages.lock.json`), Ruby
 (`Gemfile.lock`), and Python lockfiles (`Pipfile.lock`, `poetry.lock`, `uv.lock`)
 are not currently supported.
 
-OSV batch responses are cached for 24 hours. This cache is not an offline
-vulnerability database.
+OSV batch responses are cached for 24 hours.
+
+## Offline mode
+
+With snapshots downloaded by [`greengate db update`](db.md), `audit` can match
+dependencies locally:
+
+- `[audit] source = "auto"` (default) queries the OSV API and, if a query
+  fails, answers from a snapshot no older than `max_db_age_hours` (default 24).
+  The report notes that the fallback was used.
+- `source = "offline"` or `--offline` uses only the snapshots and never calls
+  the API. A missing or stale snapshot makes the run incomplete.
+- `source = "online"` never uses snapshots.
+
+Offline matching follows the OSV schema's version rules: SemVer ordering for
+npm, crates.io and Go, PEP 440 for PyPI. A version it cannot order is reported
+as incomplete, never as unaffected. On real lockfiles it returns the same
+findings as the API.
 
 ## What "incomplete" means
 
@@ -29,7 +45,8 @@ vulnerability database.
 something could not be checked, the run is **incomplete** and exits `3` — it
 is never reported as a pass. Causes:
 
-- OSV could not be reached, or answered for fewer packages than were queried
+- OSV could not be reached (and no fresh offline snapshot could answer), or
+  answered for fewer packages than were queried
 - OSV truncated a package's advisory list (paginated response)
 - A dependency file could not be read
 - `requirements.txt` lines that are not `==` pinned, `-r` includes, and
@@ -49,6 +66,7 @@ greengate audit [OPTIONS]
 
 Options:
       --format <FORMAT>   Output format [default: text] [possible values: text, json]
+      --offline           Use only offline OSV snapshots (see `greengate db`)
       --allow-incomplete  Exit 0 even when some checks could not run
   -h, --help              Print help
 ```

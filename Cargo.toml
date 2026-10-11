@@ -24,10 +24,17 @@ tree-sitter-rust = "0.23"
 ureq = { version = "2", features = ["json"] }
 roxmltree = "0.20"
 globset = "0.4"
+semver = "1"
+pep440_rs = "0.7"
+# Reading OSV snapshot archives only: the pure-Rust deflate decoder, none of
+# the other codecs. 4.x keeps the MSRV at or below 1.85.
+zip = { version = "4.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
+# Integration tests build fake OSV snapshot archives.
+zip = { version = "4.6", default-features = false }
 
 # Overflow wraps silently in release by default, so the same arithmetic behaves
 # differently than it does in debug and in tests. For a tool whose output gates

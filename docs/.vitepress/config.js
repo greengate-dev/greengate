@@ -81,6 +81,7 @@ export default defineConfig({
           { text: 'ci-lint', link: '/commands/ci-lint' },
           { text: 'image-scan', link: '/commands/image-scan' },
           { text: 'audit', link: '/commands/audit' },
+          { text: 'db', link: '/commands/db' },
           { text: 'sbom', link: '/commands/sbom' },
         ],
       },

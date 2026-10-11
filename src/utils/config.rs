@@ -49,7 +49,7 @@ pub struct PolicyConfig {
 }
 
 /// Audit settings loaded from `.greengate.toml` under `[audit]`.
-#[derive(Deserialize, Default, Clone)]
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct AuditConfig {
     /// GHSA/CVE IDs to suppress — use for known-acceptable transitive dep
@@ -57,6 +57,38 @@ pub struct AuditConfig {
     /// Document WHY each entry is acceptable in a comment above the list.
     #[serde(default)]
     pub ignore_advisories: Vec<String>,
+    /// Where vulnerability data comes from: `auto` (default — the OSV API,
+    /// falling back to an offline snapshot when it fails), `online`, or
+    /// `offline` (snapshot only; see `greengate db update`).
+    #[serde(default)]
+    pub source: AuditSource,
+    /// Oldest offline snapshot the audit will use, in hours. Older data makes
+    /// the check incomplete.
+    #[serde(default = "default_max_db_age_hours")]
+    pub max_db_age_hours: u64,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            ignore_advisories: Vec::new(),
+            source: AuditSource::default(),
+            max_db_age_hours: default_max_db_age_hours(),
+        }
+    }
+}
+
+fn default_max_db_age_hours() -> u64 {
+    24
+}
+
+#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditSource {
+    #[default]
+    Auto,
+    Online,
+    Offline,
 }
 
 /// A user-defined tree-sitter query rule from `.greengate.toml`.

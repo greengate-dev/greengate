@@ -94,6 +94,11 @@ on_incomplete = "fail"
 ignore_advisories = [
   # "GHSA-xxxx-yyyy-zzzz",   # affected-package — reason suppressed
 ]
+# Vulnerability data: "auto" (OSV API, falling back to an offline snapshot
+# when it fails), "online", or "offline" (snapshots from `greengate db update`)
+source = "auto"
+# Oldest offline snapshot audit will use; older data makes the run incomplete
+max_db_age_hours = 24
 
 [supply_chain]
 # Halt the install when any layer of the zero-trust gate detects a threat (default: true).

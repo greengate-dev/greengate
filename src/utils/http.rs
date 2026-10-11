@@ -59,3 +59,57 @@ pub fn read_json<T: serde::de::DeserializeOwned>(resp: ureq::Response) -> Result
     serde_json::from_reader(body.by_ref().take(MAX_BODY_BYTES))
         .context("failed to read response body (or body exceeded the size cap)")
 }
+
+/// Agent for large downloads: same connect/read timeouts, but no whole-call
+/// ceiling — a 200 MB archive on a slow link legitimately takes minutes. A
+/// stalled transfer still ends via the read timeout.
+fn download_agent() -> ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT
+        .get_or_init(|| {
+            ureq::AgentBuilder::new()
+                .timeout_connect(CONNECT_TIMEOUT)
+                .timeout_read(READ_TIMEOUT)
+                .timeout_write(WRITE_TIMEOUT)
+                .build()
+        })
+        .clone()
+}
+
+/// Result of [`download`].
+pub enum Download {
+    /// The body was written to the destination.
+    Fetched { etag: Option<String> },
+    /// The server confirmed the copy matching the sent ETag is current.
+    NotModified,
+}
+
+/// Stream `url` into `dest`, failing past `max_bytes`. With `etag`, sends
+/// `If-None-Match` and returns [`Download::NotModified`] on a 304.
+pub fn download(
+    url: &str,
+    dest: &std::path::Path,
+    max_bytes: u64,
+    etag: Option<&str>,
+) -> Result<Download> {
+    let mut req = download_agent().get(url);
+    if let Some(tag) = etag {
+        req = req.set("If-None-Match", tag);
+    }
+    let resp = req.call().with_context(|| format!("GET {url}"))?;
+    if resp.status() == 304 {
+        return Ok(Download::NotModified);
+    }
+    let etag = resp.header("ETag").map(str::to_string);
+    let mut file = std::fs::File::create(dest)
+        .with_context(|| format!("could not create {}", dest.display()))?;
+    // Read one byte past the cap so an oversized body is detected, not cut.
+    let written = std::io::copy(&mut resp.into_reader().take(max_bytes + 1), &mut file)
+        .with_context(|| format!("download of {url} failed"))?;
+    anyhow::ensure!(
+        written <= max_bytes,
+        "{url} is larger than the {} MB limit",
+        max_bytes / (1024 * 1024)
+    );
+    Ok(Download::Fetched { etag })
+}
