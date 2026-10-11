@@ -27,11 +27,29 @@ inputs:
     description: Extra arguments forwarded verbatim to `greengate run`.
     required: false
     default: ''
+  report:
+    description: >-
+      Where to write the merged report: SARIF 2.1.0 when the path ends in
+      ".sarif", otherwise greengate.report/v1 JSON. Defaults to a JSON file
+      in RUNNER_TEMP.
+    required: false
+    default: ''
 
 outputs:
+  status:
+    description: >-
+      Overall result: passed, findings, incomplete or error.
+      Empty if the report could not be read.
+    value: ${{ steps.run.outputs.status }}
   findings:
     description: Total number of findings reported across all pipeline steps.
     value: ${{ steps.run.outputs.findings }}
+  incomplete:
+    description: Number of checks that did not complete.
+    value: ${{ steps.run.outputs.incomplete }}
+  report-path:
+    description: Path of the report file written by the run.
+    value: ${{ steps.run.outputs.report-path }}
 
 runs:
   using: composite
@@ -89,12 +107,46 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
+        # Inputs reach the script through the environment, never through
+        # `${{ }}` inside it, so an input carrying shell syntax stays data.
+        GG_PROFILE: ${{ inputs.profile }}
+        GG_ARGS: ${{ inputs.args }}
+        GG_REPORT: ${{ inputs.report }}
       run: |
-        set -euo pipefail
+        set -uo pipefail
+        set -f  # GG_ARGS is word-split on purpose; never glob-expand it
 
-        PROFILE_ARG=""
-        if [ -n "${{ inputs.profile }}" ]; then
-          PROFILE_ARG="--profile ${{ inputs.profile }}"
+        REPORT="${GG_REPORT:-${RUNNER_TEMP:-/tmp}/greengate-report.json}"
+        # A report left by an earlier run must not stand in for this one if
+        # greengate exits before writing (e.g. a usage error).
+        rm -f "$REPORT"
+        PROFILE_ARGS=()
+        if [ -n "$GG_PROFILE" ]; then
+          PROFILE_ARGS=(--profile "$GG_PROFILE")
         fi
 
-        greengate run $PROFILE_ARG ${{ inputs.args }}
+        # shellcheck disable=SC2086
+        greengate run ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} --report "$REPORT" $GG_ARGS
+        CODE=$?
+
+        echo "report-path=${REPORT}" >> "$GITHUB_OUTPUT"
+        case "$REPORT" in
+          *.sarif|*.SARIF)
+            FILTER_STATUS='if .runs[0].invocations[0].executionSuccessful then (if (.runs[0].results | length) > 0 then "findings" else "passed" end) else "incomplete" end'
+            FILTER_FINDINGS='.runs[0].results | length'
+            FILTER_INCOMPLETE='.runs[0].invocations[0].toolExecutionNotifications | length'
+            ;;
+          *)
+            FILTER_STATUS='.status'
+            FILTER_FINDINGS='.findings | length'
+            FILTER_INCOMPLETE='[.checks[] | select(.status != "passed")] | length'
+            ;;
+        esac
+        if [ -f "$REPORT" ] && command -v jq >/dev/null 2>&1; then
+          echo "status=$(jq -r "$FILTER_STATUS" "$REPORT")" >> "$GITHUB_OUTPUT"
+          echo "findings=$(jq -r "$FILTER_FINDINGS" "$REPORT")" >> "$GITHUB_OUTPUT"
+          echo "incomplete=$(jq -r "$FILTER_INCOMPLETE" "$REPORT")" >> "$GITHUB_OUTPUT"
+        fi
+
+        # 0 passed · 1 findings · 2 usage/config error · 3 incomplete · 4 error
+        exit "$CODE"

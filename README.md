@@ -805,11 +805,15 @@ Or use the **composite action** (zero download boilerplate):
 
 ```yaml
 - uses: greengate-dev/greengate@v0
+  id: greengate
   with:
     profile: ci
+    report: greengate.sarif        # optional; JSON in RUNNER_TEMP by default
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+The action exits with greengate's [exit code](https://greengate-dev.github.io/greengate/reference/exit-codes) and sets `status` (`passed`, `findings`, `incomplete` or `error`), `findings`, `incomplete` and `report-path` outputs. A `.sarif` report can go straight to `github/codeql-action/upload-sarif`.
 
 > See [CI/CD Integration](https://greengate-dev.github.io/greengate/guide/ci-integration) for GitLab CI, Bitbucket Pipelines, and CircleCI examples.
 
