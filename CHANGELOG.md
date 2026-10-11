@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.4] - Unreleased
 
-Positioning greengate as the security & supply-chain gate for the AI-coding era.
-
 ### Added
 - Slopsquat / hallucinated-package guard on every install wrapper, scoring registry existence, age, adoption and source repo. HIGH blocks, MEDIUM warns.
 - Dependency-confusion detection via `[supply_chain] internal_packages`.
