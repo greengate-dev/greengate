@@ -1,4 +1,4 @@
-use crate::modules::scanner::Finding;
+use crate::modules::scanner::{Finding, Severity};
 use crate::utils::http;
 use anyhow::Result;
 
@@ -94,11 +94,7 @@ fn update_check_run_annotations(
     let annotations: Vec<serde_json::Value> = chunk
         .iter()
         .map(|f| {
-            let level = match f.severity.as_str() {
-                "critical" | "high" => "failure",
-                "medium" => "warning",
-                _ => "notice",
-            };
+            let level = f.severity.github_level();
             serde_json::json!({
                 "path": f.path.to_string_lossy(),
                 "start_line": f.line,
@@ -214,10 +210,15 @@ fn build_pr_summary(findings: &[Finding]) -> String {
             .to_string();
     }
 
-    let critical = findings.iter().filter(|f| f.severity == "critical").count();
-    let high = findings.iter().filter(|f| f.severity == "high").count();
-    let medium = findings.iter().filter(|f| f.severity == "medium").count();
-    let low = findings.iter().filter(|f| f.severity == "low").count();
+    let (mut critical, mut high, mut medium, mut low) = (0usize, 0usize, 0usize, 0usize);
+    for f in findings {
+        match f.severity {
+            Severity::Critical => critical += 1,
+            Severity::High => high += 1,
+            Severity::Medium => medium += 1,
+            Severity::Low => low += 1,
+        }
+    }
 
     let mut md = format!(
         "## greengate scan results\n\n\

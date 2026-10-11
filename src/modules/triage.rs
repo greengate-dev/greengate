@@ -288,7 +288,7 @@ pub fn emit_triaged(
 
         eprintln!(
             "  - [{}] [{}] {}:{}{}",
-            f.severity.to_uppercase(),
+            f.severity.as_str().to_uppercase(),
             f.rule_id,
             f.path.display(),
             f.line,

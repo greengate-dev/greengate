@@ -7,6 +7,7 @@
 use crate::modules::scanner::Finding;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 
 const BASELINE_FILE: &str = ".greengate-baseline.json";
@@ -43,31 +44,22 @@ pub fn save_baseline(findings: &[Finding]) -> Result<()> {
     Ok(())
 }
 
-/// Load previously-saved baseline entries.
-pub fn load_baseline() -> Result<Vec<BaselineEntry>> {
+/// Load previously-saved baseline entries as a fingerprint set.
+pub fn load_baseline() -> Result<HashSet<BaselineEntry>> {
     if !Path::new(BASELINE_FILE).exists() {
-        return Ok(Vec::new());
+        return Ok(HashSet::new());
     }
     let content = std::fs::read_to_string(BASELINE_FILE)?;
-    let entries: Vec<BaselineEntry> = serde_json::from_str(&content)?;
+    let entries: HashSet<BaselineEntry> = serde_json::from_str(&content)?;
     Ok(entries)
 }
 
-/// Return only findings that are *not* present in the baseline.
+/// Drop findings already present in the baseline, keeping only new ones.
 ///
-/// Uses a set of (path, rule_id, line) fingerprints. The comparison is
-/// line-exact intentionally — if the same secret moves to a different line it
-/// should be reviewed again.
-pub fn filter_new_findings<'a>(
-    findings: &'a [Finding],
-    baseline: &[BaselineEntry],
-) -> Vec<&'a Finding> {
-    let known: std::collections::HashSet<BaselineEntry> = baseline.iter().cloned().collect();
-
-    findings
-        .iter()
-        .filter(|f| !known.contains(&BaselineEntry::from(*f)))
-        .collect()
+/// The (path, rule_id, line) comparison is line-exact intentionally — if the
+/// same secret moves to a different line it should be reviewed again.
+pub fn retain_new_findings(findings: &mut Vec<Finding>, baseline: &HashSet<BaselineEntry>) {
+    findings.retain(|f| !baseline.contains(&BaselineEntry::from(f)));
 }
 
 /// Print a summary comparing current vs baseline.

@@ -24,6 +24,7 @@ pub fn run_lint(target_dir: &str) -> Result<()> {
     }
 
     let mut all_issues: Vec<LintIssue> = Vec::new();
+    let mut unparsed: Vec<String> = Vec::new();
 
     for path in &yaml_files {
         match std::fs::read_to_string(path) {
@@ -31,14 +32,28 @@ pub fn run_lint(target_dir: &str) -> Result<()> {
                 // A single file may contain multiple YAML documents separated by ---
                 let docs = split_yaml_docs(&content);
                 for doc_str in docs {
-                    if let Ok(doc) = serde_yaml::from_str::<Value>(&doc_str) {
-                        all_issues.extend(check_manifest(path, &doc));
+                    match serde_yaml::from_str::<Value>(&doc_str) {
+                        Ok(doc) => all_issues.extend(check_manifest(path, &doc)),
+                        Err(e) => unparsed.push(format!("{}: {e}", path.display())),
                     }
                 }
             }
             Err(e) => {
                 terminal::warn(&format!("Cannot read {}: {}", path.display(), e));
             }
+        }
+    }
+
+    // Not a failure — un-rendered Helm/Kustomize templates are common in repos —
+    // but never silent, so a typo'd manifest is not mistaken for a passing one.
+    if !unparsed.is_empty() {
+        terminal::warn(&format!(
+            "{} YAML document(s) did not parse and were NOT linted \
+             (templates must be rendered first):",
+            unparsed.len()
+        ));
+        for u in &unparsed {
+            eprintln!("  - {u}");
         }
     }
 

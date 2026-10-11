@@ -1,5 +1,6 @@
 use crate::modules::scanner::{
-    Finding, check_entropy, is_known_false_positive, is_sast_file, make_finding,
+    Finding, check_entropy, collect_scanned, is_sast_file, make_finding, pattern_hits,
+    scan_one_file,
 };
 use crate::modules::taint::{TaintCache, taint_for_sink};
 use crate::utils::{
@@ -142,24 +143,15 @@ fn scan_string_literals(
                 continue;
             }
 
-            // Run every secret/PII regex against the string literal value only
-            for (name, regex) in patterns {
-                if let Some(m) = regex.find(text) {
-                    if is_known_false_positive(m.as_str()) {
-                        continue;
-                    }
-                    findings.push(make_finding(
-                        path.to_path_buf(),
-                        name.clone(),
-                        line_no,
-                        None,
-                    ));
-                }
-            }
-
-            // Entropy check on the literal value itself
-            for rule_id in check_entropy(text, scan_config) {
-                findings.push(make_finding(path.to_path_buf(), rule_id, line_no, None));
+            // Every secret/PII regex and the entropy check run against the
+            // string literal value only.
+            for rule in pattern_hits(text, patterns).chain(check_entropy(text, scan_config)) {
+                findings.push(make_finding(
+                    path.to_path_buf(),
+                    rule.to_string(),
+                    line_no,
+                    None,
+                ));
             }
         }
     }
@@ -951,6 +943,8 @@ fn scan_complexity(
 
 // ── Per-file scanner ──────────────────────────────────────────────────────────
 
+/// Read and scan one file; test convenience over [`scan_source`].
+#[cfg(test)]
 fn scan_file(
     path: &Path,
     sast_config: &SastConfig,
@@ -958,11 +952,25 @@ fn scan_file(
     scan_config: &ScanConfig,
     custom_rule_srcs: &[(String, String)],
 ) -> Vec<Finding> {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
+    let source = std::fs::read_to_string(path).expect("test fixture is readable UTF-8");
+    scan_source(
+        path,
+        &source,
+        sast_config,
+        secret_patterns,
+        scan_config,
+        custom_rule_srcs,
+    )
+}
 
+fn scan_source(
+    path: &Path,
+    source: &str,
+    sast_config: &SastConfig,
+    secret_patterns: &[(String, Regex)],
+    scan_config: &ScanConfig,
+    custom_rule_srcs: &[(String, String)],
+) -> Vec<Finding> {
     let lang = match language_for(path) {
         Some(l) => l,
         None => return Vec::new(),
@@ -980,7 +988,7 @@ fn scan_file(
     }
 
     // tree-sitter is error-tolerant; parse() returns None only on hard timeout/cancel.
-    let tree = match parser.parse(&source, None) {
+    let tree = match parser.parse(source, None) {
         Some(t) => t,
         None => return Vec::new(),
     };
@@ -1068,16 +1076,19 @@ pub fn run_sast_scan(
         })
         .collect();
 
-    let findings: Vec<Finding> = js_ts
+    let results: Vec<Result<Vec<Finding>, String>> = js_ts
         .par_iter()
-        .flat_map(|path| {
-            let result = scan_file(
-                path,
-                sast_config,
-                secret_patterns,
-                scan_config,
-                &custom_rule_srcs,
-            );
+        .map(|path| {
+            let result = scan_one_file(path, |source| {
+                scan_source(
+                    path,
+                    source,
+                    sast_config,
+                    secret_patterns,
+                    scan_config,
+                    &custom_rule_srcs,
+                )
+            });
             if let Some(b) = &bar {
                 b.inc(1);
             }
@@ -1089,7 +1100,7 @@ pub fn run_sast_scan(
         b.finish_with_message("SAST scan complete.");
     }
 
-    Ok(findings)
+    Ok(collect_scanned(results))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@
 ///      provided LCOV/Cobertura report, and whether they meet the configured floor.
 use crate::modules::github;
 use crate::utils::http;
+use crate::utils::output::ReportFormat;
 use crate::utils::terminal;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -28,8 +29,7 @@ pub struct ReviewOpts {
     pub min_coverage: f64,
     /// If > 0, fail when Complexity Score exceeds this value.
     pub complexity_budget: u32,
-    /// Output format: "text", "json", or "sarif".
-    pub format: String,
+    pub format: ReportFormat,
     /// Post results to GitHub Check Run + PR comment.
     pub annotate: bool,
 }
@@ -121,10 +121,10 @@ pub fn run_review(opts: ReviewOpts) -> Result<()> {
     };
 
     // 5. Emit output
-    match opts.format.as_str() {
-        "json" => emit_json(&output)?,
-        "sarif" => emit_sarif(&output)?,
-        _ => emit_text(&output, opts.min_coverage, opts.complexity_budget),
+    match opts.format {
+        ReportFormat::Json => emit_json(&output)?,
+        ReportFormat::Sarif => emit_sarif(&output)?,
+        ReportFormat::Text => emit_text(&output, opts.min_coverage, opts.complexity_budget),
     }
 
     // 6. GitHub annotations

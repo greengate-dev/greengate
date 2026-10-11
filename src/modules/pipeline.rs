@@ -7,8 +7,12 @@
 /// ("coverage --min 80"). The runner dispatches directly to the same module
 /// functions used by the CLI, so no subprocess spawning is needed.
 use crate::modules::scanner::{DiffMode, OutputFormat, ScanOpts};
+use crate::modules::tia::TiaFormat;
+use crate::utils::output::ReportFormat;
 use crate::utils::{config, terminal};
 use anyhow::Result;
+use std::fmt::Display;
+use std::str::FromStr;
 
 /// Run the pipeline defined in `.greengate.toml`.
 pub fn run_pipeline(cfg: &config::Config) -> Result<()> {
@@ -79,7 +83,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
             } else {
                 since.map(DiffMode::Since)
             };
-            crate::modules::scanner::run_scan(ScanOpts {
+            crate::modules::scanner::run_scan(&ScanOpts {
                 format: OutputFormat::Text,
                 diff,
                 config: &cfg.scan,
@@ -105,9 +109,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
             let file = flag_value(args, "--file")
                 .unwrap_or(&cfg.coverage.file)
                 .to_string();
-            let min: f64 = flag_value(args, "--min")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(cfg.coverage.min);
+            let min: f64 = parsed_flag(args, "--min")?.unwrap_or(cfg.coverage.min);
             crate::modules::coverage::run_coverage(&file, min)
         }
 
@@ -160,13 +162,11 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
             let base = flag_value(args, "--base").unwrap_or("HEAD~1").to_string();
             let staged = args.contains(&"--staged");
             let coverage_file = flag_value(args, "--coverage-file").map(str::to_string);
-            let min_coverage: f64 = flag_value(args, "--min-coverage")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(cfg.review.min_new_code_coverage);
-            let complexity_budget: u32 = flag_value(args, "--complexity-budget")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(cfg.review.complexity_budget);
-            let format = flag_value(args, "--format").unwrap_or("text").to_string();
+            let min_coverage: f64 =
+                parsed_flag(args, "--min-coverage")?.unwrap_or(cfg.review.min_new_code_coverage);
+            let complexity_budget: u32 =
+                parsed_flag(args, "--complexity-budget")?.unwrap_or(cfg.review.complexity_budget);
+            let format = enum_flag(args, "--format")?.unwrap_or(ReportFormat::Text);
             let annotate = args.contains(&"--annotate");
             crate::modules::pr_review::run_review(crate::modules::pr_review::ReviewOpts {
                 base,
@@ -182,9 +182,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
         "tia" => {
             let base = flag_value(args, "--base").unwrap_or("HEAD~1").to_string();
             let staged = args.contains(&"--staged");
-            let format = flag_value(args, "--format")
-                .unwrap_or("newline")
-                .to_string();
+            let format = enum_flag(args, "--format")?.unwrap_or(TiaFormat::Newline);
             crate::modules::tia::run_tia(
                 crate::modules::tia::TiaOpts {
                     base,
@@ -201,7 +199,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
         }
 
         "ci-lint" => {
-            let format = flag_value(args, "--format").unwrap_or("text");
+            let format = enum_flag(args, "--format")?.unwrap_or(ReportFormat::Text);
             let file = flag_value(args, "--file").map(str::to_string);
             crate::modules::ci_lint::run_ci_lint(crate::modules::ci_lint::CiLintOpts {
                 format,
@@ -221,4 +219,26 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<()> {
 /// Extract the value following `--flag value` from an args slice.
 fn flag_value<'a>(args: &[&'a str], flag: &str) -> Option<&'a str> {
     args.windows(2).find(|w| w[0] == flag).map(|w| w[1])
+}
+
+/// Parse the value of `--flag value`. A value that does not parse fails the
+/// step rather than silently falling back to the configured default.
+fn parsed_flag<T>(args: &[&str], flag: &str) -> Result<Option<T>>
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    flag_value(args, flag)
+        .map(|v| {
+            v.parse()
+                .map_err(|e| anyhow::anyhow!("invalid value '{v}' for {flag}: {e}"))
+        })
+        .transpose()
+}
+
+/// Parse the value of `--flag value` as one of a clap `ValueEnum`'s values.
+fn enum_flag<T: clap::ValueEnum>(args: &[&str], flag: &str) -> Result<Option<T>> {
+    flag_value(args, flag)
+        .map(|v| T::from_str(v, false).map_err(|e| anyhow::anyhow!("invalid {flag}: {e}")))
+        .transpose()
 }

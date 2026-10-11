@@ -6,9 +6,10 @@ use anyhow::{Context, Result};
 use ignore::overrides::OverrideBuilder;
 use rayon::prelude::*;
 use regex::Regex;
+use serde::Serialize;
 use serde_json::json;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Built-in secret and PII detection patterns.
@@ -99,8 +100,64 @@ const BUILTIN_PATTERNS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Map a rule ID to its severity level: "critical", "high", "medium", or "low".
-pub fn severity_for_rule(rule_id: &str) -> &'static str {
+/// How serious a finding is. Variants are declared lowest first, so the derived
+/// `Ord` ranks them and `max` picks the more severe of two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl Severity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Low => "low",
+            Severity::Medium => "medium",
+            Severity::High => "high",
+            Severity::Critical => "critical",
+        }
+    }
+
+    /// SARIF `result.level`.
+    pub fn sarif_level(self) -> &'static str {
+        match self {
+            Severity::Critical | Severity::High => "error",
+            Severity::Medium => "warning",
+            Severity::Low => "note",
+        }
+    }
+
+    /// GitHub check-run `annotation_level`.
+    pub fn github_level(self) -> &'static str {
+        match self {
+            Severity::Critical | Severity::High => "failure",
+            Severity::Medium => "warning",
+            Severity::Low => "notice",
+        }
+    }
+
+    /// Severity label in a GitLab security report.
+    pub fn gitlab_label(self) -> &'static str {
+        match self {
+            Severity::Critical => "Critical",
+            Severity::High => "High",
+            Severity::Medium => "Medium",
+            Severity::Low => "Low",
+        }
+    }
+}
+
+impl std::fmt::Display for Severity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Map a rule ID to its severity level.
+pub fn severity_for_rule(rule_id: &str) -> Severity {
     match rule_id {
         "AWS Access Key"
         | "AWS Secret Key"
@@ -111,7 +168,7 @@ pub fn severity_for_rule(rule_id: &str) -> &'static str {
         | "Stripe Secret Key"
         | "SendGrid API Key"
         | "GitHub PAT (classic)"
-        | "GitHub PAT (fine-grained)" => "critical",
+        | "GitHub PAT (fine-grained)" => Severity::Critical,
 
         "Google API Key"
         | "GCP OAuth2 Token"
@@ -124,11 +181,11 @@ pub fn severity_for_rule(rule_id: &str) -> &'static str {
         | "Twilio Account SID"
         | "Expo Access Token"
         | "Mapbox Secret Token"
-        | "JWT Token" => "high",
+        | "JWT Token" => Severity::High,
 
-        "Sentry DSN" => "medium",
+        "Sentry DSN" => Severity::Medium,
 
-        "Generic PII (SSN)" | "Generic PII (Email)" => "low",
+        "Generic PII (SSN)" | "Generic PII (Email)" => Severity::Low,
 
         r if r.starts_with("SAST/ChildProcess")
             || r == "SAST/EvalUsage"
@@ -136,38 +193,38 @@ pub fn severity_for_rule(rule_id: &str) -> &'static str {
             || r == "SAST/PythonEval"
             || r == "SAST/PythonExec" =>
         {
-            "critical"
+            Severity::Critical
         }
         r if r == "SAST/PythonPickle"
             || r == "SAST/PythonSubprocessShell"
             || r == "SAST/GoExecCommand"
             || r == "SAST/RustCommandNew" =>
         {
-            "high"
+            Severity::High
         }
-        "SAST/RustUnsafeBlock" => "medium",
-        r if r == "SAST/RustUnwrap" || r == "SAST/RustExpect" => "low",
+        "SAST/RustUnsafeBlock" => Severity::Medium,
+        r if r == "SAST/RustUnwrap" || r == "SAST/RustExpect" => Severity::Low,
         r if r.starts_with("CI/ExpressionInjection")
             || r == "CI/PullRequestTargetWithCheckout" =>
         {
-            "critical"
+            Severity::Critical
         }
-        r if r.starts_with("CI/") => "medium",
-        r if r.starts_with("SAST/") => "high",
-        r if r.starts_with("SMELL/") => "low",
+        r if r.starts_with("CI/") => Severity::Medium,
+        r if r.starts_with("SAST/") => Severity::High,
+        r if r.starts_with("SMELL/") => Severity::Low,
 
-        _ => "medium", // High-entropy strings, custom patterns
+        _ => Severity::Medium, // High-entropy strings, custom patterns
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Finding {
     pub path: PathBuf,
     pub rule_id: String,
     pub line: usize,
     /// Set to the short commit hash when this finding came from a `--history` scan.
     pub commit: Option<String>,
-    /// Severity level: "critical", "high", "medium", or "low"
-    pub severity: String,
+    pub severity: Severity,
     /// Git blame info (author + commit), populated only with `--blame` flag
     pub blame: Option<String>,
 }
@@ -179,7 +236,7 @@ pub(crate) fn make_finding(
     line: usize,
     commit: Option<String>,
 ) -> Finding {
-    let severity = severity_for_rule(&rule_id).to_string();
+    let severity = severity_for_rule(&rule_id);
     Finding {
         path,
         rule_id,
@@ -190,7 +247,7 @@ pub(crate) fn make_finding(
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
 pub enum OutputFormat {
     Text,
     Json,
@@ -216,7 +273,7 @@ pub struct ScanOpts<'a> {
 }
 
 /// Returns true for files handled by the SAST scanner (JS/TS, Python, Go, Rust).
-pub(crate) fn is_sast_file(path: &std::path::Path) -> bool {
+pub(crate) fn is_sast_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("ts" | "tsx" | "js" | "jsx" | "py" | "go" | "rs")
@@ -335,94 +392,154 @@ pub(crate) fn is_pem_boundary(line: &str) -> (bool, bool) {
     (begin, end)
 }
 
+/// Delimiters that split a line into candidate tokens for the entropy heuristic.
+const TOKEN_DELIMITERS: [char; 8] = ['=', ':', '"', '\'', ' ', '\t', ',', ';'];
+
+/// The entropy rule a single token trips, if any. The one place the thresholds
+/// live, so the scan and `--fix` cannot disagree about what is flagged.
+fn entropy_rule(token: &str, config: &ScanConfig) -> Option<&'static str> {
+    if token.len() < config.entropy_min_length {
+        return None;
+    }
+    let e = shannon_entropy(token);
+    match classify_charset(token) {
+        CharsetKind::Base64Like if e > config.entropy_threshold => {
+            Some("High Entropy String (base64)")
+        }
+        CharsetKind::HexLike if e > 3.5 && token.len() >= 32 => Some("High Entropy String (hex)"),
+        CharsetKind::Base64Like | CharsetKind::HexLike | CharsetKind::Other => None,
+    }
+}
+
 /// Check one source line for high-entropy tokens that may be unrecognised secrets.
 /// Returns rule IDs for each flagged token (may be empty).
-pub(crate) fn check_entropy(line: &str, config: &ScanConfig) -> Vec<String> {
+pub(crate) fn check_entropy(line: &str, config: &ScanConfig) -> Vec<&'static str> {
     if !config.entropy {
         return Vec::new();
     }
-    line.split(['=', ':', '"', '\'', ' ', '\t', ',', ';'])
-        .filter(|s| s.len() >= config.entropy_min_length)
-        .filter(|token| !is_entropy_noise(token, line) && !is_known_false_positive(token))
-        .flat_map(|token| {
-            let e = shannon_entropy(token);
-            match classify_charset(token) {
-                CharsetKind::Base64Like if e > config.entropy_threshold => {
-                    vec!["High Entropy String (base64)".to_string()]
-                }
-                CharsetKind::HexLike if e > 3.5 && token.len() >= 32 => {
-                    vec!["High Entropy String (hex)".to_string()]
-                }
-                _ => vec![],
-            }
-        })
+    flagged_entropy_tokens(line, config)
+        .map(|(_, rule)| rule)
         .collect()
+}
+
+/// Each token on `line` that the entropy heuristic flags, with the rule it trips.
+fn flagged_entropy_tokens<'l>(
+    line: &'l str,
+    config: &ScanConfig,
+) -> impl Iterator<Item = (&'l str, &'static str)> {
+    line.split(TOKEN_DELIMITERS)
+        .filter(move |token| !is_entropy_noise(token, line) && !is_known_false_positive(token))
+        .filter_map(move |token| entropy_rule(token, config).map(|rule| (token, rule)))
+}
+
+/// Names of the secret patterns that match `text`, skipping matches that are
+/// documented examples or placeholders.
+pub(crate) fn pattern_hits<'p>(
+    text: &str,
+    patterns: &'p [(String, Regex)],
+) -> impl Iterator<Item = &'p str> {
+    patterns.iter().filter_map(move |(name, regex)| {
+        regex
+            .find(text)
+            .filter(|m| !is_known_false_positive(m.as_str()))
+            .map(|_| name.as_str())
+    })
 }
 
 // ── Git history scan ──────────────────────────────────────────────────────────
 
-/// Parse the output of `git log --all -p --no-color` and return every *added* line
-/// as a tuple of `(commit_hash, file_path, line_content, new_file_line_number)`.
+/// One added line from a `git log -p` patch, borrowed from the patch text.
+#[derive(Debug, PartialEq)]
+struct AddedLine<'a> {
+    commit: &'a str,
+    path: &'a str,
+    text: &'a str,
+    /// 1-based line number in the post-commit file.
+    line: usize,
+}
+
+/// Where the parser is within one file's diff. `---` and `+++` are header lines
+/// only before the first `@@`; inside a hunk the same prefixes are a removed
+/// line that starts with `--` or an added line that starts with `++`.
+enum PatchState {
+    FileHeader,
+    Hunk { next_line: usize },
+}
+
+/// Parse the output of `git log --all -p --no-color` and return every *added* line.
 ///
-/// Only `+` prefix lines are collected; context (` `) and removed (`-`) lines are
-/// skipped. The new-file line counter advances on both added and context lines so
-/// that line numbers are accurate relative to the post-commit file.
-fn parse_git_log_patch(stdout: &str) -> Vec<(String, PathBuf, String, usize)> {
-    let mut results: Vec<(String, PathBuf, String, usize)> = Vec::new();
-    let mut current_commit = String::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut hunk_line_no: usize = 0;
+/// Context (` `) and removed (`-`) lines are skipped. The new-file line counter
+/// advances on both added and context lines so that line numbers are accurate
+/// relative to the post-commit file.
+fn parse_git_log_patch(stdout: &str) -> Vec<AddedLine<'_>> {
+    let mut results = Vec::new();
+    let mut commit = "";
+    let mut path: Option<&str> = None;
+    let mut state = PatchState::FileHeader;
 
     for raw_line in stdout.lines() {
-        if let Some(hash) = raw_line.strip_prefix("commit ") {
+        if let Some(rest) = raw_line.strip_prefix("commit ") {
             // Only take the first word (the actual hash, before any decorations)
-            current_commit = hash.split_whitespace().next().unwrap_or("").to_string();
-            current_path = None;
-            hunk_line_no = 0;
+            commit = rest.split_whitespace().next().unwrap_or("");
+            path = None;
+            state = PatchState::FileHeader;
             continue;
         }
 
         // "diff --git a/path/to/file b/path/to/file"
-        if raw_line.starts_with("diff --git ") {
-            if let Some(b_part) = raw_line.split(" b/").nth(1) {
-                current_path = Some(PathBuf::from(b_part.trim()));
-            }
-            hunk_line_no = 0;
+        if let Some(rest) = raw_line.strip_prefix("diff --git ") {
+            path = rest.split_once(" b/").map(|(_, b)| b.trim());
+            state = PatchState::FileHeader;
             continue;
         }
 
-        // "@@ -old_start,count +new_start,count @@"
-        if raw_line.starts_with("@@ ") {
-            // Extract the "+new_start" portion
-            if let Some(after_plus) = raw_line.split('+').nth(1) {
-                let num_str = after_plus.split([',', ' ']).next().unwrap_or("1");
-                hunk_line_no = num_str.parse().unwrap_or(1);
-                // hunk_line_no now points to the first line of the hunk in the new file;
-                // we'll increment BEFORE recording or after context lines.
-                // Pre-decrement so the first line increments back to new_start.
-                hunk_line_no = hunk_line_no.saturating_sub(1);
+        match &mut state {
+            PatchState::FileHeader => {
+                if let Some(rest) = raw_line.strip_prefix("+++ ") {
+                    // `+++ b/<path>` names the post-image path unambiguously, even
+                    // when the path itself contains " b/". `+++ /dev/null` is a
+                    // deletion, which has no added lines.
+                    if let Some(b) = rest.strip_prefix("b/") {
+                        path = Some(b);
+                    }
+                } else if raw_line.starts_with("@@ ") {
+                    state = PatchState::Hunk {
+                        next_line: hunk_new_start(raw_line),
+                    };
+                }
+                // `index`, `---`, mode and rename lines carry nothing we need.
             }
-            continue;
-        }
-
-        if let Some(ref path) = current_path {
-            if raw_line.starts_with("+++") || raw_line.starts_with("---") {
-                // Diff file header lines — skip, don't advance counter
-                continue;
+            PatchState::Hunk { next_line } => {
+                if raw_line.starts_with("@@ ") {
+                    *next_line = hunk_new_start(raw_line);
+                } else if let Some(text) = raw_line.strip_prefix('+') {
+                    if let Some(path) = path {
+                        results.push(AddedLine {
+                            commit,
+                            path,
+                            text,
+                            line: *next_line,
+                        });
+                    }
+                    *next_line += 1;
+                } else if raw_line.starts_with(' ') {
+                    *next_line += 1;
+                }
+                // '-' lines and "\ No newline at end of file" are not in the new file.
             }
-            if let Some(stripped) = raw_line.strip_prefix('+') {
-                hunk_line_no += 1;
-                let content = stripped.to_string();
-                results.push((current_commit.clone(), path.clone(), content, hunk_line_no));
-            } else if raw_line.starts_with(' ') {
-                // Context line — advance new-file counter but don't collect
-                hunk_line_no += 1;
-            }
-            // '-' lines (removed) do not belong to the new file — don't advance counter
         }
     }
 
     results
+}
+
+/// The new-file start line from a hunk header: `@@ -old,count +new,count @@`.
+fn hunk_new_start(header: &str) -> usize {
+    header
+        .split_once(" +")
+        .and_then(|(_, rest)| rest.split([',', ' ']).next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(1)
 }
 
 /// Scan the full git commit history for secrets in added lines.
@@ -436,8 +553,17 @@ fn run_history_scan(
         terminal::info("Scanning full git history (this may take a while on large repos)...");
     }
 
+    // Pin the diff prefixes: the parser reads paths from `b/…`, and a user's
+    // `diff.noprefix` or `diff.mnemonicPrefix` setting would otherwise change them.
     let output = Command::new("git")
-        .args(["log", "--all", "-p", "--no-color"])
+        .args([
+            "log",
+            "--all",
+            "-p",
+            "--no-color",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+        ])
         .output()
         .context("Failed to run git log — is this a git repository?")?;
 
@@ -446,7 +572,9 @@ fn run_history_scan(
         anyhow::bail!("git log failed: {}", stderr.trim());
     }
 
-    let stdout = String::from_utf8(output.stdout).context("git log output is not valid UTF-8")?;
+    // Lossy for the same reason as `files::read_text`: one non-UTF-8 byte
+    // anywhere in history must not abort the scan of everything else.
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
     let added_lines = parse_git_log_patch(&stdout);
     let total = added_lines.len() as u64;
@@ -465,43 +593,25 @@ fn run_history_scan(
 
     let findings: Vec<Finding> = added_lines
         .par_iter()
-        .flat_map(|(commit, path, line, line_no)| {
-            let mut hits: Vec<Finding> = Vec::new();
-
-            // Feature 3: inline suppression
-            if line.contains("greengate: ignore") {
-                if let Some(b) = &bar {
-                    b.inc(1);
-                }
-                return hits;
-            }
-
-            for (name, regex) in all_patterns {
-                if let Some(m) = regex.find(line) {
-                    if is_known_false_positive(m.as_str()) {
-                        continue;
-                    }
-                    hits.push(make_finding(
-                        path.clone(),
-                        name.clone(),
-                        *line_no,
-                        Some(commit.clone()),
-                    ));
-                }
-            }
-            for rule_id in check_entropy(line, opts.config) {
-                hits.push(make_finding(
-                    path.clone(),
-                    rule_id,
-                    *line_no,
-                    Some(commit.clone()),
-                ));
-            }
-
+        .flat_map_iter(|added| {
+            let rules: Vec<&str> = if added.text.contains("greengate: ignore") {
+                Vec::new()
+            } else {
+                pattern_hits(added.text, all_patterns)
+                    .chain(check_entropy(added.text, opts.config))
+                    .collect()
+            };
             if let Some(b) = &bar {
                 b.inc(1);
             }
-            hits
+            rules.into_iter().map(|rule| {
+                make_finding(
+                    PathBuf::from(added.path),
+                    rule.to_string(),
+                    added.line,
+                    Some(added.commit.to_string()),
+                )
+            })
         })
         .collect();
 
@@ -514,7 +624,8 @@ fn run_history_scan(
 
 // ── Pattern compilation ───────────────────────────────────────────────────────
 
-fn compile_patterns(opts: &ScanOpts<'_>) -> Result<Vec<(String, Regex)>> {
+/// Compile the built-in patterns plus `[scan] extra_patterns` from config.
+pub fn compile_patterns(cfg: &ScanConfig) -> Result<Vec<(String, Regex)>> {
     let mut patterns: Vec<(String, Regex)> = BUILTIN_PATTERNS
         .iter()
         .map(|(name, pat)| {
@@ -524,7 +635,7 @@ fn compile_patterns(opts: &ScanOpts<'_>) -> Result<Vec<(String, Regex)>> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    for ep in &opts.config.extra_patterns {
+    for ep in &cfg.extra_patterns {
         let re = Regex::new(&ep.regex)
             .with_context(|| format!("Invalid extra_pattern regex for '{}'", ep.name))?;
         patterns.push((ep.name.clone(), re));
@@ -565,7 +676,7 @@ fn get_changed_files(mode: &DiffMode) -> Result<Vec<PathBuf>> {
 /// Collect all files to scan (honoring diff mode and exclusions) into a Vec.
 fn collect_scan_files(
     opts: &ScanOpts<'_>,
-    excludes: &Option<ignore::overrides::Override>,
+    excludes: Option<&ignore::overrides::Override>,
     is_text: bool,
 ) -> Result<Vec<PathBuf>> {
     let files: Vec<PathBuf> = match &opts.diff {
@@ -592,6 +703,105 @@ fn collect_scan_files(
         .collect())
 }
 
+/// Whether `greengate: ignore` comments are honoured while scanning content.
+#[derive(Clone, Copy)]
+enum Suppressions {
+    Honor,
+    Ignore,
+}
+
+/// Secret-pattern and entropy findings for every line of `content`.
+fn scan_lines(
+    path: &Path,
+    content: &str,
+    patterns: &[(String, Regex)],
+    config: &ScanConfig,
+    suppressions: Suppressions,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let mut suppress_next = false;
+    let mut in_pem_block = false;
+    for (idx, line) in content.lines().enumerate() {
+        match suppressions {
+            Suppressions::Honor if line.contains("greengate: ignore") => {
+                // A standalone comment line (no other content) suppresses the NEXT
+                // line. An inline trailing comment suppresses only THIS line.
+                suppress_next = line
+                    .trim()
+                    .trim_start_matches("//")
+                    .trim_start_matches('#')
+                    .trim()
+                    .starts_with("greengate: ignore");
+                continue;
+            }
+            Suppressions::Honor if suppress_next => {
+                suppress_next = false;
+                continue;
+            }
+            Suppressions::Honor | Suppressions::Ignore => {}
+        }
+        let (pem_begin, pem_end) = is_pem_boundary(line);
+        if pem_begin {
+            in_pem_block = true;
+        }
+        // Skip the entropy heuristic on PEM key bodies: the header (if a private
+        // key) is already caught by the patterns, and the wrapped base64 body is
+        // not an independent secret.
+        let entropy_rules = if in_pem_block {
+            Vec::new()
+        } else {
+            check_entropy(line, config)
+        };
+        for rule in pattern_hits(line, patterns).chain(entropy_rules) {
+            findings.push(make_finding(
+                path.to_path_buf(),
+                rule.to_string(),
+                idx + 1,
+                None,
+            ));
+        }
+        if pem_end {
+            in_pem_block = false;
+        }
+    }
+    findings
+}
+
+/// Read and scan one file. `Err` carries a message naming the file.
+pub(crate) fn scan_one_file(
+    path: &Path,
+    scan: impl FnOnce(&str) -> Vec<Finding>,
+) -> Result<Vec<Finding>, String> {
+    match files::read_text(path) {
+        Ok(Some(content)) => Ok(scan(&content)),
+        Ok(None) => Ok(Vec::new()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// Flatten per-file scan results, warning about each file that could not be
+/// read, so an unreadable file is never silently treated as clean.
+pub(crate) fn collect_scanned(results: Vec<Result<Vec<Finding>, String>>) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let mut unreadable = Vec::new();
+    for result in results {
+        match result {
+            Ok(file_findings) => findings.extend(file_findings),
+            Err(e) => unreadable.push(e),
+        }
+    }
+    if !unreadable.is_empty() {
+        terminal::warn(&format!(
+            "{} file(s) could not be read and were NOT scanned:",
+            unreadable.len()
+        ));
+        for e in &unreadable {
+            eprintln!("  - {e}");
+        }
+    }
+    findings
+}
+
 /// Regex + entropy scan over a pre-built file list.
 /// When SAST is enabled, JS/TS files are skipped here — the SAST module handles them.
 fn run_regex_scan(
@@ -614,69 +824,22 @@ fn run_regex_scan(
         None
     };
 
-    let findings: Vec<Finding> = scan_files
+    let results: Vec<Result<Vec<Finding>, String>> = scan_files
         .par_iter()
-        .flat_map(|path| {
-            let mut file_findings: Vec<Finding> = Vec::new();
-            if let Ok(content) = fs::read_to_string(path) {
-                let mut suppress_next = false;
-                let mut in_pem_block = false;
-                for (line_no, line) in content.lines().enumerate() {
-                    if line.contains("greengate: ignore") {
-                        // A standalone comment line (no other content) suppresses the NEXT
-                        // line. An inline trailing comment suppresses only THIS line.
-                        let is_standalone = line
-                            .trim()
-                            .trim_start_matches("//")
-                            .trim_start_matches('#')
-                            .trim()
-                            .starts_with("greengate: ignore");
-                        suppress_next = is_standalone;
-                        continue;
-                    }
-                    if suppress_next {
-                        suppress_next = false;
-                        continue;
-                    }
-                    let (pem_begin, pem_end) = is_pem_boundary(line);
-                    if pem_begin {
-                        in_pem_block = true;
-                    }
-                    for (name, regex) in all_patterns {
-                        if let Some(m) = regex.find(line) {
-                            if is_known_false_positive(m.as_str()) {
-                                continue;
-                            }
-                            file_findings.push(make_finding(
-                                path.to_path_buf(),
-                                name.clone(),
-                                line_no + 1,
-                                None,
-                            ));
-                        }
-                    }
-                    // Skip the entropy heuristic on PEM key bodies: the header (if a
-                    // private key) is already caught by the regex above, and the wrapped
-                    // base64 body is not an independent secret.
-                    if !in_pem_block {
-                        for rule_id in check_entropy(line, opts.config) {
-                            file_findings.push(make_finding(
-                                path.to_path_buf(),
-                                rule_id,
-                                line_no + 1,
-                                None,
-                            ));
-                        }
-                    }
-                    if pem_end {
-                        in_pem_block = false;
-                    }
-                }
-            }
+        .map(|path| {
+            let result = scan_one_file(path, |content| {
+                scan_lines(
+                    path,
+                    content,
+                    all_patterns,
+                    opts.config,
+                    Suppressions::Honor,
+                )
+            });
             if let Some(b) = &bar {
                 b.inc(1);
             }
-            file_findings
+            result
         })
         .collect();
 
@@ -684,7 +847,7 @@ fn run_regex_scan(
         b.finish_with_message("Scan complete.");
     }
 
-    findings
+    collect_scanned(results)
 }
 
 // ── Output helpers ────────────────────────────────────────────────────────────
@@ -712,14 +875,6 @@ fn output_json(findings: &[Finding]) -> Result<()> {
     Ok(())
 }
 
-fn sarif_level(severity: &str) -> &'static str {
-    match severity {
-        "critical" | "high" => "error",
-        "medium" => "warning",
-        _ => "note",
-    }
-}
-
 // ── Auto-fix: in-place secret redaction ──────────────────────────────────────
 
 /// Redact secrets detected by the scan in the source files.
@@ -735,7 +890,7 @@ pub fn apply_scan_fixes(findings: &[Finding], opts: &ScanOpts<'_>, dry_run: bool
     use std::collections::HashMap;
 
     // Recompile patterns so we can match the exact substring to replace.
-    let all_patterns = compile_patterns(opts)?;
+    let all_patterns = compile_patterns(opts.config)?;
 
     // Only fix filesystem findings — history/commit findings cannot be rewritten.
     let fixable: Vec<&Finding> = findings
@@ -751,7 +906,7 @@ pub fn apply_scan_fixes(findings: &[Finding], opts: &ScanOpts<'_>, dry_run: bool
     }
 
     // Group by file path.
-    let mut by_file: HashMap<std::path::PathBuf, Vec<&Finding>> = HashMap::new();
+    let mut by_file: HashMap<PathBuf, Vec<&Finding>> = HashMap::new();
     for f in &fixable {
         by_file.entry(f.path.clone()).or_default().push(f);
     }
@@ -760,12 +915,14 @@ pub fn apply_scan_fixes(findings: &[Finding], opts: &ScanOpts<'_>, dry_run: bool
     let mut total_redacted = 0usize;
     let mut total_skipped = 0usize;
 
-    let mut paths: Vec<std::path::PathBuf> = by_file.keys().cloned().collect();
+    let mut paths: Vec<PathBuf> = by_file.keys().cloned().collect();
     paths.sort();
 
     eprintln!();
     for path in &paths {
         let file_findings = &by_file[path];
+        // Strict UTF-8 here, unlike the scan: writing back a lossily decoded file
+        // would replace every non-UTF-8 byte in it with U+FFFD.
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
@@ -774,58 +931,19 @@ pub fn apply_scan_fixes(findings: &[Finding], opts: &ScanOpts<'_>, dry_run: bool
             }
         };
 
-        let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
-        let trailing_newline = content.ends_with('\n');
+        let mut lines = split_keeping_endings(&content);
         let mut file_redacted = 0usize;
 
-        for f in file_findings.iter() {
-            let idx = f.line.saturating_sub(1);
-            if idx >= lines.len() {
+        for f in file_findings {
+            let Some((line, _)) = f.line.checked_sub(1).and_then(|idx| lines.get_mut(idx)) else {
                 continue;
-            }
+            };
 
-            let original = lines[idx].clone();
-            let mut redacted = original.clone();
-
-            // Regex findings: find the exact matching pattern and replace the match.
-            for (name, re) in &all_patterns {
-                if *name == f.rule_id {
-                    if let Some(m) = re.find(&redacted) {
-                        redacted = format!(
-                            "{}{}{}",
-                            &redacted[..m.start()],
-                            "<REDACTED>",
-                            &redacted[m.end()..]
-                        );
-                    }
-                    break;
-                }
-            }
-
-            // Entropy findings: re-locate the high-entropy token and replace it.
-            if redacted == original && f.rule_id.contains("High Entropy") {
-                for token in original.split(['=', ':', '"', '\'', ' ', '\t', ',', ';']) {
-                    if token.len() < opts.config.entropy_min_length {
-                        continue;
-                    }
-                    let e = shannon_entropy(token);
-                    let is_flagged = match classify_charset(token) {
-                        CharsetKind::Base64Like => e > opts.config.entropy_threshold,
-                        CharsetKind::HexLike => e > 3.5 && token.len() >= 32,
-                        CharsetKind::Other => false,
-                    };
-                    if is_flagged {
-                        redacted = original.replacen(token, "<REDACTED>", 1);
-                        break;
-                    }
-                }
-            }
-
-            if redacted != original {
+            if let Some(redacted) = redact_line(line, &f.rule_id, &all_patterns, opts.config) {
                 eprintln!("  {}{}:{}  [{}]", prefix, path.display(), f.line, f.rule_id);
-                eprintln!("    - {}", original.trim_start());
+                eprintln!("    - {}", line.trim_start());
                 eprintln!("    + {}", redacted.trim_start());
-                lines[idx] = redacted;
+                *line = redacted;
                 file_redacted += 1;
                 total_redacted += 1;
             } else if f.rule_id.starts_with("SAST/") || f.rule_id.starts_with("SMELL/") {
@@ -840,13 +958,11 @@ pub fn apply_scan_fixes(findings: &[Finding], opts: &ScanOpts<'_>, dry_run: bool
         }
 
         if !dry_run && file_redacted > 0 {
-            let new_content = lines.join("\n");
-            let final_content = if trailing_newline {
-                format!("{}\n", new_content)
-            } else {
-                new_content
-            };
-            fs::write(path, final_content)?;
+            let new_content: String = lines
+                .iter()
+                .flat_map(|(body, ending)| [body.as_str(), ending])
+                .collect();
+            fs::write(path, new_content)?;
         }
     }
 
@@ -876,6 +992,45 @@ pub fn apply_scan_fixes(findings: &[Finding], opts: &ScanOpts<'_>, dry_run: bool
     Ok(())
 }
 
+/// Split `content` into lines, each paired with the terminator it had: `"\n"`,
+/// `"\r\n"`, or `""` for a final line without one. Indexes match
+/// `str::lines`, which the scan used to number findings, and joining every
+/// body and ending reproduces `content` byte for byte — so `--fix` rewrites
+/// only the redacted text, never a CRLF file's line endings.
+fn split_keeping_endings(content: &str) -> Vec<(String, &str)> {
+    content
+        .split_inclusive('\n')
+        .map(|raw| {
+            let body = raw
+                .strip_suffix('\n')
+                .map_or(raw, |b| b.strip_suffix('\r').unwrap_or(b));
+            (body.to_string(), &raw[body.len()..])
+        })
+        .collect()
+}
+
+/// `line` with the secret behind a `rule_id` finding replaced by `<REDACTED>`, or
+/// `None` when the finding cannot be located on the line (SAST/structural rules).
+fn redact_line(
+    line: &str,
+    rule_id: &str,
+    patterns: &[(String, Regex)],
+    config: &ScanConfig,
+) -> Option<String> {
+    let pattern_match = patterns
+        .iter()
+        .find(|(name, _)| name == rule_id)
+        .and_then(|(_, re)| re.find(line));
+    if let Some(m) = pattern_match {
+        let mut redacted = line.to_string();
+        redacted.replace_range(m.range(), "<REDACTED>");
+        return Some(redacted);
+    }
+    flagged_entropy_tokens(line, config)
+        .find(|&(_, rule)| rule == rule_id)
+        .map(|(token, _)| line.replacen(token, "<REDACTED>", 1))
+}
+
 fn output_sarif(findings: &[Finding]) -> Result<()> {
     let mut seen_rules = std::collections::BTreeSet::new();
     for f in findings {
@@ -901,7 +1056,7 @@ fn output_sarif(findings: &[Finding]) -> Result<()> {
             };
             json!({
                 "ruleId": f.rule_id,
-                "level": sarif_level(&f.severity),
+                "level": f.severity.sarif_level(),
                 "message": { "text": msg },
                 "locations": [{
                     "physicalLocation": {
@@ -971,14 +1126,6 @@ fn output_junit(findings: &[Finding]) -> Result<()> {
 }
 
 fn output_gitlab(findings: &[Finding]) -> Result<()> {
-    let gitlab_severity = |s: &str| match s {
-        "critical" => "Critical",
-        "high" => "High",
-        "medium" => "Medium",
-        "low" => "Low",
-        _ => "Info",
-    };
-
     let vulns: Vec<_> = findings
         .iter()
         .enumerate()
@@ -988,7 +1135,7 @@ fn output_gitlab(findings: &[Finding]) -> Result<()> {
                 "category": "sast",
                 "name": f.rule_id,
                 "description": format!("{} detected", f.rule_id),
-                "severity": gitlab_severity(&f.severity),
+                "severity": f.severity.gitlab_label(),
                 "confidence": "High",
                 "scanner": { "id": "greengate", "name": "GreenGate" },
                 "location": {
@@ -1030,7 +1177,7 @@ fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-pub fn emit_findings(findings: &[Finding], format: &OutputFormat) -> Result<()> {
+pub fn emit_findings(findings: &[Finding], format: OutputFormat) -> Result<()> {
     if findings.is_empty() {
         match format {
             OutputFormat::Text => terminal::success("No secrets or PII found."),
@@ -1058,7 +1205,7 @@ pub fn emit_findings(findings: &[Finding], format: &OutputFormat) -> Result<()> 
                     .unwrap_or_default();
                 eprintln!(
                     "  - [{}] [{}] {}:{}{}{}",
-                    f.severity.to_uppercase(),
+                    f.severity.as_str().to_uppercase(),
                     f.rule_id,
                     f.path.display(),
                     f.line,
@@ -1139,7 +1286,7 @@ pub fn enrich_with_blame(findings: &mut [Finding]) {
 pub fn collect_findings(opts: &ScanOpts<'_>) -> Result<Vec<Finding>> {
     let is_text = matches!(opts.format, OutputFormat::Text);
 
-    let all_patterns = compile_patterns(opts)?;
+    let all_patterns = compile_patterns(opts.config)?;
     let excludes = build_excludes(&opts.config.exclude_patterns)?;
 
     if let Some(DiffMode::History) = &opts.diff {
@@ -1147,7 +1294,7 @@ pub fn collect_findings(opts: &ScanOpts<'_>) -> Result<Vec<Finding>> {
     }
 
     // Collect all files once — shared between regex scan and SAST scan.
-    let files = collect_scan_files(opts, &excludes, is_text)?;
+    let files = collect_scan_files(opts, excludes.as_ref(), is_text)?;
 
     // Regex + entropy scan (skips JS/TS files when SAST is enabled).
     let mut all_findings = run_regex_scan(opts, &all_patterns, &files, is_text);
@@ -1172,77 +1319,24 @@ pub fn collect_findings(opts: &ScanOpts<'_>) -> Result<Vec<Finding>> {
 
 // ── Image-scan helpers (public re-exports for image_scan module) ──────────────
 
-/// Compile built-in + extra patterns without a full ScanOpts.
-/// Used by `image_scan` to reuse the same pattern set.
-pub fn compile_patterns_for_scan(cfg: &ScanConfig) -> Result<Vec<(String, Regex)>> {
-    let mut patterns: Vec<(String, Regex)> = BUILTIN_PATTERNS
-        .iter()
-        .map(|(name, pat)| {
-            Regex::new(pat)
-                .with_context(|| format!("Invalid built-in pattern for '{}'", name))
-                .map(|re| (name.to_string(), re))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    for ep in &cfg.extra_patterns {
-        let re = Regex::new(&ep.regex)
-            .with_context(|| format!("Invalid extra_pattern regex for '{}'", ep.name))?;
-        patterns.push((ep.name.clone(), re));
-    }
-    Ok(patterns)
-}
-
 /// Scan a raw text string against pre-compiled patterns + entropy rules.
 /// `path_label` is used as the `path` field on returned `Finding`s.
 pub fn scan_text_content(
-    path_label: &std::path::Path,
+    path_label: &Path,
     content: &str,
     patterns: &[(String, Regex)],
     cfg: &ScanConfig,
 ) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    let mut in_pem_block = false;
-    for (line_no, line) in content.lines().enumerate() {
-        let (pem_begin, pem_end) = is_pem_boundary(line);
-        if pem_begin {
-            in_pem_block = true;
-        }
-        for (name, regex) in patterns {
-            if let Some(m) = regex.find(line) {
-                if is_known_false_positive(m.as_str()) {
-                    continue;
-                }
-                findings.push(make_finding(
-                    path_label.to_path_buf(),
-                    name.clone(),
-                    line_no + 1,
-                    None,
-                ));
-            }
-        }
-        if !in_pem_block {
-            for rule_id in check_entropy(line, cfg) {
-                findings.push(make_finding(
-                    path_label.to_path_buf(),
-                    rule_id,
-                    line_no + 1,
-                    None,
-                ));
-            }
-        }
-        if pem_end {
-            in_pem_block = false;
-        }
-    }
-    findings
+    scan_lines(path_label, content, patterns, cfg, Suppressions::Ignore)
 }
 
-pub fn run_scan(opts: ScanOpts<'_>) -> Result<()> {
+pub fn run_scan(opts: &ScanOpts<'_>) -> Result<()> {
     let is_text = matches!(opts.format, OutputFormat::Text);
     if is_text {
         terminal::info("Starting secret and PII scan...");
     }
-    let findings = collect_findings(&opts)?;
-    emit_findings(&findings, &opts.format)
+    let findings = collect_findings(opts)?;
+    emit_findings(&findings, opts.format)
 }
 
 // ── Exclude helpers ───────────────────────────────────────────────────────────
@@ -1260,12 +1354,8 @@ fn build_excludes(patterns: &[String]) -> Result<Option<ignore::overrides::Overr
     Ok(Some(builder.build()?))
 }
 
-fn is_excluded(path: &PathBuf, excludes: &Option<ignore::overrides::Override>) -> bool {
-    if let Some(ov) = excludes {
-        ov.matched(path, false).is_ignore()
-    } else {
-        false
-    }
+fn is_excluded(path: &Path, excludes: Option<&ignore::overrides::Override>) -> bool {
+    excludes.is_some_and(|ov| ov.matched(path, false).is_ignore())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1705,9 +1795,9 @@ diff --git a/src/config.rs b/src/config.rs\n\
 ";
         let lines = parse_git_log_patch(patch);
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].0, "abc123def456abc123def456abc123def456abc1");
-        assert_eq!(lines[0].1, PathBuf::from("src/config.rs"));
-        assert!(lines[0].2.contains("key"));
+        assert_eq!(lines[0].commit, "abc123def456abc123def456abc123def456abc1");
+        assert_eq!(lines[0].path, "src/config.rs");
+        assert!(lines[0].text.contains("key"));
     }
 
     #[test]
@@ -1721,7 +1811,7 @@ diff --git a/foo.txt b/foo.txt\n\
 ";
         let lines = parse_git_log_patch(patch);
         assert_eq!(lines.len(), 1, "only added line should be collected");
-        assert!(lines[0].2.contains("new line"));
+        assert!(lines[0].text.contains("new line"));
     }
 
     #[test]
@@ -1738,8 +1828,8 @@ diff --git a/b.txt b/b.txt\n\
 ";
         let lines = parse_git_log_patch(patch);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].0, "aaa0000000000000000000000000000000000000");
-        assert_eq!(lines[1].0, "bbb0000000000000000000000000000000000000");
+        assert_eq!(lines[0].commit, "aaa0000000000000000000000000000000000000");
+        assert_eq!(lines[1].commit, "bbb0000000000000000000000000000000000000");
     }
 
     #[test]
@@ -1759,7 +1849,130 @@ diff --git a/b.txt b/b.txt\n\
         );
         let lines = parse_git_log_patch(patch);
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0].3, 11, "first added line should be at line 11");
-        assert_eq!(lines[1].3, 13, "second added line should be at line 13");
+        assert_eq!(lines[0].line, 11, "first added line should be at line 11");
+        assert_eq!(lines[1].line, 13, "second added line should be at line 13");
+    }
+
+    #[test]
+    fn test_parse_git_log_patch_hunk_lines_that_look_like_headers() {
+        // Inside a hunk, `+++…` is an added line starting with `++` and `---…` a
+        // removed line starting with `--`; neither is a file header.
+        let patch = concat!(
+            "commit ddd0000000000000000000000000000000000000\n",
+            "diff --git a/a.c b/a.c\n",
+            "index 1111111..2222222 100644\n",
+            "--- a/a.c\n",
+            "+++ b/a.c\n",
+            "@@ -1,2 +1,3 @@\n",
+            " int x;\n",
+            "---y;\n",
+            "+++counter; // AKIAQWERTYUIOPASDFGH\n",
+            "+key = \"AKIAZXCVBNMLKJHGFDSA\";\n",
+        );
+        let lines = parse_git_log_patch(patch);
+        assert_eq!(
+            lines,
+            vec![
+                AddedLine {
+                    commit: "ddd0000000000000000000000000000000000000",
+                    path: "a.c",
+                    text: "++counter; // AKIAQWERTYUIOPASDFGH",
+                    line: 2,
+                },
+                AddedLine {
+                    commit: "ddd0000000000000000000000000000000000000",
+                    path: "a.c",
+                    text: "key = \"AKIAZXCVBNMLKJHGFDSA\";",
+                    line: 3,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_git_log_patch_path_from_plus_plus_plus_header() {
+        let patch = concat!(
+            "commit eee0000000000000000000000000000000000000\n",
+            "diff --git a/docs b/notes.txt b/docs b/notes.txt\n",
+            "--- a/docs b/notes.txt\n",
+            "+++ b/docs b/notes.txt\n",
+            "@@ -0,0 +1 @@\n",
+            "+hello\n",
+        );
+        let lines = parse_git_log_patch(patch);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].path, "docs b/notes.txt");
+        assert_eq!(lines[0].line, 1);
+    }
+
+    // ── Auto-fix redaction ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_redact_line_replaces_pattern_match() {
+        let patterns = compile_builtins();
+        let redacted = redact_line(
+            "aws = AKIAQWERTYUIOPASDFGH # prod",
+            "AWS Access Key",
+            &patterns,
+            &default_scan_config(),
+        );
+        assert_eq!(redacted.as_deref(), Some("aws = <REDACTED> # prod"));
+    }
+
+    #[test]
+    fn test_redact_line_targets_the_token_the_scan_flagged() {
+        // The git SHA is entropy noise the scan ignores; --fix must not redact it
+        // in place of the real token.
+        let config = default_scan_config();
+        let line =
+            "rev=2eed506f9c3b1a4d7e8f0a1b2c3d4e5f6a7b8c9d token=aB3dEfGhIjKlMnOpQrStUvWxYz012345";
+        let rule = check_entropy(line, &config)[0];
+        let redacted = redact_line(line, rule, &[], &config);
+        assert_eq!(
+            redacted.as_deref(),
+            Some("rev=2eed506f9c3b1a4d7e8f0a1b2c3d4e5f6a7b8c9d token=<REDACTED>")
+        );
+    }
+
+    #[test]
+    fn test_redact_line_none_for_structural_rules() {
+        let redacted = redact_line("eval(x)", "SAST/EvalUsage", &[], &default_scan_config());
+        assert_eq!(redacted, None);
+    }
+
+    #[test]
+    fn test_split_keeping_endings_round_trips() {
+        for content in [
+            "",
+            "one",
+            "one\n",
+            "a\r\nb\r\n",
+            "mixed\r\nendings\nno-final",
+            "\n\r\n",
+        ] {
+            let lines = split_keeping_endings(content);
+            let joined: String = lines.iter().flat_map(|(b, e)| [b.as_str(), e]).collect();
+            assert_eq!(joined, content);
+            let bodies: Vec<&str> = lines.iter().map(|(b, _)| b.as_str()).collect();
+            assert_eq!(bodies, content.lines().collect::<Vec<_>>(), "{content:?}");
+        }
+    }
+
+    // ── Severity ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_severity_orders_low_to_critical() {
+        assert!(Severity::Low < Severity::Medium);
+        assert!(Severity::Medium < Severity::High);
+        assert!(Severity::High < Severity::Critical);
+    }
+
+    #[test]
+    fn test_severity_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_value(Severity::Critical).unwrap(),
+            "critical"
+        );
+        assert_eq!(Severity::High.to_string(), "high");
     }
 }
