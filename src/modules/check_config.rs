@@ -11,6 +11,7 @@ pub fn run_check_config() -> Result<()> {
     if !path.exists() {
         terminal::warn("No .greengate.toml found — all commands will use built-in defaults.");
         terminal::info("Run `greengate init` to generate a config file.");
+        check_exceptions(&Config::default())?;
         print_defaults();
         return Ok(());
     }
@@ -26,6 +27,7 @@ pub fn run_check_config() -> Result<()> {
     })?;
 
     terminal::success(".greengate.toml is valid.");
+    check_exceptions(&cfg)?;
     eprintln!();
     eprintln!("Resolved configuration:");
     eprintln!();
@@ -127,6 +129,47 @@ pub fn run_check_config() -> Result<()> {
 
     eprintln!();
     terminal::success("Config check passed.");
+    Ok(())
+}
+
+/// Validate `.greengate/exceptions.toml`, if there is one, and say how many
+/// exceptions have expired or are about to.
+fn check_exceptions(cfg: &Config) -> Result<()> {
+    use crate::modules::exceptions::{self, EXCEPTIONS_FILE, WARN_DAYS};
+    let today = crate::utils::dates::today();
+    let Some(ex) = exceptions::load(
+        std::path::Path::new("."),
+        cfg.policy.max_exception_days,
+        today,
+    )?
+    else {
+        return Ok(());
+    };
+    let expired = ex.rules.iter().filter(|r| r.expired(today)).count();
+    let soon = ex
+        .rules
+        .iter()
+        .filter(|r| !r.expired(today) && r.expires - today < WARN_DAYS)
+        .count();
+    terminal::success(&format!(
+        "{EXCEPTIONS_FILE} is valid: {} exception(s).",
+        ex.rules.len()
+    ));
+    if expired > 0 {
+        terminal::warn(&format!(
+            "{expired} exception(s) have expired; their findings count again."
+        ));
+    }
+    if soon > 0 {
+        terminal::warn(&format!(
+            "{soon} exception(s) expire within {WARN_DAYS} days."
+        ));
+    }
+    if !cfg.audit.ignore_advisories.is_empty() {
+        terminal::warn(
+            "[audit] ignore_advisories is deprecated: run `greengate exceptions migrate`.",
+        );
+    }
     Ok(())
 }
 

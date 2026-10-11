@@ -355,12 +355,20 @@ For most workflows, prefer [inline suppression](#inline-suppression) or a [basel
 
 ### Baseline
 
-Save current findings as an accepted baseline and only fail on *new* findings:
+Save current findings as an accepted baseline and only fail on *new* findings. Findings are fingerprinted, so they stay known when code moves around them or their file is renamed; `audit` and `ci-lint` take the same flags:
 
 ```bash
 greengate scan --update-baseline   # save current state
 greengate scan --since-baseline    # fail only on new findings
 ```
+
+Or skip the baseline file and fail a pull request only on what it introduces:
+
+```bash
+greengate scan --new-since origin/main
+```
+
+To waive a finding for a limited time with an owner and a reason, use `.greengate/exceptions.toml`. See [Baselines & Exceptions](https://greengate-dev.github.io/greengate/guide/baselines-and-exceptions).
 
 ---
 

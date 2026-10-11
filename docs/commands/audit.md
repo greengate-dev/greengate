@@ -75,6 +75,8 @@ greengate audit [OPTIONS]
 Options:
       --format <FORMAT>   Output format [default: text] [possible values: text, json]
       --offline           Use only offline OSV snapshots (see `greengate db`)
+      --update-baseline   Save current findings as the baseline
+      --since-baseline    Only fail on findings not in the saved baseline
       --allow-incomplete  Exit 0 even when some checks could not run
   -h, --help              Print help
 ```
@@ -102,32 +104,38 @@ Set `GREENGATE_OSV_URL` to query an OSV-compatible mirror instead of
 
 ## Suppressing known-acceptable advisories
 
-Some transitive dependency vulnerabilities cannot be fixed by upgrading a direct dependency — the affected package is pulled in by a tool (webpack, jest, turbo) that has not yet released a compatible upgrade. Blanket-suppressing entire packages is too broad; instead, suppress individual advisory IDs so that new advisories still fail the build.
+Some transitive dependency vulnerabilities cannot be fixed by upgrading a direct dependency — the affected package is pulled in by a tool (webpack, jest, turbo) that has not yet released a compatible upgrade. Blanket-suppressing entire packages is too broad; instead, waive individual advisories, so that new advisories still fail the build.
 
-Add an `[audit]` section to `.greengate.toml`:
+Add an exception to `.greengate/exceptions.toml`. Each one needs a reason, an owner and an expiry date (at most `[policy] max_exception_days`, 90 by default, from today):
 
 ```toml
-[audit]
-# GHSA/CVE IDs to suppress.
-# Document WHY each entry is acceptable in a comment above it.
-# Re-evaluate when upstream tools release new major versions.
-ignore_advisories = [
-  # ajv@6.x — used internally by webpack/jest schema tooling.
-  # No direct dependency; cannot be forced without breaking webpack APIs.
-  "GHSA-2G4F-4PWH-QVX6",
-
-  # minimatch — pulled by glob/jest/eslint across major versions.
-  # Forcing a single version breaks dependents that rely on separate major APIs.
-  "GHSA-23C5-XMQV-RM74",
-  "GHSA-3PPC-4F35-3M26",
-
-  # rollup@3.x — bundled inside vite/webpack dev dependencies.
-  # Production builds do not ship rollup; upgrade path blocked by vite compat.
-  "GHSA-MW96-CPMX-2VGC",
-]
+[[exception]]
+id = "EX-3"
+match = { advisory = "GHSA-2G4F-4PWH-QVX6", package = "ajv" }
+reason = "ajv@6 is used only by webpack's schema tooling; no direct dependency to upgrade"
+owner = "@frontend-platform"
+expires = "2026-12-31"
+ticket = "SEC-120"
 ```
 
-Suppressed advisories are shown as warnings (`[suppressed]`) in the output but do not fail the build. Only advisories not in `ignore_advisories` exit with code `1`.
+When an exception expires, the advisory fails the build again and the output names the exception and its owner. Waived advisories are listed in the output and in the report's `suppressed` list, but do not fail the build. See [Baselines & Exceptions](/guide/baselines-and-exceptions#governed-exceptions).
+
+To accept every advisory present today and fail only on new ones, record a baseline instead:
+
+```bash
+greengate audit --update-baseline   # writes .greengate-baseline.json; commit it
+greengate audit --since-baseline    # in CI
+```
+
+A package upgrade that is still affected by the same advisory stays known.
+
+### `ignore_advisories` (deprecated)
+
+`[audit] ignore_advisories` in `.greengate.toml` still suppresses the listed IDs in 0.4, with a deprecation warning. It has no owner or expiry. Move it to exceptions with:
+
+```bash
+greengate exceptions migrate --owner @security
+```
 
 ## Examples
 
@@ -170,6 +178,6 @@ not be checked. See [exit codes](../reference/exit-codes.md).
 1. Run `greengate audit` and note the advisory IDs that fail.
 2. For each failing advisory, check whether you control the affected package directly (i.e., it appears in your top-level `package.json` / `Cargo.toml`).
    - **Yes** — upgrade or pin to a patched version.
-   - **No (transitive)** — check whether upgrading any *direct* dependency removes the transitive dep. If not, add the advisory ID to `ignore_advisories` with a comment explaining why.
-3. Re-run `greengate audit` to confirm only suppressed advisories remain.
-4. Set a calendar reminder to re-evaluate suppressed advisories when the upstream tool releases a new major version.
+   - **No (transitive)** — check whether upgrading any *direct* dependency removes the transitive dep. If not, add an exception for the advisory with the reason, an owner and an expiry date.
+3. Re-run `greengate audit` to confirm only waived advisories remain.
+4. When an exception expires, the advisory fails the build again: re-evaluate it then, and renew the exception or fix the dependency.

@@ -51,6 +51,20 @@
         "message": { "type": "string" },
         "remediation": { "type": "string" },
         "reference": { "type": "string" },
+        "fingerprint": { "type": "string", "pattern": "^gg1:[0-9a-f]{32}$", "description": "Stable identity of the finding, keyed with the baseline's salt. Present when the repository has a baseline." },
+        "suppression": {
+          "type": "object",
+          "description": "Why the finding is in `suppressed`. Also set on a finding whose exception has expired (`expired: true`), which counts again.",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["inline", "exception", "baseline", "config", "triage"] },
+            "id": { "type": "string", "description": "The exception id, a baseline fingerprint, or the --new-since base." },
+            "reason": { "type": "string" },
+            "owner": { "type": "string" },
+            "expires": { "type": "string", "format": "date" },
+            "expired": { "type": "boolean" }
+          }
+        },
         "location": {
           "oneOf": [
             {

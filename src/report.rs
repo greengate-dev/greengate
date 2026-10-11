@@ -159,6 +159,60 @@ pub struct Finding {
     pub remediation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
+    /// Why the finding is in `suppressed`. Set only there, or on a finding
+    /// whose exception expired (`kind: exception`, `expired: true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppression: Option<Suppression>,
+    /// `gg1:` fingerprint, keyed with the baseline's salt, for exceptions
+    /// that name one finding. Absent when there is no baseline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+}
+
+/// What suppressed a finding.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SuppressionKind {
+    /// A `greengate: ignore` comment in the source.
+    Inline,
+    /// An entry in `.greengate/exceptions.toml`.
+    Exception,
+    /// Present in the baseline, or already at the `--new-since` base.
+    Baseline,
+    /// `[audit] ignore_advisories` (deprecated).
+    Config,
+    /// Auto-suppressed by `scan --triage`.
+    Triage,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct Suppression {
+    pub kind: SuppressionKind,
+    /// The exception id, or the baseline entry's original location.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires: Option<String>,
+    /// The exception has expired, so the finding counts again.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub expired: bool,
+}
+
+impl Suppression {
+    pub fn new(kind: SuppressionKind, reason: Option<String>) -> Suppression {
+        Suppression {
+            kind,
+            id: None,
+            reason,
+            owner: None,
+            expires: None,
+            expired: false,
+        }
+    }
 }
 
 impl Finding {
@@ -180,6 +234,8 @@ impl Finding {
             message: message.into(),
             remediation: None,
             reference: None,
+            suppression: None,
+            fingerprint: None,
         }
     }
 }
@@ -198,6 +254,8 @@ impl Finding {
             message: message.into(),
             remediation: None,
             reference: None,
+            suppression: None,
+            fingerprint: None,
         }
     }
 }
@@ -223,6 +281,8 @@ impl Finding {
             message: message.into(),
             remediation: None,
             reference: None,
+            suppression: None,
+            fingerprint: None,
         }
     }
 }
@@ -468,6 +528,8 @@ mod tests {
             message: "m".into(),
             remediation: None,
             reference: None,
+            suppression: None,
+            fingerprint: None,
         }
     }
 

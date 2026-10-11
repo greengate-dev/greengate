@@ -52,13 +52,30 @@ pub struct DepsConfig {
 }
 
 /// Gate-wide policy loaded from `.greengate.toml` under `[policy]`.
-#[derive(Deserialize, Default, Clone)]
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyConfig {
     /// What a gate that could not check everything does: `fail` (exit 3,
     /// default) or `warn` (exit 0, still reported as incomplete).
     #[serde(default)]
     pub on_incomplete: crate::report::OnIncomplete,
+    /// The longest an entry in `.greengate/exceptions.toml` may run, in days
+    /// from today.
+    #[serde(default = "default_max_exception_days")]
+    pub max_exception_days: u32,
+}
+
+fn default_max_exception_days() -> u32 {
+    90
+}
+
+impl Default for PolicyConfig {
+    fn default() -> Self {
+        PolicyConfig {
+            on_incomplete: Default::default(),
+            max_exception_days: default_max_exception_days(),
+        }
+    }
 }
 
 /// Audit settings loaded from `.greengate.toml` under `[audit]`.
@@ -800,17 +817,18 @@ fn default_triage_context_lines() -> usize {
 /// Returns an error if `.greengate.toml` exists but cannot be read or parsed.
 /// A *missing* file is not an error — it yields the defaults.
 /// Marks a configuration error so `main` can exit with the usage-error code.
+/// Holds the file at fault.
 #[derive(Debug)]
-pub struct ConfigError;
+pub struct ConfigError(pub &'static str);
 
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("invalid .greengate.toml")
+        write!(f, "invalid {}", self.0)
     }
 }
 
 pub fn load() -> Result<Config> {
-    load_inner(true).context(ConfigError)
+    load_inner(true).context(ConfigError(".greengate.toml"))
 }
 
 /// Like [`load`] but suppresses the "Loaded config" info message.
@@ -820,7 +838,7 @@ pub fn load() -> Result<Config> {
 /// # Errors
 /// As [`load`].
 pub fn load_silent() -> Result<Config> {
-    load_inner(false).context(ConfigError)
+    load_inner(false).context(ConfigError(".greengate.toml"))
 }
 
 fn load_inner(verbose: bool) -> Result<Config> {

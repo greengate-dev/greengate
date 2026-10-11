@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - uv: locking and `uv sync` run in the sandbox because both run sdist build backends; new `.pth` startup files are quarantined before any Python starts if they look suspicious.
 - Checks in the report can carry a `source` — e.g. which snapshot answered and how old it was.
 - `GREENGATE_CACHE_DIR` relocates greengate's cache.
+- Gating on what a change introduces:
+  - `scan --new-since [<ref>]` reports only findings absent at the merge base with `<ref>` (default in a pull request: its base branch). Changed files are scanned as they are and as they were; renames are followed; uncommitted and untracked files count.
+  - Baselines identify findings by fingerprint (`gg1:` HMAC-SHA256 over rule, path, matched text and surrounding lines, with a per-repository salt), so a known finding stays known when lines move, nearby code changes or its file is renamed. A second copy of a known secret is still new. Secrets are never stored in the baseline.
+  - `audit` and `ci-lint` take `--update-baseline` / `--since-baseline`; all three gates share `.greengate-baseline.json`. For `audit`, a version bump still affected by the same advisory stays known.
+  - `greengate baseline migrate` upgrades a 0.3 baseline, which still works meanwhile (exact lines only).
+- Governed exceptions in `.greengate/exceptions.toml`: each waives one finding (`fingerprint`), a rule (optionally by `path` glob or `package`) or an advisory (optionally by `package`), and needs a `reason`, `owner` and `expires` date no more than `[policy] max_exception_days` (90) away. An expired exception's findings count again, naming the exception and its owner; ones expiring within 14 days are warned about. An invalid file exits `2`; `check-config` validates it. `greengate exceptions list` shows them all.
+- `greengate: ignore reason="…"` (or any text after the marker). Every suppressed finding — inline, exception, baseline, `ignore_advisories`, triage — is listed in the report's `suppressed` with a `suppression` object saying why, and the text output tallies them.
+- `ci-lint` honours `# greengate: ignore` on the flagged line or the line above.
 
 ### Changed
 - **Breaking:** `audit` exits `3` when it could not check every dependency, instead of warning and exiting `0`. That covers an unreachable or short OSV response, a truncated advisory list, an unreadable lockfile, and `requirements.txt` entries that are not `==` pinned (ranges, `-r` includes, editable installs). Findings still exit `1`; set `on_incomplete = "warn"` to keep exiting `0`.
@@ -44,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `watch-install`, `pip-install` and `cargo-add` are deprecated and run through `greengate install` when they wrap npm, pnpm, Yarn, Bun, pip ≥ 22.2 or a Cargo project — install scripts then run sandboxed without network; list packages that need it in `[supply_chain] script_network`. Other commands keep the old behaviour with a notice. All three are removed in 0.5.
 - **Breaking:** `sbom` stops with an error when one directory holds two lockfiles for the same ecosystem, instead of using whichever it found first.
 - PyPI package names are normalized (PEP 503, lowercase) in audit queries and SBOM purls.
+- `scan --since` is renamed `--changed-since`; `--since` remains as a deprecated alias.
+- `[audit] ignore_advisories` is deprecated in favour of exceptions; `greengate exceptions migrate` converts it.
+- In JS, TS, Python, Go and Rust files, a `greengate: ignore` comment on its own line now also covers the line below, as it already did in other files and as documented.
 
 ### Fixed
 - `audit` never checked scoped packages in pnpm lockfiles that quote their keys (`'@babel/core@7.29.0':`, as pnpm 9 writes them): the name was read as `'`. In one real lockfile that was 502 of 781 packages.
@@ -55,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ci-lint --format json` and `image-scan --format json` printed a text line instead of JSON when nothing was found.
 - `reassure` panicked on component names with multi-byte characters near the 40-character column.
 - `requirements.txt` pins with extras (`pkg[extra]==1.0`), environment markers, `--hash` options, line continuations or `===` were mis-parsed into wrong names or versions.
+- `scan` read files inside `.git/`, so every repository reported the committer emails in `.git/config` and the reflogs as PII.
+- The `ci-lint` docs listed rule ids (`CILINT/…`), severities and a rule (`SecretsInEnv`) that do not exist, and a suppression setting that had no effect.
 
 ## [0.3.4] - 2026-10-11
 

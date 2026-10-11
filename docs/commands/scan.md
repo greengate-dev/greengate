@@ -17,7 +17,11 @@ greengate scan [OPTIONS]
 Options:
   --format <FORMAT>    Output format: text (default), json, sarif, junit, gitlab
   --staged             Only scan git-staged files (git diff --cached)
-  --since <COMMIT>     Only scan files changed since the given commit
+  --changed-since <REF>
+                       Only scan files changed since REF; every finding in
+                       them counts (--since is a deprecated alias)
+  --new-since [<REF>]  Only report findings that are new since the merge base
+                       with REF (default in a pull request: its base branch)
   --history            Scan the entire git commit history (slow on large repos)
   --annotate           Post findings as a GitHub Check Run with per-line
                        annotations and a rich PR summary comment. Requires
@@ -41,8 +45,11 @@ greengate scan
 # Only scan what you're about to commit (fast, ideal for pre-commit)
 greengate scan --staged
 
-# Only scan files changed since the last commit
-greengate scan --since HEAD~1
+# Only findings this branch introduces
+greengate scan --new-since origin/main
+
+# Every finding in the files changed since the last commit
+greengate scan --changed-since HEAD~1
 
 # Output SARIF for GitHub Advanced Security PR annotations
 greengate scan --format sarif > results.sarif
@@ -148,7 +155,7 @@ const key = "AKIAIOSFODNN7EXAMPLE123";  // ← string literal: flagged
 
 ## Baseline mode
 
-If your repository already has existing findings you can't fix immediately, the baseline workflow lets you suppress known findings and only fail on *new* ones introduced by a PR.
+If your repository already has existing findings you can't fix immediately, the baseline workflow lets you suppress known findings and only fail on *new* ones introduced by a PR. Findings are matched by fingerprint, so a known finding stays known when lines are inserted above it, the code around it is edited, or its file is renamed. See [Baselines & Exceptions](/guide/baselines-and-exceptions) for how matching works, what the baseline stores, and `--new-since`, which needs no baseline file at all.
 
 **Step 1: Save a baseline** (typically on your main branch)
 
@@ -177,7 +184,7 @@ greengate scan --since-baseline
 
 ## Suppressing findings
 
-Add `// greengate: ignore` on the same line to suppress a specific finding:
+Add `// greengate: ignore` on the same line to suppress a specific finding. Give a reason with `reason="…"` (or any text after the marker): the report lists every suppressed finding with it.
 
 ```ts
 const legacyKey = "AKIAIOSFODNN7EXAMPLE123"; // greengate: ignore
@@ -187,9 +194,13 @@ el.innerHTML = sanitizedHtml;                 // greengate: ignore
 Or on the line above to suppress the next line:
 
 ```python
-# greengate: ignore
+# greengate: ignore reason="loaded from the environment at runtime"
 AWS_KEY = load_from_env("AWS_ACCESS_KEY_ID")
 ```
+
+To waive a finding for a limited time with an owner, use an exception in
+`.greengate/exceptions.toml` instead. See
+[Baselines & Exceptions](/guide/baselines-and-exceptions#governed-exceptions).
 
 Suppress an entire rule class across the repo via `[sast]` in `.greengate.toml`:
 

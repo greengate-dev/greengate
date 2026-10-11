@@ -5,7 +5,7 @@ description: 'Validate .greengate.toml and print all resolved configuration valu
 
 # check-config — Validate Configuration
 
-Reads `.greengate.toml`, validates it, and prints all resolved configuration values. Useful for verifying that overrides are applied correctly and that the file has no syntax errors.
+Reads `.greengate.toml`, validates it, and prints all resolved configuration values. Useful for verifying that overrides are applied correctly and that the file has no syntax errors. Also validates `.greengate/exceptions.toml` when there is one.
 
 ## Usage
 
@@ -18,6 +18,7 @@ greengate check-config
 - If `.greengate.toml` exists and is valid, prints every resolved value and exits 0.
 - If the file contains a TOML syntax or type error, prints a descriptive error and exits 2.
 - If no config file is found, prints the built-in defaults that will be used and exits 0.
+- If `.greengate/exceptions.toml` is invalid (a missing field, a bad date, an expiry beyond `[policy] max_exception_days`), lists every problem and exits 2. Expired exceptions, and ones expiring within 14 days, are reported as warnings.
 
 ## Examples
 

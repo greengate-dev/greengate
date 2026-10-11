@@ -14,6 +14,7 @@
 //! fetch differs per registry (crates.io wired first; npm/PyPI slot in later).
 
 use crate::report::{Check, Finding, Report, Severity};
+use crate::utils::dates::days_from_civil;
 
 /// Ecosystem-agnostic package facts pulled from a registry.
 #[derive(Debug, Clone)]
@@ -564,18 +565,6 @@ fn strip_npm_version(spec: &str) -> String {
 }
 
 // ── Date math (no external date dependency) ──────────────────────────────────
-
-/// Days since the Unix epoch for a proleptic-Gregorian civil date.
-/// Howard Hinnant's `days_from_civil` algorithm.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400; // [0, 399]
-    let mp = if m > 2 { m - 3 } else { m + 9 }; // [0, 11]
-    let doy = (153 * mp + 2) / 5 + d - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146097 + doe - 719468
-}
 
 /// Parse a leading `YYYY-MM-DD` out of an ISO-8601 timestamp and return the
 /// number of whole days between then and now (0 if the date is in the future or

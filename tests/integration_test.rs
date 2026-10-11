@@ -3136,3 +3136,443 @@ fn watch_install_routes_real_package_managers_into_install() {
         "ran the install flow: {stderr}"
     );
 }
+
+// ── Baselines, exceptions, --new-since ────────────────────────────────────────
+
+fn report_of(dir: &std::path::Path, args: &[&str]) -> (Option<i32>, serde_json::Value) {
+    let path = dir.join("out.report.json");
+    let out = Command::new(binary())
+        .args(args)
+        .arg("--report")
+        .arg(&path)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let report = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| panic!("no report: {}", String::from_utf8_lossy(&out.stderr)));
+    std::fs::remove_file(&path).unwrap();
+    (out.status.code(), report)
+}
+
+fn finding_paths(report: &serde_json::Value, list: &str) -> Vec<String> {
+    report[list]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            format!(
+                "{}:{}",
+                f["location"]["path"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim_start_matches("./"),
+                f["location"]["line"]
+            )
+        })
+        .collect()
+}
+
+const KEY_A: &str = "AKIAQWERTYUIOPASDF12";
+const KEY_B: &str = "AKIAPOIUYTREWQLKJH56";
+
+#[test]
+fn baseline_v2_survives_edits_and_catches_new_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app.py");
+    std::fs::write(&app, format!("import os\n\nKEY = \"{KEY_A}\"\n")).unwrap();
+    let (code, _) = report_of(dir.path(), &["scan", "--update-baseline"]);
+    assert_eq!(code, Some(0));
+    let saved = std::fs::read_to_string(dir.path().join(".greengate-baseline.json")).unwrap();
+    assert!(saved.contains("\"version\": 2") && saved.contains("gg1:"));
+    assert!(
+        !saved.contains("AKIA"),
+        "the baseline must not hold the secret"
+    );
+
+    // Code inserted above the known secret: still known.
+    std::fs::write(
+        &app,
+        format!("\"\"\"Docs.\"\"\"\nimport os\nimport sys\n\nKEY = \"{KEY_A}\"\n"),
+    )
+    .unwrap();
+    let (code, report) = report_of(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["suppressed"][0]["suppression"]["kind"], "baseline");
+
+    // A second secret is new.
+    std::fs::write(
+        &app,
+        format!("import os\n\nKEY = \"{KEY_A}\"\nOTHER = \"{KEY_B}\"\n"),
+    )
+    .unwrap();
+    let (code, report) = report_of(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(finding_paths(&report, "findings"), ["app.py:4"]);
+    assert!(
+        report["findings"][0]["fingerprint"]
+            .as_str()
+            .is_some_and(|f| f.starts_with("gg1:"))
+    );
+}
+
+#[test]
+fn baseline_v2_follows_a_moved_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.py"), format!("KEY = \"{KEY_A}\"\n")).unwrap();
+    report_of(dir.path(), &["scan", "--update-baseline"]);
+    std::fs::create_dir(dir.path().join("pkg")).unwrap();
+    std::fs::rename(dir.path().join("a.py"), dir.path().join("pkg/b.py")).unwrap();
+    let (code, report) = report_of(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(code, Some(0), "{report}");
+    assert!(
+        report["suppressed"][0]["suppression"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("moved")
+    );
+}
+
+#[test]
+fn baseline_v1_still_works_and_migrates() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.py"), format!("KEY = \"{KEY_A}\"\n")).unwrap();
+    std::fs::write(
+        dir.path().join(".greengate-baseline.json"),
+        r#"[{"path":"./a.py","rule_id":"AWS Access Key","line":1},{"path":"./gone.py","rule_id":"AWS Access Key","line":1}]"#,
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("greengate baseline migrate"));
+
+    let out = run_in(dir.path(), &["baseline", "migrate"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 of 2 entries"));
+    let v2: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".greengate-baseline.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v2["version"], 2);
+    assert_eq!(v2["entries"].as_array().unwrap().len(), 1);
+    let (code, _) = report_of(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(code, Some(0));
+    // Running it again changes nothing.
+    assert_eq!(
+        run_in(dir.path(), &["baseline", "migrate"]).status.code(),
+        Some(0)
+    );
+}
+
+#[test]
+fn baselines_for_different_gates_share_one_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.py"), format!("KEY = \"{KEY_A}\"\n")).unwrap();
+    let wf = dir.path().join(".github/workflows");
+    std::fs::create_dir_all(&wf).unwrap();
+    std::fs::write(
+        wf.join("ci.yml"),
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+    )
+    .unwrap();
+    report_of(dir.path(), &["scan", "--update-baseline"]);
+    report_of(dir.path(), &["ci-lint", "--update-baseline"]);
+    let (code, _) = report_of(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(code, Some(0), "ci-lint's update kept scan's entries");
+    std::fs::write(
+        wf.join("ci.yml"),
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/cache@v4\n",
+    )
+    .unwrap();
+    let (code, report) = report_of(dir.path(), &["ci-lint", "--since-baseline"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        finding_paths(&report, "findings"),
+        [".github/workflows/ci.yml:7"]
+    );
+}
+
+#[test]
+fn scan_new_since_reports_only_new_findings() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init_git_repo(d);
+    std::fs::write(
+        d.join("old.py"),
+        format!("import os\n\nKEY = \"{KEY_A}\"\n"),
+    )
+    .unwrap();
+    std::fs::write(d.join("other.py"), "x = 1\n").unwrap();
+    git_commit_all(d, "base");
+    Command::new("git")
+        .args(["checkout", "-qb", "feature"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    // Renamed and edited, committed: the old secret is not new.
+    std::fs::remove_file(d.join("old.py")).unwrap();
+    std::fs::write(
+        d.join("renamed.py"),
+        format!("\"\"\"Moved.\"\"\"\nimport os\nimport sys\n\nKEY = \"{KEY_A}\"\n"),
+    )
+    .unwrap();
+    git_commit_all(d, "rename");
+    // Uncommitted and untracked secrets are.
+    std::fs::write(d.join("other.py"), format!("x = 1\nT = \"{KEY_B}\"\n")).unwrap();
+    std::fs::write(d.join("new.py"), "N = \"AKIAMNBVCXZLKJHGFD78\"\n").unwrap();
+
+    let (code, report) = report_of(d, &["scan", "--new-since", "main"]);
+    assert_eq!(code, Some(1), "{report}");
+    let mut found = finding_paths(&report, "findings");
+    found.sort();
+    assert_eq!(found, ["new.py:1", "other.py:2"]);
+    assert_eq!(finding_paths(&report, "suppressed"), ["renamed.py:5"]);
+
+    // Without a ref, outside a pull request: a usage error.
+    let out = Command::new(binary())
+        .args(["scan", "--new-since"])
+        .env_remove("GITHUB_BASE_REF")
+        .current_dir(d)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn scan_changed_since_replaces_since() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init_git_repo(d);
+    std::fs::write(d.join("a.py"), "x = 1\n").unwrap();
+    git_commit_all(d, "base");
+    std::fs::write(d.join("a.py"), format!("K = \"{KEY_A}\"\n")).unwrap();
+    assert_eq!(
+        run_in(d, &["scan", "--changed-since", "HEAD"])
+            .status
+            .code(),
+        Some(1)
+    );
+    let old = run_in(d, &["scan", "--since", "HEAD"]);
+    assert_eq!(old.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&old.stderr).contains("--since is deprecated"));
+}
+
+fn write_exceptions(dir: &std::path::Path, body: &str) {
+    std::fs::create_dir_all(dir.join(".greengate")).unwrap();
+    std::fs::write(dir.join(".greengate/exceptions.toml"), body).unwrap();
+}
+
+/// `days` from today, as YYYY-MM-DD (UTC).
+fn date_in(days: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    // civil_from_days (Howard Hinnant).
+    let z = now / 86_400 + days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[test]
+fn exceptions_waive_findings_until_they_expire() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("fixture.py"), format!("K = \"{KEY_A}\"\n")).unwrap();
+    std::fs::write(d.join("legacy.py"), format!("K = \"{KEY_B}\"\n")).unwrap();
+    write_exceptions(
+        d,
+        &format!(
+            r#"
+[[exception]]
+id = "EX-1"
+match = {{ rule = "AWS Access Key", path = "fixture.py" }}
+reason = "test fixture"
+owner = "@sec"
+expires = "{}"
+
+[[exception]]
+id = "EX-2"
+match = {{ rule = "AWS Access Key", path = "legacy.py" }}
+reason = "legacy"
+owner = "@legacy"
+expires = "{}"
+"#,
+            date_in(5),
+            date_in(-1)
+        ),
+    );
+    let (code, report) = report_of(d, &["scan"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(finding_paths(&report, "findings"), ["legacy.py:1"]);
+    let reactivated = &report["findings"][0];
+    assert!(
+        reactivated["message"]
+            .as_str()
+            .unwrap()
+            .contains("exception EX-2 expired")
+    );
+    assert_eq!(reactivated["suppression"]["owner"], "@legacy");
+    let waived = &report["suppressed"][0]["suppression"];
+    assert_eq!(waived["kind"], "exception");
+    assert_eq!(waived["id"], "EX-1");
+    assert_eq!(waived["reason"], "test fixture");
+    assert_eq!(report["warnings"][0]["rule"], "EXCEPTION/ExpiresSoon");
+}
+
+#[test]
+fn invalid_exceptions_are_a_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    write_exceptions(
+        d,
+        &format!(
+            "[[exception]]\nid = \"EX-1\"\nmatch = {{ rule = \"R\" }}\nreason = \"r\"\nowner = \"o\"\nexpires = \"{}\"\n",
+            date_in(400)
+        ),
+    );
+    for args in [&["scan"][..], &["ci-lint"], &["check-config"]] {
+        let out = run_in(d, args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("max_exception_days"));
+    }
+    // A longer limit makes it valid.
+    std::fs::write(
+        d.join(".greengate.toml"),
+        "[policy]\nmax_exception_days = 500\n",
+    )
+    .unwrap();
+    assert_eq!(run_in(d, &["check-config"]).status.code(), Some(0));
+}
+
+#[test]
+fn inline_ignore_reasons_are_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.py"),
+        format!(
+            "A = \"{KEY_A}\"  # greengate: ignore reason=\"rotated test key\"\n# greengate: ignore — docs example\nB = \"{KEY_B}\"\n"
+        ),
+    )
+    .unwrap();
+    let (code, report) = report_of(dir.path(), &["scan"]);
+    assert_eq!(code, Some(0), "{report}");
+    let reasons: Vec<&str> = report["suppressed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["suppression"]["reason"].as_str().unwrap())
+        .collect();
+    assert_eq!(reasons, ["rotated test key", "docs example"]);
+}
+
+#[test]
+fn audit_exceptions_and_deprecated_ignore_advisories() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    write_lodash_lock(d);
+    let osv = fake_osv(
+        r#"{"results":[{"vulns":[{"id":"GHSA-test-0001"},{"id":"GHSA-test-0002"},{"id":"GHSA-test-0003"}]}]}"#,
+    );
+    write_exceptions(
+        d,
+        &format!(
+            "[[exception]]\nid = \"EX-7\"\nmatch = {{ advisory = \"GHSA-test-0001\", package = \"lodash\" }}\nreason = \"not reachable\"\nowner = \"@web\"\nexpires = \"{}\"\nticket = \"SEC-1\"\n",
+            date_in(30)
+        ),
+    );
+    std::fs::write(
+        d.join(".greengate.toml"),
+        "[audit]\nignore_advisories = [\"GHSA-test-0002\"]\n",
+    )
+    .unwrap();
+    let (code, report) = audit_json(d, &osv, &[]);
+    assert_eq!(code, Some(1), "{report}");
+    let rules: Vec<&str> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap())
+        .collect();
+    assert_eq!(rules, ["OSV/GHSA-test-0003"]);
+    let kinds: Vec<(&str, &str)> = report["suppressed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["rule"].as_str().unwrap(),
+                f["suppression"]["kind"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(kinds.contains(&("OSV/GHSA-test-0001", "exception")));
+    assert!(kinds.contains(&("OSV/GHSA-test-0002", "config")));
+
+    // `exceptions migrate` moves the config list into the exceptions file.
+    let out = Command::new(binary())
+        .args(["exceptions", "migrate", "--owner", "@platform"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let file = std::fs::read_to_string(d.join(".greengate/exceptions.toml")).unwrap();
+    assert!(file.contains("advisory = \"GHSA-test-0002\"") && file.contains("@platform"));
+    std::fs::write(d.join(".greengate.toml"), "").unwrap();
+    let (_, report) = audit_json(d, &osv, &[]);
+    assert_eq!(report["suppressed"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn audit_baseline_ignores_version_bumps() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    write_lodash_lock(d);
+    let osv = fake_osv(r#"{"results":[{"vulns":[{"id":"GHSA-test-0001"}]}]}"#);
+    let (code, _) = audit_json(d, &osv, &["--update-baseline"]);
+    assert_eq!(code, Some(0));
+    // Still affected after a patch upgrade: the same known problem.
+    std::fs::write(
+        d.join("package-lock.json"),
+        r#"{"packages": {"node_modules/lodash": {"version": "4.17.21"}}}"#,
+    )
+    .unwrap();
+    let (code, report) = audit_json(d, &osv, &["--since-baseline"]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["suppressed"][0]["suppression"]["kind"], "baseline");
+}
+
+#[test]
+fn ci_lint_honours_inline_ignore() {
+    let dir = tempfile::tempdir().unwrap();
+    let wf = dir.path().join(".github/workflows");
+    std::fs::create_dir_all(&wf).unwrap();
+    std::fs::write(
+        wf.join("ci.yml"),
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      # greengate: ignore reason=\"our own action\"\n      - uses: org/internal@v1\n      - uses: actions/checkout@v4\n",
+    )
+    .unwrap();
+    let (code, report) = report_of(dir.path(), &["ci-lint"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        finding_paths(&report, "findings"),
+        [".github/workflows/ci.yml:8"]
+    );
+    assert_eq!(
+        report["suppressed"][0]["suppression"]["reason"],
+        "our own action"
+    );
+}

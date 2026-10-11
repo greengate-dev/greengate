@@ -7,8 +7,9 @@
 /// | CI/UnpinnedAction                | medium   | `uses:` ref is a tag/branch, not a commit SHA  |
 /// | CI/ExpressionInjection           | critical | User-controlled `${{...}}` in a run: step      |
 /// | CI/PullRequestTargetWithCheckout | critical | `pull_request_target` + checkout of PR code    |
-use crate::modules::scanner::Severity;
-use crate::report::{Check, Finding, Report};
+use crate::modules::scanner::{Severity, covering_ignore};
+use crate::modules::suppress::{self, Policy};
+use crate::report::{Check, Finding, Report, Suppression, SuppressionKind};
 use crate::utils::output::ReportFormat;
 use crate::utils::terminal;
 use anyhow::Result;
@@ -33,6 +34,7 @@ pub struct CiLintOpts {
     pub format: ReportFormat,
     /// If Some, scan only this file. If None, auto-discover .github/workflows/.
     pub file: Option<String>,
+    pub policy: Policy,
 }
 
 // ── Compiled regexes ──────────────────────────────────────────────────────────
@@ -76,9 +78,36 @@ pub fn run_ci_lint(opts: CiLintOpts) -> Result<Report> {
     }
 
     let mut all_findings: Vec<CiLintFinding> = Vec::new();
+    // Covered by a `# greengate: ignore` on the line or the line above.
+    let mut inline: Vec<Finding> = Vec::new();
     for path in &files {
         match lint_workflow(path) {
-            Ok(findings) => all_findings.extend(findings),
+            Ok(findings) => {
+                let text = std::fs::read_to_string(path).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                for f in findings {
+                    let reason = (f.line > 0)
+                        .then(|| covering_ignore(&lines, f.line - 1))
+                        .flatten();
+                    match reason {
+                        Some(reason) => {
+                            let mut r = Finding::in_file(
+                                f.rule_id,
+                                f.severity.into(),
+                                &f.path,
+                                f.line,
+                                &f.message,
+                            );
+                            r.suppression = Some(Suppression::new(
+                                SuppressionKind::Inline,
+                                (!reason.is_empty()).then_some(reason),
+                            ));
+                            inline.push(r);
+                        }
+                        None => all_findings.push(f),
+                    }
+                }
+            }
             Err(e) => {
                 eprintln!("  ⚠️  Skipping {}: {}", path.display(), e);
                 report.checks.push(Check::incomplete(
@@ -89,10 +118,34 @@ pub fn run_ci_lint(opts: CiLintOpts) -> Result<Report> {
         }
     }
 
-    report.findings = all_findings
+    let mut found: Vec<Finding> = all_findings
         .iter()
         .map(|f| Finding::in_file(f.rule_id, f.severity.into(), &f.path, f.line, &f.message))
         .collect();
+    let outcome = suppress::apply(
+        &mut found,
+        &suppress::Options {
+            tool: "ci-lint",
+            policy: opts.policy,
+            matcher: None,
+            base: None,
+        },
+    )?;
+    let (active, gone) = suppress::partition(
+        all_findings.into_iter().zip(found).collect(),
+        &outcome.verdicts,
+    );
+    let (all_findings, active_findings): (Vec<CiLintFinding>, Vec<Finding>) =
+        active.into_iter().unzip();
+    report.findings = active_findings;
+    report.suppressed = inline;
+    report
+        .suppressed
+        .extend(gone.into_iter().map(|((_, mut f), s)| {
+            f.suppression = Some(s);
+            f
+        }));
+    report.warnings = outcome.warnings;
 
     // Structured formats always print a document, even an empty one, so
     // stdout stays parseable.
@@ -105,6 +158,9 @@ pub fn run_ci_lint(opts: CiLintOpts) -> Result<Report> {
             }
         }
         ReportFormat::Text => emit_text(&all_findings),
+    }
+    if opts.format == ReportFormat::Text {
+        suppress::print_summary(&outcome.notes, &report.suppressed);
     }
     report.print_unfinished();
     Ok(report)

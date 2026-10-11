@@ -44,9 +44,24 @@ enum Commands {
         /// Only scan git-staged files (git diff --cached)
         #[arg(long)]
         staged: bool,
-        /// Only scan files changed since the given commit (e.g. --since HEAD~1)
-        #[arg(long)]
+        /// Only scan files changed since REF (e.g. --changed-since HEAD~1).
+        /// Every finding in those files counts; --new-since counts only new ones.
+        #[arg(long, value_name = "REF")]
+        changed_since: Option<String>,
+        /// Deprecated alias of --changed-since
+        #[arg(
+            long,
+            hide = true,
+            value_name = "REF",
+            conflicts_with = "changed_since"
+        )]
         since: Option<String>,
+        /// Only report findings that are new since the merge base with REF
+        /// (default: the pull request's base branch in GitHub Actions). Files
+        /// changed since then are scanned as they are and as they were.
+        #[arg(long, value_name = "REF", num_args = 0..=1, default_missing_value = "",
+              conflicts_with_all = ["staged", "history", "changed_since", "since", "update_baseline"])]
+        new_since: Option<String>,
         /// Scan the entire git commit history for secrets (slow on large repos).
         #[arg(long)]
         history: bool,
@@ -56,7 +71,7 @@ enum Commands {
         #[arg(long)]
         annotate: bool,
         /// Save current findings as the baseline (writes .greengate-baseline.json)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "since_baseline")]
         update_baseline: bool,
         /// Only fail on findings not present in the saved baseline
         #[arg(long)]
@@ -115,6 +130,12 @@ enum Commands {
         /// query the API. Overrides [audit] source.
         #[arg(long)]
         offline: bool,
+        /// Save current findings as the audit baseline (.greengate-baseline.json)
+        #[arg(long, conflicts_with = "since_baseline")]
+        update_baseline: bool,
+        /// Only fail on findings not present in the saved baseline
+        #[arg(long)]
+        since_baseline: bool,
     },
     /// Inspect the dependency graph read from the project's lockfiles
     Deps {
@@ -183,8 +204,19 @@ enum Commands {
     },
     /// Runs all pipeline steps defined in .greengate.toml in order
     Run,
-    /// Validates .greengate.toml and prints all resolved configuration values
+    /// Validates .greengate.toml and .greengate/exceptions.toml, and prints
+    /// all resolved configuration values
     CheckConfig,
+    /// Manage the baseline of known findings (.greengate-baseline.json)
+    Baseline {
+        #[command(subcommand)]
+        action: BaselineAction,
+    },
+    /// Manage governed exceptions (.greengate/exceptions.toml)
+    Exceptions {
+        #[command(subcommand)]
+        action: ExceptionsAction,
+    },
     /// Generates a CycloneDX 1.5 SBOM from the project's dependency files.
     /// Use --attest to sign with Sigstore keyless signing (requires cosign in PATH).
     /// Use --verify to check an existing SBOM against a cosign bundle.
@@ -333,6 +365,12 @@ enum Commands {
         /// Path to a single workflow file to lint (instead of auto-discovering .github/workflows/)
         #[arg(long)]
         file: Option<String>,
+        /// Save current findings as the ci-lint baseline (.greengate-baseline.json)
+        #[arg(long, conflicts_with = "since_baseline")]
+        update_baseline: bool,
+        /// Only fail on findings not present in the saved baseline
+        #[arg(long)]
+        since_baseline: bool,
     },
     /// Analyzes a PR diff: outputs a Complexity Score and new-code coverage gaps
     Review {
@@ -409,6 +447,27 @@ enum DepsAction {
         #[arg(long, default_value = ".")]
         path: std::path::PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum BaselineAction {
+    /// Upgrade a version-1 baseline (exact lines) to version 2 (fingerprints
+    /// that survive code moving). Re-scans, and keeps the findings the old
+    /// baseline matched.
+    Migrate,
+}
+
+#[derive(Subcommand)]
+enum ExceptionsAction {
+    /// Turn `[audit] ignore_advisories` into entries in
+    /// .greengate/exceptions.toml, to be given a real reason and owner
+    Migrate {
+        /// Owner for the new entries (default: git user.email)
+        #[arg(long)]
+        owner: Option<String>,
+    },
+    /// List exceptions with their owner and expiry
+    List,
 }
 
 #[derive(Subcommand)]
@@ -567,7 +626,9 @@ fn run() -> anyhow::Result<ExitCode> {
         Commands::Scan {
             format,
             staged,
+            changed_since,
             since,
+            new_since,
             history,
             annotate,
             update_baseline,
@@ -577,12 +638,25 @@ fn run() -> anyhow::Result<ExitCode> {
             dry_run,
             triage,
         } => {
+            use modules::suppress::{self, BaselineMode};
+            suppress::preflight(&cfg)?;
+            let text = format == OutputFormat::Text;
+            if since.is_some() {
+                utils::terminal::warn(
+                    "--since is deprecated: use --changed-since (the same), or --new-since to count only new findings",
+                );
+            }
+            let new_since = new_since
+                .map(|r| modules::new_since::resolve(Some(&r)))
+                .transpose()?;
             let diff = if history {
                 Some(DiffMode::History)
             } else if staged {
                 Some(DiffMode::Staged)
+            } else if let Some(d) = &new_since {
+                Some(DiffMode::Files(d.changed.clone()))
             } else {
-                since.map(DiffMode::Since)
+                changed_since.or(since).map(DiffMode::Since)
             };
 
             let opts = ScanOpts {
@@ -592,7 +666,8 @@ fn run() -> anyhow::Result<ExitCode> {
                 sast_config: &cfg.sast,
             };
             let scan_t0 = std::time::Instant::now();
-            let mut findings = modules::scanner::collect_findings(&opts)?;
+            let (mut findings, inline) =
+                modules::scanner::split_suppressed(modules::scanner::collect_findings(&opts)?);
             let scan_duration_ms = scan_t0.elapsed().as_millis() as u64;
 
             // Enrich with git blame if requested
@@ -609,30 +684,26 @@ fn run() -> anyhow::Result<ExitCode> {
                 }
             }
 
+            // Exceptions, findings already at the --new-since base, baseline.
+            let base = new_since
+                .as_ref()
+                .map(|d| modules::scanner::base_subjects(&opts, d))
+                .transpose()?;
+            let policy = suppress::Policy::new(
+                BaselineMode::from_flags(update_baseline, since_baseline),
+                &cfg,
+            );
+            let (findings, mut report, outcome) =
+                modules::scanner::apply_suppressions(findings, inline, &opts, policy, base)?;
+
             // Baseline: save mode — recording findings is the point, not a failure.
             if update_baseline {
-                modules::baseline::save_baseline(&findings)?;
-                modules::scanner::emit_findings(&findings, format)?;
-                return Ok(ExitCode::SUCCESS);
-            }
-
-            // Baseline: compare mode — only fail on new findings
-            if since_baseline {
-                let baseline = modules::baseline::load_baseline()?;
-                let total = findings.len();
-                modules::baseline::retain_new_findings(&mut findings, &baseline);
-                modules::baseline::print_baseline_summary(
-                    total,
-                    findings.len(),
-                    total - findings.len(),
-                );
-                if !findings.is_empty() {
+                if text {
+                    suppress::print_summary(&outcome.notes, &[]);
+                } else {
                     modules::scanner::emit_findings(&findings, format)?;
                 }
-                return exit.finish(
-                    "scan",
-                    Ok(modules::scanner::findings_report("scan", &findings)),
-                );
+                return exit.finish("scan", Ok(report));
             }
 
             // Telemetry — fire and forget, never fails the build
@@ -649,8 +720,8 @@ fn run() -> anyhow::Result<ExitCode> {
                     &triage_results,
                     cfg.triage.auto_suppress_threshold,
                 );
-                let mut report = report::Report::new("scan");
-                for (f, t) in findings.iter().zip(&triage_results) {
+                let reports = std::mem::take(&mut report.findings);
+                for (mut f, t) in reports.into_iter().zip(&triage_results) {
                     let suppressed = t.as_ref().is_some_and(|t| {
                         modules::triage::should_auto_suppress(
                             t,
@@ -658,10 +729,17 @@ fn run() -> anyhow::Result<ExitCode> {
                         )
                     });
                     if suppressed {
-                        report.suppressed.push(f.to_report());
+                        f.suppression = Some(report::Suppression::new(
+                            report::SuppressionKind::Triage,
+                            Some("triaged as a likely false positive".into()),
+                        ));
+                        report.suppressed.push(f);
                     } else {
-                        report.findings.push(f.to_report());
+                        report.findings.push(f);
                     }
+                }
+                if text {
+                    suppress::print_summary(&outcome.notes, &report.suppressed);
                 }
                 return exit.finish("scan", Ok(report));
             }
@@ -674,10 +752,10 @@ fn run() -> anyhow::Result<ExitCode> {
                 eprintln!("greengate: warning: GitHub annotation failed: {}", e);
             }
             modules::scanner::emit_findings(&findings, format)?;
-            return exit.finish(
-                "scan",
-                Ok(modules::scanner::findings_report("scan", &findings)),
-            );
+            if text {
+                suppress::print_summary(&outcome.notes, &report.suppressed);
+            }
+            return exit.finish("scan", Ok(report));
         }
         Commands::Lint { dir } => {
             let target = dir.unwrap_or(cfg.lint.target_dir);
@@ -751,9 +829,24 @@ fn run() -> anyhow::Result<ExitCode> {
                 modules::osv_db::run_status(format == report::Format::Json)?;
             }
         },
-        Commands::Audit { format, offline } => {
-            let result =
-                modules::audit::run_audit(&cfg.audit, &cfg.deps.exclude_patterns, format, offline);
+        Commands::Audit {
+            format,
+            offline,
+            update_baseline,
+            since_baseline,
+        } => {
+            modules::suppress::preflight(&cfg)?;
+            let policy = modules::suppress::Policy::new(
+                modules::suppress::BaselineMode::from_flags(update_baseline, since_baseline),
+                &cfg,
+            );
+            let result = modules::audit::run_audit(
+                &cfg.audit,
+                &cfg.deps.exclude_patterns,
+                format,
+                offline,
+                policy,
+            );
             if format == report::Format::Json
                 && let Ok(report) = &result
             {
@@ -835,6 +928,38 @@ fn run() -> anyhow::Result<ExitCode> {
         Commands::CheckConfig => {
             modules::check_config::run_check_config()?;
         }
+        Commands::Baseline {
+            action: BaselineAction::Migrate,
+        } => {
+            let opts = ScanOpts {
+                format: OutputFormat::Text,
+                diff: None,
+                config: &cfg.scan,
+                sast_config: &cfg.sast,
+            };
+            match modules::scanner::migrate_baseline(&opts)? {
+                None => utils::terminal::info(&format!(
+                    "{} is already version 2; nothing to migrate.",
+                    modules::baseline::BASELINE_FILE
+                )),
+                Some((kept, total)) => utils::terminal::success(&format!(
+                    "Baseline migrated to version 2: {kept} of {total} entries still match a finding{}",
+                    if kept < total {
+                        format!("; {} no longer match and were dropped", total - kept)
+                    } else {
+                        String::new()
+                    }
+                )),
+            }
+        }
+        Commands::Exceptions { action } => match action {
+            ExceptionsAction::Migrate { owner } => {
+                modules::exceptions::run_migrate(&cfg, owner)?;
+            }
+            ExceptionsAction::List => {
+                modules::exceptions::run_list(&cfg)?;
+            }
+        },
         Commands::Sbom {
             output,
             lockfile,
@@ -1020,9 +1145,22 @@ fn run() -> anyhow::Result<ExitCode> {
                 &cfg.tia,
             )?;
         }
-        Commands::CiLint { format, file } => {
-            let result =
-                modules::ci_lint::run_ci_lint(modules::ci_lint::CiLintOpts { format, file });
+        Commands::CiLint {
+            format,
+            file,
+            update_baseline,
+            since_baseline,
+        } => {
+            modules::suppress::preflight(&cfg)?;
+            let policy = modules::suppress::Policy::new(
+                modules::suppress::BaselineMode::from_flags(update_baseline, since_baseline),
+                &cfg,
+            );
+            let result = modules::ci_lint::run_ci_lint(modules::ci_lint::CiLintOpts {
+                format,
+                file,
+                policy,
+            });
             return exit.finish("ci-lint", result);
         }
         Commands::Provenance {

@@ -85,6 +85,9 @@ complexity_budget = 0
 # database was unreachable): "fail" exits 3 (default), "warn" exits 0 but
 # still reports the run as incomplete. See the exit codes reference.
 on_incomplete = "fail"
+# The longest an exception in .greengate/exceptions.toml may run, in days from
+# today. See the Baselines & Exceptions guide.
+max_exception_days = 90
 
 [deps]
 # Dependency files to ignore (globs relative to the scanned directory) — used
@@ -92,13 +95,9 @@ on_incomplete = "fail"
 exclude_patterns = ["tests/fixtures/**"]
 
 [audit]
-# GHSA/CVE advisory IDs to suppress — use for known-acceptable transitive
-# dependency vulnerabilities that cannot be fixed by upgrading a direct dep.
-# Always document WHY each entry is acceptable in a comment above the ID.
-# Re-evaluate when upstream tools release new major versions.
-ignore_advisories = [
-  # "GHSA-xxxx-yyyy-zzzz",   # affected-package — reason suppressed
-]
+# Deprecated: advisory IDs to suppress, with no owner or expiry. Use
+# .greengate/exceptions.toml instead (`greengate exceptions migrate`).
+ignore_advisories = []
 # Vulnerability data: "auto" (OSV API, falling back to an offline snapshot
 # when it fails), "online", or "offline" (snapshots from `greengate db update`)
 source = "auto"
@@ -266,11 +265,29 @@ Profiles modify the in-memory config only — they never write to `.greengate.to
 
 ## Inline suppression
 
-Suppress a finding on a specific line using a comment:
+Suppress a finding on a specific line using a comment, optionally with a reason:
 
 ```ts
-const key = "AKIAIOSFODNN7EXAMPLE123"; // greengate: ignore
+const key = "AKIAIOSFODNN7EXAMPLE123"; // greengate: ignore reason="docs example"
 el.innerHTML = sanitizedHtml;           // greengate: ignore
 ```
 
-Works for both secret/PII and SAST findings.
+Works for secret/PII, SAST and `ci-lint` findings. Suppressed findings are listed in the report with their reason.
+
+## Exceptions: `.greengate/exceptions.toml`
+
+Time-limited waivers with an owner and a reason, for any gate that reports
+findings by rule, advisory or fingerprint:
+
+```toml
+[[exception]]
+id = "EX-12"
+match = { advisory = "GHSA-35jh-r3h4-6jhm", package = "lodash" }
+reason = "Not reachable: we never call _.template with user input"
+owner = "@payments-team"
+expires = "2026-12-31"
+ticket = "SEC-481"   # optional
+```
+
+See [Baselines & Exceptions](/guide/baselines-and-exceptions#governed-exceptions)
+for the match forms and the expiry policy.

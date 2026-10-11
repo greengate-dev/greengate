@@ -155,6 +155,8 @@ fn package_finding(
         message,
         remediation: None,
         reference: None,
+        suppression: None,
+        fingerprint: None,
     }
 }
 

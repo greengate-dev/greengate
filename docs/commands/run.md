@@ -60,6 +60,10 @@ steps = [
 ]
 ```
 
+`scan`, `audit` and `ci-lint` steps accept `--since-baseline`, and `scan` accepts
+`--changed-since <ref>`. Exceptions in `.greengate/exceptions.toml` apply to
+every step.
+
 ## Example output
 
 ```

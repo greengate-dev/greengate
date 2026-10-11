@@ -180,6 +180,8 @@ pub fn run_lighthouse(opts: LighthouseOpts<'_>) -> Result<Report> {
                 message: format!("{name} score {score} is below the minimum {min}"),
                 remediation: None,
                 reference: None,
+                suppression: None,
+                fingerprint: None,
             });
         }
     }

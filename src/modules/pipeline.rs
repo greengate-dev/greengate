@@ -107,6 +107,7 @@ fn merge_step(into: &mut Report, step: &str, report: Report) {
     }
     into.findings.extend(report.findings);
     into.suppressed.extend(report.suppressed);
+    into.warnings.extend(report.warnings);
 }
 
 fn status_word(status: Status) -> &'static str {
@@ -120,11 +121,22 @@ fn status_word(status: Status) -> &'static str {
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 
+/// A step's `--since-baseline` flag, with `[policy]` (exceptions always apply).
+fn baseline_policy(args: &[&str], cfg: &config::Config) -> crate::modules::suppress::Policy {
+    use crate::modules::suppress::{BaselineMode, Policy};
+    Policy::new(
+        BaselineMode::from_flags(false, args.contains(&"--since-baseline")),
+        cfg,
+    )
+}
+
 fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report> {
     match command {
         "scan" => {
             let staged = args.contains(&"--staged");
-            let since = flag_value(args, "--since").map(str::to_string);
+            let since = flag_value(args, "--changed-since")
+                .or_else(|| flag_value(args, "--since"))
+                .map(str::to_string);
             let history = args.contains(&"--history");
             let diff = if history {
                 Some(DiffMode::History)
@@ -133,12 +145,15 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
             } else {
                 since.map(DiffMode::Since)
             };
-            crate::modules::scanner::run_scan(&ScanOpts {
-                format: OutputFormat::Text,
-                diff,
-                config: &cfg.scan,
-                sast_config: &cfg.sast,
-            })
+            crate::modules::scanner::run_scan(
+                &ScanOpts {
+                    format: OutputFormat::Text,
+                    diff,
+                    config: &cfg.scan,
+                    sast_config: &cfg.sast,
+                },
+                baseline_policy(args, cfg),
+            )
         }
 
         "lint" => {
@@ -168,6 +183,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
             &cfg.deps.exclude_patterns,
             crate::report::Format::Text,
             args.contains(&"--offline"),
+            baseline_policy(args, cfg),
         ),
 
         "lighthouse" => {
@@ -278,6 +294,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
             crate::modules::ci_lint::run_ci_lint(crate::modules::ci_lint::CiLintOpts {
                 format,
                 file,
+                policy: baseline_policy(args, cfg),
             })
         }
 

@@ -117,7 +117,7 @@ Raising `entropy_threshold` (e.g. to `5.0`) reduces false positives but may miss
 
 ## Baseline mode
 
-`--since-baseline` compares findings against `.greengate-baseline.json`. Findings are matched by **file path + rule ID + line number**. If a secret moves to a different line (e.g. after a rebase or auto-formatter pass), it will re-appear as a new finding. Commit `.greengate-baseline.json` to version control and regenerate it with `--update-baseline` whenever baseline findings are intentionally resolved.
+`--since-baseline` compares findings against `.greengate-baseline.json` by fingerprint: the rule, the file, the matched text and the lines around it. A finding stays known when lines are inserted above it, the code around it changes, or its file is renamed. It becomes new when the matched text itself changes (a rotated secret is a different secret), or when a moved file's finding is ambiguous: several baseline entries share its rule and matched text, and none is in the same file. The baseline stores keyed hashes, not secrets, but its salt is in the same file, so a reader can test guesses at weak secrets. See [Baselines & Exceptions](/guide/baselines-and-exceptions).
 
 ---
 

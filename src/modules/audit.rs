@@ -1,4 +1,7 @@
-use crate::report::{Check, Finding, Format, Location, Report, Severity};
+use crate::modules::suppress::{self, Policy};
+use crate::report::{
+    Check, Finding, Format, Location, Report, Severity, Suppression, SuppressionKind,
+};
 use crate::utils::http;
 use crate::utils::{config, files, terminal};
 use anyhow::{Context, Result};
@@ -63,6 +66,8 @@ impl Vulnerability {
                 .as_ref()
                 .map(|fix| format!("upgrade to >= {fix}")),
             reference: self.reference_url.clone(),
+            suppression: None,
+            fingerprint: None,
         }
     }
 }
@@ -574,6 +579,7 @@ pub fn run_audit(
     exclude: &[String],
     format: Format,
     offline: bool,
+    policy: Policy,
 ) -> Result<Report> {
     let source = if offline {
         config::AuditSource::Offline
@@ -589,9 +595,10 @@ pub fn run_audit(
         .collect();
 
     if !ignored.is_empty() {
-        terminal::info(&format!(
-            "Ignoring {} suppressed advisory/-ies from .greengate.toml",
-            ignored.len()
+        terminal::warn(&format!(
+            "[audit] ignore_advisories is deprecated ({} advisory/-ies): move them to {} with `greengate exceptions migrate`",
+            ignored.len(),
+            crate::modules::exceptions::EXCEPTIONS_FILE
         ));
     }
 
@@ -675,31 +682,48 @@ pub fn run_audit(
         bar.finish_and_clear();
     }
 
-    // Split into suppressed vs. actionable
-    let (suppressed, actionable): (Vec<_>, Vec<_>) = all_vulns
+    // Deprecated config suppressions first, then exceptions and the baseline.
+    let (ignored_vulns, rest): (Vec<_>, Vec<_>) = all_vulns
         .into_iter()
         .partition(|v| ignored.contains(&v.vuln_id.to_uppercase()));
+    let mut found: Vec<Finding> = rest.iter().map(Vulnerability::to_finding).collect();
+    let outcome = suppress::apply(
+        &mut found,
+        &suppress::Options {
+            tool: "audit",
+            policy,
+            matcher: None,
+            base: None,
+        },
+    )?;
+    let (active, gone) =
+        suppress::partition(rest.into_iter().zip(found).collect(), &outcome.verdicts);
+    let (actionable, active_findings): (Vec<Vulnerability>, Vec<Finding>) =
+        active.into_iter().unzip();
 
-    report.suppressed = suppressed.iter().map(Vulnerability::to_finding).collect();
-    report.findings = actionable.iter().map(Vulnerability::to_finding).collect();
+    report.suppressed = ignored_vulns
+        .iter()
+        .map(|v| {
+            let mut f = v.to_finding();
+            f.suppression = Some(Suppression::new(
+                SuppressionKind::Config,
+                Some("[audit] ignore_advisories".into()),
+            ));
+            f
+        })
+        .chain(gone.into_iter().map(|((_, mut f), s)| {
+            f.suppression = Some(s);
+            f
+        }))
+        .collect();
+    report.findings = active_findings;
+    report.warnings.extend(outcome.warnings);
 
     if !text {
         return Ok(report);
     }
 
-    if !suppressed.is_empty() {
-        terminal::warn(&format!(
-            "Suppressed {} advisory/-ies (listed in .greengate.toml [audit] ignore_advisories):",
-            suppressed.len()
-        ));
-        for v in &suppressed {
-            let sev = v.severity.as_deref().unwrap_or("?");
-            eprintln!(
-                "  [suppressed] [{}] [{}] {}@{} — {}",
-                v.vuln_id, sev, v.package, v.version, v.summary
-            );
-        }
-    }
+    suppress::print_summary(&outcome.notes, &report.suppressed);
 
     if actionable.is_empty() {
         if report.unfinished().next().is_none() {
