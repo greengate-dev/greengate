@@ -33,7 +33,7 @@ impl Isolation {
     pub fn describe(self, network: bool) -> String {
         match self {
             Isolation::Bwrap => format!(
-                "bubblewrap: read-only system, writes confined to the package, credentials masked, {}",
+                "bubblewrap: read-only system, writes confined, credentials masked, {}",
                 if network {
                     "network allowed"
                 } else {
@@ -129,6 +129,12 @@ pub struct Sandbox<'a> {
     pub tmp: &'a Path,
     /// Directories the command may write.
     pub writable: Vec<PathBuf>,
+    /// Paths inside `writable` that stay read-only (e.g. pnpm's package
+    /// store under a writable project).
+    pub read_only: Vec<PathBuf>,
+    /// Paths inside `read_only` that are writable again (the running
+    /// package's own directory).
+    pub inner: Vec<PathBuf>,
     pub network: bool,
     /// Variables kept even if they look like credentials.
     pub env_allow: &'a [String],
@@ -172,7 +178,15 @@ impl Sandbox<'_> {
                     c.arg("--ro-bind").arg("/dev/null").arg(&npmrc);
                 }
                 c.arg("--bind").arg(self.tmp).arg(self.tmp);
+                // Later mounts override earlier ones: writable, then read-only
+                // carve-outs, then the writable directories inside those.
                 for w in &self.writable {
+                    c.arg("--bind").arg(w).arg(w);
+                }
+                for r in self.read_only.iter().filter(|r| r.exists()) {
+                    c.arg("--ro-bind").arg(r).arg(r);
+                }
+                for w in &self.inner {
                     c.arg("--bind").arg(w).arg(w);
                 }
                 c.arg("--chdir")

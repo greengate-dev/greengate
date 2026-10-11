@@ -217,6 +217,22 @@ impl Lockfile {
         }
     }
 
+    /// A lockfile built from a package list rather than parsed — e.g. what
+    /// pip reports it would install. It records no edges.
+    pub fn synthetic(
+        path: &Path,
+        format: Format,
+        ecosystem: Ecosystem,
+        packages: Vec<Package>,
+    ) -> Lockfile {
+        let mut lock = Lockfile::new(path, format, ecosystem);
+        lock.edges_known = false;
+        for p in packages {
+            lock.push(p);
+        }
+        lock
+    }
+
     /// Add a package and return its index.
     fn push(&mut self, package: Package) -> usize {
         self.packages.push(package);

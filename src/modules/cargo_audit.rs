@@ -443,7 +443,7 @@ struct BuildRsThreat {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Extract crate names from `cargo add` args (strip feature flags and version specs).
-fn extract_crate_names(args: &[String]) -> Vec<String> {
+pub(crate) fn extract_crate_names(args: &[String]) -> Vec<String> {
     let mut names = Vec::new();
     let mut skip_next = false;
     for arg in args {
@@ -517,7 +517,7 @@ fn lock_crates(path: &str) -> HashMap<String, (Source, bool)> {
 
 /// Locate the cargo registry source cache directory.
 /// Typically `~/.cargo/registry/src/`.
-fn locate_cargo_registry_src() -> PathBuf {
+pub(crate) fn locate_cargo_registry_src() -> PathBuf {
     // Prefer CARGO_HOME env var
     if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
         let p = PathBuf::from(cargo_home).join("registry").join("src");
@@ -536,7 +536,7 @@ fn locate_cargo_registry_src() -> PathBuf {
 }
 
 /// Where a registry crate's build script is, if it has one.
-enum CrateSource {
+pub(crate) enum CrateSource {
     /// The crate's source directory is not in the registry cache.
     Missing,
     NoBuildScript,
@@ -547,7 +547,7 @@ enum CrateSource {
 /// dir (`<registry_src>/<index-hash>/<name>-<version>/`). Matching the exact
 /// directory matters: a prefix match would scan `serde_json` for `serde`, or
 /// another cached version of the same crate.
-fn find_build_script(registry_src: &Path, name: &str, version: &str) -> CrateSource {
+pub(crate) fn find_build_script(registry_src: &Path, name: &str, version: &str) -> CrateSource {
     let dir_name = format!("{name}-{version}");
     let Ok(indexes) = std::fs::read_dir(registry_src) else {
         return CrateSource::Missing;
@@ -581,7 +581,7 @@ fn build_script_path(crate_dir: &Path) -> Option<PathBuf> {
     }
 }
 
-fn scan_build_rs_signals(source: &str) -> Vec<String> {
+pub(crate) fn scan_build_rs_signals(source: &str) -> Vec<String> {
     BUILD_RS_SIGNALS
         .iter()
         .filter(|(_, needle)| source.contains(needle))
@@ -589,7 +589,7 @@ fn scan_build_rs_signals(source: &str) -> Vec<String> {
         .collect()
 }
 
-fn max_entropy_score(text: &str) -> f64 {
+pub(crate) fn max_entropy_score(text: &str) -> f64 {
     const WINDOW: usize = 64;
     let bytes = text.as_bytes();
     if bytes.len() < 32 {

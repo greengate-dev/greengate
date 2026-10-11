@@ -249,7 +249,7 @@ enum Commands {
     /// has checked the complete tree: plan (resolve + policy), fetch with
     /// scripts off, inspect every install script, then run approved scripts
     /// in a sandbox (bubblewrap: no network, writes confined, credentials
-    /// masked) and verify the result. npm so far.
+    /// masked) and verify the result. npm, pnpm, pip and cargo.
     /// Example: greengate install npm ci
     ///          greengate install --plan npm install left-pad
     Install {
@@ -263,7 +263,10 @@ enum Commands {
         /// Report findings but do not exit non-zero
         #[arg(long)]
         no_fail: bool,
-        /// Package manager: npm
+        /// pip binary for `install pip …` (e.g. a venv's pip)
+        #[arg(long, default_value = "pip")]
+        pip: String,
+        /// Package manager: npm, pnpm, pip or cargo
         manager: String,
         /// The install command, e.g. `ci` or `install left-pad`
         #[arg(
@@ -892,6 +895,7 @@ fn run() -> anyhow::Result<ExitCode> {
             plan,
             isolate,
             no_fail,
+            pip,
             manager,
             args,
         } => {
@@ -901,6 +905,7 @@ fn run() -> anyhow::Result<ExitCode> {
                 plan_only: plan,
                 isolate,
                 no_fail,
+                pip,
                 policy: &cfg.supply_chain,
                 now: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

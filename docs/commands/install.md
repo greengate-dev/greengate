@@ -1,6 +1,6 @@
 ---
 title: 'install — Inspect Before Any Package Code Runs'
-description: 'Install npm dependencies with no package code running before greengate has checked the complete tree: plan, fetch with scripts off, inspect every install script, then run approved scripts in a bubblewrap sandbox with no network, confined writes and masked credentials.'
+description: 'Install npm, pnpm, pip and Cargo dependencies with no package code running before greengate has checked the complete tree: plan, fetch with scripts off, inspect every install script, then run approved scripts in a bubblewrap sandbox with no network, confined writes and masked credentials.'
 ---
 
 # install — Inspect Before Any Package Code Runs
@@ -11,13 +11,27 @@ transitive, including `npm ci` installs that name no packages.
 
 ```bash
 greengate install npm ci
-greengate install npm install left-pad
+greengate install pnpm install --frozen-lockfile
+greengate install pip install -r requirements.txt     # --pip venv/bin/pip
+greengate install cargo add serde
 greengate install --plan npm install some-new-package   # look, change nothing
 ```
 
-npm is supported so far; pnpm, pip and Cargo come next. Until then
-[`watch-install`](watch-install.md), [`pip-install`](pip-install.md) and
-[`cargo-add`](cargo-add.md) cover those.
+npm, pnpm, pip and Cargo are supported. For Yarn and Bun, use
+[`watch-install`](watch-install.md) for now.
+
+## Per package manager
+
+| | Plan (no package code) | Fetch | What runs, and how |
+|---|---|---|---|
+| **npm** | `npm install --package-lock-only --ignore-scripts` in a scratch copy | `npm ci --ignore-scripts` | each approved package's install scripts via `npm rebuild <name>@<version>`, sandboxed |
+| **pnpm** | `pnpm install/add --lockfile-only --ignore-scripts` in a scratch copy | `pnpm install --frozen-lockfile --ignore-scripts` | only builds pnpm itself allows (`onlyBuiltDependencies`; pnpm 10 builds nothing by default), via `pnpm rebuild <name>`, sandboxed: the project is writable for pnpm's own state, but the package store and `.git` are read-only except the running package |
+| **pip** | `pip install --dry-run --report` — **in the sandbox**, because resolving an sdist runs its build backend | greengate downloads every artifact itself and checks its sha256 against the index | sdists are built into wheels in the sandbox (with network, for build requirements; writes confined to a scratch directory); then only wheels are installed, which runs no package code |
+| **Cargo** | `cargo add` / `update` (manifests are backed up) | `cargo fetch --locked` (cargo checks every checksum) | nothing: build scripts and proc-macros run at `cargo build`, after the gate. New crates' build scripts and proc-macro sources are inspected; networking, shell invocations or encoded payloads block (`allow_cargo_crates` to allowlist). A blocked plan restores `Cargo.toml` and `Cargo.lock`. |
+
+pip wheels are also inspected for `.pth` files with executable lines — they
+run at every Python start, so isolation at install time does not help;
+suspicious ones block (`INSTALL/StartupCode`).
 
 ## Phases
 
@@ -26,7 +40,7 @@ npm is supported so far; pnpm, pip and Cargo come next. Until then
 | **Plan** | npm resolves the full tree into a lockfile in a scratch copy of the project (`--package-lock-only --ignore-scripts`). greengate applies the [`deps check`](deps.md#deps-check-supply-chain-policy) policies to every package the install adds or changes — release cooldown, new install scripts, lost provenance, registry binding, sources — and the name guard to packages named on the command line. A violation stops here: nothing is downloaded. | No |
 | **Fetch** | `npm ci --ignore-scripts` downloads and extracts the planned tree. | No |
 | **Verify artifacts** | npm checks every tarball against the lockfile integrity; greengate checks nothing outside the plan was installed. | No |
-| **Inspect** | Every installed package — nested copies included — that runs code at install: lifecycle scripts, the helper files they call (`node install.js`), and `binding.gyp` builds. Suspicious patterns (network, `eval`, shell, `process.env`, `../`, high entropy) are reported. | No |
+| **Inspect** | Every installed package — nested copies included — that runs code at install: lifecycle scripts, the helper files they call (`node install.js`), and `binding.gyp` builds. Suspicious patterns (network, `eval`, shell, `process.env`, `../`, an embedded encoded payload) are reported. | No |
 | **Execute** | Approved scripts run one package at a time, dependencies first (`npm rebuild <name>@<version>`). | Yes — see below |
 | **Verify files** | Without a sandbox: the tree is compared before and after each script, and a filesystem watcher catches files that appear and vanish. | — |
 
@@ -75,13 +89,17 @@ afterwards as usual — they are the project's code.
 | `INSTALL/ForeignWrite` | Unisolated, a script created, modified or deleted files outside its package. |
 | `INSTALL/PhantomFile` | Unisolated, a script created and deleted files outside its package. |
 | `INSTALL/UnplannedPackage` | A package was installed that the plan did not contain. |
+| `INSTALL/BuildNotAllowed` | pnpm will not run this package's install scripts (not in `onlyBuiltDependencies`), so greengate does not either. |
+| `INSTALL/SuspiciousBuildScript` | A new crate's build script or proc-macro uses networking, shells out, or embeds an encoded payload. |
+| `INSTALL/StartupCode` | A wheel adds a `.pth` file whose code runs at every Python start and looks suspicious. |
+| `INSTALL/HashMismatch` | A downloaded pip artifact does not match the sha256 the index published. |
 
 Plus every `deps check` rule from the plan phase.
 
 ## Options
 
 ```
-greengate install [--plan] [--isolate auto|bwrap|none] [--no-fail] npm <install|ci> [ARGS…]
+greengate install [--plan] [--isolate auto|bwrap|none] [--no-fail] [--pip PIP] <npm|pnpm|pip|cargo> <COMMAND> [ARGS…]
 ```
 
 ```toml

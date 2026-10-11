@@ -2,13 +2,15 @@
 //! code at install time, what that code looks like, and what the tree
 //! contains before and after it runs.
 
-use crate::modules::watch_install::{max_script_entropy, script_signals};
+use crate::modules::watch_install::script_signals;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Lifecycle hooks npm runs on install, in order.
 pub const INSTALL_HOOKS: &[&str] = &["preinstall", "install", "postinstall"];
-const ENTROPY_THRESHOLD: f64 = 4.8;
+/// An unbroken run of base64 / hex characters at least this long is an
+/// embedded encoded payload; code, even minified, breaks runs with punctuation.
+const BLOB_MIN: usize = 120;
 /// Helper files larger than this are not read.
 const MAX_HELPER_BYTES: u64 = 1024 * 1024;
 
@@ -57,7 +59,7 @@ fn walk_node_modules(dir: &Path, out: &mut Vec<Installed>) {
     }
 }
 
-fn read_package(dir: &Path) -> Option<Installed> {
+pub(super) fn read_package(dir: &Path) -> Option<Installed> {
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("package.json")).ok()?).ok()?;
     Some(Installed {
@@ -80,14 +82,15 @@ pub struct ScriptPackage {
     pub hooks: Vec<(String, String)>,
     /// Suspicious patterns found in the commands and the files they run.
     pub signals: Vec<String>,
-    pub max_entropy: f64,
+    /// Length of the longest encoded-looking blob, if any.
+    pub blob: Option<usize>,
     /// Helper files the commands run, relative to the package.
     pub helpers: Vec<String>,
 }
 
 impl ScriptPackage {
     pub fn suspicious(&self) -> bool {
-        !self.signals.is_empty() || self.max_entropy > ENTROPY_THRESHOLD
+        !self.signals.is_empty() || self.blob.is_some()
     }
 
     pub fn evidence(&self) -> String {
@@ -95,10 +98,9 @@ impl ScriptPackage {
         if !self.signals.is_empty() {
             parts.push(self.signals.join(", "));
         }
-        if self.max_entropy > ENTROPY_THRESHOLD {
+        if let Some(len) = self.blob {
             parts.push(format!(
-                "entropy {:.2} (likely obfuscated)",
-                self.max_entropy
+                "a {len}-character encoded blob (likely obfuscated)"
             ));
         }
         let hooks: Vec<String> = self
@@ -106,7 +108,10 @@ impl ScriptPackage {
             .iter()
             .map(|(h, c)| format!("{h}: `{c}`"))
             .collect();
-        let mut s = format!("{} — {}", hooks.join("; "), parts.join("; "));
+        let mut s = hooks.join("; ");
+        if !parts.is_empty() {
+            s.push_str(&format!(" — {}", parts.join("; ")));
+        }
         if !self.helpers.is_empty() {
             s.push_str(&format!(" (incl. {})", self.helpers.join(", ")));
         }
@@ -189,11 +194,43 @@ pub fn script_packages(installed: &[Installed]) -> Vec<ScriptPackage> {
             pkg: pkg.clone(),
             hooks,
             signals,
-            max_entropy: max_script_entropy(&text),
+            blob: encoded_blob(&text),
             helpers,
         });
     }
     out
+}
+
+/// The length of the longest run of base64/hex characters that mixes
+/// letters and digits and is at least [`BLOB_MIN`] long.
+pub fn encoded_blob(text: &str) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    let mut consider = |run: &str| {
+        let (mut digit, mut alpha) = (false, false);
+        for c in run.chars() {
+            digit |= c.is_ascii_digit();
+            alpha |= c.is_ascii_alphabetic();
+        }
+        if run.len() >= BLOB_MIN && digit && alpha {
+            best = Some(best.map_or(run.len(), |b| b.max(run.len())));
+        }
+    };
+    let mut start = None;
+    for (i, c) in text.char_indices() {
+        let in_alphabet = c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '-' | '_');
+        match (in_alphabet, start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                consider(&text[s..i]);
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        consider(&text[s..]);
+    }
+    best
 }
 
 // ── Snapshots ─────────────────────────────────────────────────────────────────
@@ -392,6 +429,20 @@ mod tests {
             [("install".to_string(), "node-gyp rebuild".to_string())]
         );
         assert!(!c.suspicious());
+    }
+
+    #[test]
+    fn encoded_blobs_but_not_code() {
+        let blob = "aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IHBheWxvYWQgdGhhdCBjYXJyaWVzIGEgaGlkZGVuIHNjcmlwdCB0byBydW4gb24gaW5zdGFsbA==";
+        assert_eq!(
+            encoded_blob(&format!("eval(atob('{blob}'))")),
+            Some(blob.len())
+        );
+        let code = "const result = await fetchBinary(platform, arch); if (!result.ok) { throw new Error(`failed ${result.status}`) }";
+        assert_eq!(encoded_blob(&code.repeat(20)), None);
+        // A long sha512 integrity string in a lockfile-like line is a blob,
+        // but a long word list without digits is not.
+        assert_eq!(encoded_blob(&"abcdefghij".repeat(20)), None);
     }
 
     #[test]

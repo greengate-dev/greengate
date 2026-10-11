@@ -61,7 +61,7 @@ impl Sub {
     }
 }
 
-const MANIFESTS: &[&str] = &[
+pub const MANIFESTS: &[&str] = &[
     "package.json",
     "package-lock.json",
     "npm-shrinkwrap.json",
@@ -70,7 +70,7 @@ const MANIFESTS: &[&str] = &[
 
 /// Copy the files npm resolves from — every package.json (workspaces
 /// included), the lockfile and .npmrc — into `work`, keeping their paths.
-pub fn stage(project: &Path, work: &Path) -> Result<()> {
+pub fn stage(project: &Path, work: &Path, manifests: &[&str]) -> Result<()> {
     let mut stack = vec![project.to_path_buf()];
     while let Some(dir) = stack.pop() {
         for e in std::fs::read_dir(&dir)
@@ -83,7 +83,7 @@ pub fn stage(project: &Path, work: &Path) -> Result<()> {
                 if !matches!(name.to_str(), Some("node_modules" | ".git" | "target")) {
                     stack.push(path);
                 }
-            } else if MANIFESTS.iter().any(|m| name == *m) {
+            } else if manifests.iter().any(|m| name == *m) {
                 let rel = path.strip_prefix(project).unwrap_or(&path);
                 let dest = work.join(rel);
                 if let Some(parent) = dest.parent() {
