@@ -2274,3 +2274,334 @@ fn deps_why_explains_a_transitive_package() {
     let out = run_in(dir.path(), &["deps", "why", "left-pad"]);
     assert_eq!(out.status.code(), Some(4));
 }
+
+// ── deps check: release risk and lockfile policy ──────────────────────────────
+
+/// A fake registry: answers each GET with `respond(path)` and logs the paths.
+fn fake_registry(
+    respond: fn(&str) -> (u16, String),
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = log.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap_or(0);
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+            }
+            let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+            seen.lock().unwrap().push(path.clone());
+            let (status, body) = respond(&path);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (format!("http://{addr}"), log)
+}
+
+/// npm packuments: `ms` 2.1.2 → 2.1.3 adds a postinstall script; `quiet` is
+/// an ordinary old release.
+fn npm_packuments(path: &str) -> (u16, String) {
+    let body = match path {
+        "/ms" => serde_json::json!({
+            "time": {"2.1.2": "2019-06-06T00:00:00.000Z", "2.1.3": "2020-12-18T00:00:00.000Z"},
+            "versions": {
+                "2.1.2": {"_npmUser": {"name": "leo"}},
+                "2.1.3": {"_npmUser": {"name": "leo"}, "scripts": {"postinstall": "node steal.js"}}
+            }
+        }),
+        "/quiet" => serde_json::json!({
+            "time": {"1.0.0": "2015-01-01T00:00:00.000Z"},
+            "versions": {"1.0.0": {"_npmUser": {"name": "q"}}}
+        }),
+        _ => return (404, "{}".into()),
+    };
+    (200, body.to_string())
+}
+
+fn npm_lock(entries: &[(&str, &str, &str)]) -> String {
+    let mut packages = serde_json::Map::new();
+    let mut deps = serde_json::Map::new();
+    for (name, version, resolved) in entries {
+        deps.insert(name.to_string(), serde_json::json!(version));
+        packages.insert(
+            format!("node_modules/{name}"),
+            serde_json::json!({"version": version, "resolved": resolved, "integrity": "sha512-x"}),
+        );
+    }
+    packages.insert(
+        "".into(),
+        serde_json::json!({"name": "app", "dependencies": deps}),
+    );
+    serde_json::json!({"lockfileVersion": 3, "packages": packages}).to_string()
+}
+
+fn deps_check(
+    dir: &std::path::Path,
+    registry: &str,
+    args: &[&str],
+) -> (Option<i32>, serde_json::Value) {
+    let out = Command::new(binary())
+        .args(["deps", "check", "--report", "r.json"])
+        .args(args)
+        .env("GREENGATE_NPM_REGISTRY", registry)
+        .env("GREENGATE_CACHE_DIR", dir.join(".cache"))
+        .env("GREENGATE_OSV_URL", "http://127.0.0.1:1")
+        .env_remove("GITHUB_BASE_REF")
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let report = std::fs::read(dir.join("r.json"))
+        .map(|b| serde_json::from_slice(&b).unwrap())
+        .unwrap_or_else(|_| {
+            panic!(
+                "no report; stderr: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+    (out.status.code(), report)
+}
+
+fn rules_of(report: &serde_json::Value, key: &str) -> Vec<String> {
+    report[key]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn deps_check_blocks_a_release_that_adds_an_install_script() {
+    let dir = tempfile::tempdir().unwrap();
+    let npm = "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz";
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[("ms", "2.1.3", npm)]),
+    )
+    .unwrap();
+    let (registry, _) = fake_registry(npm_packuments);
+    let (code, report) = deps_check(dir.path(), &registry, &["--all"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(rules_of(&report, "findings"), ["RELEASE/NewInstallScript"]);
+}
+
+#[test]
+fn deps_check_unreachable_registry_is_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    let npm = "https://registry.npmjs.org/quiet/-/quiet-1.0.0.tgz";
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[("quiet", "1.0.0", npm)]),
+    )
+    .unwrap();
+    let (code, report) = deps_check(dir.path(), "http://127.0.0.1:1", &["--all"]);
+    assert_eq!(code, Some(3), "{report}");
+}
+
+#[test]
+fn deps_check_enforces_registry_binding_and_dependency_confusion() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[
+            (
+                "@acme/ui",
+                "1.0.0",
+                "https://registry.npmjs.org/@acme/ui/-/ui-1.0.0.tgz",
+            ),
+            (
+                "acme-auth",
+                "1.0.0",
+                "https://registry.npmjs.org/acme-auth/-/acme-auth-1.0.0.tgz",
+            ),
+        ]),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\ninternal_packages = [\"acme-*\"]\n\
+         [[supply_chain.registries]]\npattern = \"@acme/*\"\nurl = \"https://npm.acme.dev/\"\n",
+    )
+    .unwrap();
+    let (registry, _) = fake_registry(|_| (404, "{}".into()));
+    let (code, report) = deps_check(dir.path(), &registry, &[]);
+    assert_eq!(code, Some(1), "{report}");
+    let mut rules = rules_of(&report, "findings");
+    rules.sort();
+    assert_eq!(rules, ["REGISTRY/DependencyConfusion", "REGISTRY/Mismatch"]);
+}
+
+#[test]
+fn deps_check_registry_rules_on_pnpm_are_incomplete() {
+    // pnpm does not record which registry served a package.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      '@acme/ui':\n        specifier: 1.0.0\n        version: 1.0.0\n\
+         packages:\n  '@acme/ui@1.0.0':\n    resolution: {integrity: sha512-x}\nsnapshots:\n  '@acme/ui@1.0.0': {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[[supply_chain.registries]]\npattern = \"@acme/*\"\nurl = \"https://npm.acme.dev/\"\n",
+    )
+    .unwrap();
+    let (registry, _) = fake_registry(|_| (404, "{}".into()));
+    let (code, report) = deps_check(dir.path(), &registry, &[]);
+    assert_eq!(code, Some(3), "{report}");
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"].as_str().unwrap().starts_with("registry-binding:"))
+    );
+}
+
+#[test]
+fn deps_check_unpinned_git_warns_and_strict_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[(
+            "tool",
+            "1.0.0",
+            "git+ssh://git@github.com/acme/tool.git#main",
+        )]),
+    )
+    .unwrap();
+    let (registry, _) = fake_registry(|_| (404, "{}".into()));
+    let (code, report) = deps_check(dir.path(), &registry, &[]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(rules_of(&report, "warnings"), ["SOURCE/UnpinnedGit"]);
+    let (code, _) = deps_check(dir.path(), &registry, &["--profile", "strict"]);
+    assert_eq!(code, Some(1));
+}
+
+#[test]
+fn deps_check_only_looks_up_what_changed_since_the_base() {
+    let dir = tempfile::tempdir().unwrap();
+    init_git_repo(dir.path());
+    let url = |n: &str, v: &str| format!("https://registry.npmjs.org/{n}/-/{n}-{v}.tgz");
+    let write = |ms: &str| {
+        std::fs::write(
+            dir.path().join("package-lock.json"),
+            npm_lock(&[
+                ("ms", ms, &url("ms", ms)),
+                ("quiet", "1.0.0", &url("quiet", "1.0.0")),
+            ]),
+        )
+        .unwrap();
+    };
+    write("2.1.2");
+    git_commit_all(dir.path(), "lock");
+    write("2.1.3");
+
+    let (registry, log) = fake_registry(npm_packuments);
+    let (code, report) = deps_check(dir.path(), &registry, &[]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["/ms"],
+        "only the upgraded package is looked up"
+    );
+    let message = report["findings"][0]["message"].as_str().unwrap();
+    assert!(message.contains("upgraded from 2.1.2"), "{message}");
+}
+
+/// `fresh` 1.0.1 was published an hour ago; 1.0.0 years ago. The fake OSV
+/// path answers the exemption query: an advisory on 1.0.0, none on 1.0.1.
+fn fresh_release_registry(path: &str) -> (u16, String) {
+    let hour_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 3600;
+    // Format unix seconds as ISO 8601 (days-from-civil, inverted).
+    let (days, secs) = (hour_ago / 86_400, hour_ago % 86_400);
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let iso = format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z",
+        secs / 3600,
+        secs / 60 % 60,
+        secs % 60
+    );
+    match path {
+        "/fresh" => (
+            200,
+            serde_json::json!({
+                "time": {"1.0.0": "2015-01-01T00:00:00.000Z", "1.0.1": iso},
+                "versions": {"1.0.0": {}, "1.0.1": {}}
+            })
+            .to_string(),
+        ),
+        "/v1/querybatch" => (
+            200,
+            r#"{"results":[{"vulns":[{"id":"GHSA-old-0001"}]},{}]}"#.to_string(),
+        ),
+        _ => (404, "{}".into()),
+    }
+}
+
+#[test]
+fn deps_check_cooldown_exempts_a_security_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    init_git_repo(dir.path());
+    let url = |v: &str| format!("https://registry.npmjs.org/fresh/-/fresh-{v}.tgz");
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[("fresh", "1.0.0", &url("1.0.0"))]),
+    )
+    .unwrap();
+    git_commit_all(dir.path(), "lock");
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[("fresh", "1.0.1", &url("1.0.1"))]),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain.release]\nyoung_release = \"fail\"\n",
+    )
+    .unwrap();
+
+    let (registry, _) = fake_registry(fresh_release_registry);
+    let out = Command::new(binary())
+        .args(["deps", "check", "--report", "r.json"])
+        .env("GREENGATE_NPM_REGISTRY", &registry)
+        .env("GREENGATE_OSV_URL", &registry)
+        .env("GREENGATE_CACHE_DIR", dir.path().join(".cache"))
+        .env_remove("GITHUB_BASE_REF")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("r.json")).unwrap()).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{report}");
+    let warning = report["warnings"][0]["message"].as_str().unwrap();
+    assert!(
+        warning.contains("exempt from the cooldown") && warning.contains("GHSA-old-0001"),
+        "{warning}"
+    );
+}

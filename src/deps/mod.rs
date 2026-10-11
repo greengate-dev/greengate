@@ -193,6 +193,10 @@ pub struct Lockfile {
     /// Caveats about the graph that leave every package listed — e.g. no
     /// manifest beside the lockfile, so direct dependencies are unknown.
     pub notes: Vec<String>,
+    /// Whether the format records which registry served each package. pnpm,
+    /// Bun and Yarn Berry leave the configured default unrecorded, so
+    /// `Source::Registry { url: None }` there may be a private registry.
+    pub registry_recorded: bool,
 }
 
 impl Lockfile {
@@ -206,6 +210,10 @@ impl Lockfile {
             edges_known: true,
             unresolved: Vec::new(),
             notes: Vec::new(),
+            registry_recorded: !matches!(
+                format,
+                Format::Pnpm | Format::Bun | Format::YarnBerry | Format::GoMod | Format::GoSum
+            ),
         }
     }
 
@@ -361,7 +369,7 @@ pub fn format_of(path: &Path) -> Option<Format> {
 
 /// Parse one dependency file.
 pub fn load(path: &Path) -> Result<Lockfile> {
-    let format = format_of(path)
+    format_of(path)
         .with_context(|| format!("{} is not a supported dependency file", path.display()))?;
     if path.file_name().is_some_and(|n| n == "bun.lockb") {
         let mut lock = Lockfile::new(path, Format::Bun, Ecosystem::Npm);
@@ -374,18 +382,26 @@ pub fn load(path: &Path) -> Result<Lockfile> {
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("could not read {}", path.display()))?;
+    parse(path, &content)
+}
+
+/// Parse `content` as the dependency file at `path` — e.g. that file as it
+/// was at another git revision. Sibling manifests are read from disk.
+pub fn parse(path: &Path, content: &str) -> Result<Lockfile> {
+    let format = format_of(path)
+        .with_context(|| format!("{} is not a supported dependency file", path.display()))?;
     let mut lock = match format {
-        Format::PackageLock => npm::package_lock(path, &content),
-        Format::Yarn1 | Format::YarnBerry => npm::yarn(path, &content),
-        Format::Pnpm => npm::pnpm(path, &content),
-        Format::Bun => npm::bun(path, &content),
-        Format::CargoLock => cargo::cargo_lock(path, &content),
-        Format::UvLock => python::uv_lock(path, &content),
-        Format::PoetryLock => python::poetry_lock(path, &content),
-        Format::Pylock => python::pylock(path, &content),
-        Format::Requirements => Ok(python::requirements(path, &content)),
-        Format::GoMod => go::go_mod(path, &content),
-        Format::GoSum => Ok(go::go_sum(path, &content)),
+        Format::PackageLock => npm::package_lock(path, content),
+        Format::Yarn1 | Format::YarnBerry => npm::yarn(path, content),
+        Format::Pnpm => npm::pnpm(path, content),
+        Format::Bun => npm::bun(path, content),
+        Format::CargoLock => cargo::cargo_lock(path, content),
+        Format::UvLock => python::uv_lock(path, content),
+        Format::PoetryLock => python::poetry_lock(path, content),
+        Format::Pylock => python::pylock(path, content),
+        Format::Requirements => Ok(python::requirements(path, content)),
+        Format::GoMod => go::go_mod(path, content),
+        Format::GoSum => Ok(go::go_sum(path, content)),
     }
     .with_context(|| format!("could not parse {}", path.display()))?;
     lock.derive_scopes();

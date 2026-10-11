@@ -259,6 +259,19 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
             .map(|()| Report::new("sbom"))
         }
 
+        "deps-check" => {
+            crate::modules::deps_check::run_deps_check(crate::modules::deps_check::CheckOpts {
+                root: std::path::Path::new("."),
+                base: flag_value(args, "--base"),
+                all: args.contains(&"--all"),
+                exclude: &cfg.deps.exclude_patterns,
+                policy: &cfg.supply_chain,
+                now: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            })
+        }
+
         "ci-lint" => {
             let format = enum_flag(args, "--format")?.unwrap_or(ReportFormat::Text);
             let file = flag_value(args, "--file").map(str::to_string);
@@ -270,7 +283,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
 
         other => {
             anyhow::bail!(
-                "Unknown pipeline step '{}'. Valid steps: scan, lint, docker-lint, coverage, audit, lighthouse, reassure, review, tia, sbom, ci-lint",
+                "Unknown pipeline step '{}'. Valid steps: scan, lint, docker-lint, coverage, audit, deps-check, lighthouse, reassure, review, tia, sbom, ci-lint",
                 other
             )
         }

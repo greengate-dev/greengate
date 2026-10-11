@@ -113,3 +113,52 @@ pub fn download(
     );
     Ok(Download::Fetched { etag })
 }
+
+/// Outcome of fetching a JSON document that may legitimately not exist.
+pub enum Fetched<T> {
+    Json(T),
+    /// HTTP 404 / 410: the registry says the thing does not exist.
+    NotFound,
+    /// Anything else — transport error, other status, oversized or invalid
+    /// body. The answer is unknown.
+    Unavailable(String),
+}
+
+/// GET `url` and deserialize at most `max_bytes` of the body into `T`.
+/// Registry documents (an npm packument runs to 30 MB) can exceed
+/// [`MAX_BODY_BYTES`]; a typed `T` keeps only the fields it names.
+pub fn get_json_capped<T: serde::de::DeserializeOwned>(
+    url: &str,
+    max_bytes: u64,
+    user_agent: &str,
+) -> Fetched<T> {
+    match agent()
+        .get(url)
+        .set("User-Agent", user_agent)
+        .set("Accept", "application/json")
+        .call()
+    {
+        Ok(resp) => {
+            let mut body = resp.into_reader();
+            match serde_json::from_reader(std::io::BufReader::new(body.by_ref().take(max_bytes))) {
+                Ok(v) => Fetched::Json(v),
+                Err(e) => Fetched::Unavailable(format!("unreadable response from {url}: {e}")),
+            }
+        }
+        Err(ureq::Error::Status(404 | 410, _)) => Fetched::NotFound,
+        Err(ureq::Error::Status(code, _)) => {
+            Fetched::Unavailable(format!("{url} returned HTTP {code}"))
+        }
+        Err(e) => Fetched::Unavailable(format!("{url}: {e}")),
+    }
+}
+
+/// HTTP status of a GET to `url` (for existence probes), or `None` on a
+/// transport failure.
+pub fn status_of(url: &str, user_agent: &str) -> Option<u16> {
+    match agent().get(url).set("User-Agent", user_agent).call() {
+        Ok(resp) => Some(resp.status()),
+        Err(ureq::Error::Status(code, _)) => Some(code),
+        Err(_) => None,
+    }
+}

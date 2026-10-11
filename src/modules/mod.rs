@@ -4,6 +4,7 @@ pub mod cargo_audit;
 pub mod check_config;
 pub mod ci_lint;
 pub mod coverage;
+pub mod deps_check;
 pub mod deps_cmd;
 pub mod docker_lint;
 pub mod github;

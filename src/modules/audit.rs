@@ -520,6 +520,53 @@ fn query_offline(
     vulns
 }
 
+/// Advisory IDs affecting each `(ecosystem, name, version)` — no details,
+/// one batch query (cached like the audit's). `None` when OSV cannot be
+/// asked. Used to tell whether a new release fixes its predecessor.
+pub fn advisory_ids(queries: &[(&str, &str, &str)]) -> Option<Vec<Vec<String>>> {
+    if queries.is_empty() {
+        return Some(Vec::new());
+    }
+    let body = json!({
+        "queries": queries.iter().map(|(eco, name, version)| json!({
+            "version": version,
+            "package": { "name": name, "ecosystem": eco }
+        })).collect::<Vec<_>>()
+    });
+    let body_str = serde_json::to_string(&body).ok()?;
+    let key = cache_key(&body_str);
+    let result: Value = match cache_read(&key) {
+        Some(cached) => cached,
+        None => {
+            let response = http::agent()
+                .post(&format!("{}/v1/querybatch", osv_base()))
+                .set("Content-Type", "application/json")
+                .send_string(&body_str)
+                .ok()?;
+            let parsed: Value = http::read_json(response).ok()?;
+            cache_write(&key, &parsed);
+            parsed
+        }
+    };
+    let results = result.get("results")?.as_array()?;
+    if results.len() != queries.len() {
+        return None;
+    }
+    Some(
+        results
+            .iter()
+            .map(|r| {
+                r.get("vulns")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+                    .collect()
+            })
+            .collect(),
+    )
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run_audit(

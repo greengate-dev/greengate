@@ -7,6 +7,7 @@ use utils::output::ReportFormat;
 
 mod deps;
 mod modules;
+mod registry;
 mod report;
 mod utils;
 
@@ -352,6 +353,22 @@ enum DepsAction {
         #[arg(long, default_value = "text")]
         format: report::Format,
     },
+    /// Supply-chain policy gate: release risk for new or upgraded packages
+    /// (cooldown, new install scripts, lost provenance, publisher changes,
+    /// withdrawn releases) and lockfile policy for all of them (registry
+    /// binding, dependency confusion, git/URL sources, missing integrity)
+    Check {
+        /// Compare against this git revision (default: the PR merge base in
+        /// GitHub Actions, otherwise HEAD)
+        #[arg(long, conflicts_with = "all")]
+        base: Option<String>,
+        /// Check every package against the registry, not just changed ones
+        #[arg(long)]
+        all: bool,
+        /// Directory to search (default: current directory)
+        #[arg(long, default_value = ".")]
+        path: std::path::PathBuf,
+    },
     /// Show how a package ends up in the project: the chain from a direct
     /// dependency to it
     Why {
@@ -631,6 +648,21 @@ fn run() -> anyhow::Result<ExitCode> {
         Commands::InstallHooks { force } => {
             modules::hooks::run_install_hooks(force)?;
         }
+        Commands::Deps {
+            action: DepsAction::Check { base, all, path },
+        } => {
+            let result = modules::deps_check::run_deps_check(modules::deps_check::CheckOpts {
+                root: &path,
+                base: base.as_deref(),
+                all,
+                exclude: &cfg.deps.exclude_patterns,
+                policy: &cfg.supply_chain,
+                now: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            });
+            return exit.finish("deps-check", result);
+        }
         Commands::Deps { action } => match action {
             DepsAction::List { path, format } => {
                 modules::deps_cmd::run_list(&path, &cfg.deps.exclude_patterns, format)?
@@ -638,6 +670,7 @@ fn run() -> anyhow::Result<ExitCode> {
             DepsAction::Why { package, path } => {
                 modules::deps_cmd::run_why(&path, &cfg.deps.exclude_patterns, &package)?
             }
+            DepsAction::Check { .. } => unreachable!("handled above"),
         },
         Commands::Db { action } => match action {
             DbAction::Update { ecosystems, all } => {

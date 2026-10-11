@@ -451,6 +451,120 @@ pub struct SupplyChainConfig {
     /// Empty (default) disables the confusion check.
     #[serde(default)]
     pub internal_packages: Vec<String>,
+    /// Release-risk policy for packages a change introduces or upgrades
+    /// (`greengate deps check`), under `[supply_chain.release]`.
+    #[serde(default)]
+    pub release: ReleasePolicy,
+    /// Packages that must come from a specific registry, as
+    /// `[[supply_chain.registries]]` entries.
+    #[serde(default)]
+    pub registries: Vec<RegistryRule>,
+    /// Policy for dependencies that do not come from a registry, under
+    /// `[supply_chain.sources]`.
+    #[serde(default)]
+    pub sources: SourcePolicy,
+}
+
+/// How a policy signal is enforced.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    Off,
+    /// Reported, never fails the gate.
+    Warn,
+    /// A finding: fails the gate.
+    Fail,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ReleasePolicy {
+    /// Releases younger than this many hours are "too new" (cooldown).
+    #[serde(default = "default_min_release_age_hours")]
+    pub min_release_age_hours: u64,
+    #[serde(default = "level_warn")]
+    pub young_release: Level,
+    /// The release runs install code its predecessor did not.
+    #[serde(default = "level_fail")]
+    pub new_install_script: Level,
+    /// The predecessor had publish provenance; this release does not.
+    #[serde(default = "level_fail")]
+    pub provenance_regression: Level,
+    /// The release was published by an account that never published an
+    /// earlier version of the package.
+    #[serde(default = "level_warn")]
+    pub publisher_change: Level,
+    /// The release is yanked or deprecated.
+    #[serde(default = "level_warn")]
+    pub withdrawn: Level,
+    /// The lockfile records no integrity hash for a registry package (only
+    /// for formats that normally record one).
+    #[serde(default = "level_warn")]
+    pub missing_integrity: Level,
+}
+
+impl Default for ReleasePolicy {
+    fn default() -> Self {
+        Self {
+            min_release_age_hours: default_min_release_age_hours(),
+            young_release: Level::Warn,
+            new_install_script: Level::Fail,
+            provenance_regression: Level::Fail,
+            publisher_change: Level::Warn,
+            withdrawn: Level::Warn,
+            missing_integrity: Level::Warn,
+        }
+    }
+}
+
+fn default_min_release_age_hours() -> u64 {
+    24
+}
+fn level_warn() -> Level {
+    Level::Warn
+}
+fn level_fail() -> Level {
+    Level::Fail
+}
+fn level_off() -> Level {
+    Level::Off
+}
+
+/// Packages matching `pattern` must resolve from `url`.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryRule {
+    /// Exact name, npm scope (`@acme`, `@acme/*`), or `prefix-*`.
+    pub pattern: String,
+    pub url: String,
+    /// Restrict the rule to these ecosystems (`npm`, `PyPI`, `crates.io`);
+    /// empty means all.
+    #[serde(default)]
+    pub ecosystems: Vec<String>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct SourcePolicy {
+    /// Git dependencies not pinned to a full commit hash.
+    #[serde(default = "level_warn")]
+    pub git: Level,
+    /// Tarball / archive URL dependencies.
+    #[serde(default = "level_warn")]
+    pub url: Level,
+    /// Local path dependencies outside the workspace.
+    #[serde(default = "level_off")]
+    pub path: Level,
+}
+
+impl Default for SourcePolicy {
+    fn default() -> Self {
+        Self {
+            git: Level::Warn,
+            url: Level::Warn,
+            path: Level::Off,
+        }
+    }
 }
 
 impl Default for SupplyChainConfig {
@@ -465,6 +579,9 @@ impl Default for SupplyChainConfig {
             slopsquat_min_age_days: default_slopsquat_min_age_days(),
             slopsquat_min_downloads: default_slopsquat_min_downloads(),
             internal_packages: Vec::new(),
+            release: ReleasePolicy::default(),
+            registries: Vec::new(),
+            sources: SourcePolicy::default(),
         }
     }
 }
@@ -731,6 +848,21 @@ pub enum Profile {
 pub fn apply_profile(cfg: &mut Config, profile: Profile) {
     match profile {
         Profile::Strict => {
+            // Supply chain: warn-level release and source signals fail. A
+            // signal switched off stays off — that was a deliberate choice.
+            let r = &mut cfg.supply_chain.release;
+            let s = &mut cfg.supply_chain.sources;
+            for level in [
+                &mut r.young_release,
+                &mut r.withdrawn,
+                &mut r.missing_integrity,
+                &mut s.git,
+                &mut s.url,
+            ] {
+                if *level == Level::Warn {
+                    *level = Level::Fail;
+                }
+            }
             // Raise coverage threshold to 90 % if not already higher
             if cfg.coverage.min < 90.0 {
                 cfg.coverage.min = 90.0;

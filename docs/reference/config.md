@@ -132,6 +132,37 @@ allow_cargo_crates = [
   # "openssl",   # legitimate complex build.rs for system lib detection
 ]
 
+# Your private package names / scopes / prefixes. In `deps check`, a package
+# matching one that resolves from the public registry fails as dependency
+# confusion; the install wrappers also check the public registry for them.
+internal_packages = [
+  # "@acme", "acme-*",
+]
+
+# Release-risk policy for new or upgraded packages (`greengate deps check`).
+# Each signal is "off", "warn" or "fail". `--profile strict` turns every
+# "warn" here (and in [supply_chain.sources]) into "fail".
+[supply_chain.release]
+min_release_age_hours = 24        # cooldown
+young_release = "warn"            # published inside the cooldown
+new_install_script = "fail"       # runs install code its predecessor did not
+provenance_regression = "fail"    # predecessor had provenance, this one has none
+publisher_change = "warn"         # publisher never published this package before
+withdrawn = "warn"                # yanked, deprecated, or missing from the registry
+missing_integrity = "warn"        # lockfile records no hash (formats that normally do)
+
+# Packages that must come from a given registry (repeatable).
+# [[supply_chain.registries]]
+# pattern = "@acme/*"              # exact name, npm scope, or prefix-*
+# url = "https://npm.acme.dev/"
+# ecosystems = ["npm"]             # optional: npm, PyPI, crates.io
+
+# Dependencies that do not come from a registry.
+[supply_chain.sources]
+git = "warn"    # git dependencies not pinned to a full commit hash
+url = "warn"    # tarball / archive URLs
+path = "off"    # local paths outside the workspace
+
 [tia]
 # Glob patterns that identify test files for Test Impact Analysis.
 # Uses standard glob syntax with ** for recursive matching.
