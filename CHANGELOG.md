@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Governed exceptions in `.greengate/exceptions.toml`: each waives one finding (`fingerprint`), a rule (optionally by `path` glob or `package`) or an advisory (optionally by `package`), and needs a `reason`, `owner` and `expires` date no more than `[policy] max_exception_days` (90) away. An expired exception's findings count again, naming the exception and its owner; ones expiring within 14 days are warned about. An invalid file exits `2`; `check-config` validates it. `greengate exceptions list` shows them all.
 - `greengate: ignore reason="…"` (or any text after the marker). Every suppressed finding — inline, exception, baseline, `ignore_advisories`, triage — is listed in the report's `suppressed` with a `suppression` object saying why, and the text output tallies them.
 - `ci-lint` honours `# greengate: ignore` on the flagged line or the line above.
+- `greengate deps review` (also a `deps-review` pipeline step): every package a change adds, removes, upgrades or downgrades since the merge base, with how it gets in (direct, or the chain), its SPDX license, the advisories it introduces or fixes, release-risk signals and registry/source rules.
+  - For each introduced advisory, the smallest fix: refresh the package when every dependent already allows a fixed version; raise the project's own requirement; upgrade the direct dependency that pins it (the lowest release that allows a fix, and whether that is within the current requirement); or an override (npm `overrides`, pnpm `pnpm.overrides`, Yarn `resolutions`, Bun `overrides`, uv `override-dependencies`). Fixes count on any release line.
+  - `[dependency_review]`: `fail_on_severity`, `fail_on`, `deny_licenses` / `allow_licenses` (SPDX `AND`/`OR` aware), `unknown_license`. Exceptions apply.
+  - `--format text|json|markdown`; `--annotate` posts one PR comment, updated in place, and a check run annotating lockfile lines. GitHub Action input `dependency-review: true`.
+- GitHub API calls honour `GITHUB_API_URL` (GitHub Enterprise Server).
 
 ### Changed
 - **Breaking:** `audit` exits `3` when it could not check every dependency, instead of warning and exiting `0`. That covers an unreachable or short OSV response, a truncated advisory list, an unreadable lockfile, and `requirements.txt` entries that are not `==` pinned (ranges, `-r` includes, editable installs). Findings still exit `1`; set `on_incomplete = "warn"` to keep exiting `0`.
@@ -66,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ci-lint --format json` and `image-scan --format json` printed a text line instead of JSON when nothing was found.
 - `reassure` panicked on component names with multi-byte characters near the 40-character column.
 - `requirements.txt` pins with extras (`pkg[extra]==1.0`), environment markers, `--hash` options, line continuations or `===` were mis-parsed into wrong names or versions.
+- `audit` suggested the first fixed version an advisory lists, which can belong to another release line (e.g. `minimist@0.0.8` → `1.2.6` instead of `0.2.4`); it now suggests the fix for the installed version's line.
 - `scan` read files inside `.git/`, so every repository reported the committer emails in `.git/config` and the reflogs as PII.
 - The `ci-lint` docs listed rule ids (`CILINT/…`), severities and a rule (`SecretsInEnv`) that do not exist, and a suppression setting that had no effect.
 

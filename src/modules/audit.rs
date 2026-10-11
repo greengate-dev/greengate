@@ -44,6 +44,11 @@ pub struct Vulnerability {
     pub reference_url: Option<String>,
     pub source_file: PathBuf,
     pub ecosystem: &'static str,
+    /// The advisory's affected ranges for this package, when known: what
+    /// fix guidance needs to tell which versions are safe.
+    pub entries: Vec<crate::modules::osv_db::Entry>,
+    /// Other ids of the same advisory (CVE, GHSA, RUSTSEC…), when known.
+    pub aliases: Vec<String>,
 }
 
 impl Vulnerability {
@@ -218,6 +223,8 @@ struct VulnDetails {
     severity: Option<String>,
     fixed_in: Option<String>,
     reference_url: Option<String>,
+    entries: Vec<crate::modules::osv_db::Entry>,
+    aliases: Vec<String>,
 }
 
 /// Fetch full vulnerability details from `/v1/vulns/{id}`.
@@ -225,7 +232,8 @@ struct VulnDetails {
 /// The batch querybatch API only returns `id`, `modified`, and `aliases` — not
 /// `summary`, `severity`, `affected`, or `references`. This fetches and caches
 /// the full record so the displayed output shows meaningful context.
-fn fetch_vuln_details(id: &str) -> VulnDetails {
+/// `fixed_in` is the fix for `name@version`'s release line.
+fn fetch_vuln_details(id: &str, eco: &str, name: &str, version: &str) -> VulnDetails {
     let cache_key_str = format!("vuln-{}", id);
 
     let parsed: Value = if let Some(cached) = cache_read(&cache_key_str) {
@@ -239,6 +247,8 @@ fn fetch_vuln_details(id: &str) -> VulnDetails {
                 severity: None,
                 fixed_in: None,
                 reference_url: None,
+                entries: Vec::new(),
+                aliases: Vec::new(),
             };
         };
         let Ok(v) = http::read_json::<Value>(response) else {
@@ -248,6 +258,8 @@ fn fetch_vuln_details(id: &str) -> VulnDetails {
                 severity: None,
                 fixed_in: None,
                 reference_url: None,
+                entries: Vec::new(),
+                aliases: Vec::new(),
             };
         };
         cache_write(&cache_key_str, &v);
@@ -268,8 +280,44 @@ fn fetch_vuln_details(id: &str) -> VulnDetails {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
-    // Fixed version: first `fixed` event across all affected ranges
-    let fixed_in = parsed
+    // Fixed version: the lowest fix above this version, else the first
+    // `fixed` event across all affected ranges.
+    let entries = crate::modules::osv_db::entries_for(&parsed, eco, name);
+    let fixed_in =
+        crate::modules::osv_db::fixed_for(&entries, eco, version).or_else(|| first_fixed(&parsed));
+
+    // Reference: prefer ADVISORY type, then first URL
+    let reference_url = parsed
+        .get("references")
+        .and_then(|r| r.as_array())
+        .and_then(|refs| {
+            refs.iter()
+                .find(|r| r.get("type").and_then(|t| t.as_str()) == Some("ADVISORY"))
+                .or_else(|| refs.first())
+        })
+        .and_then(|r| r.get("url"))
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_string());
+
+    VulnDetails {
+        complete: true,
+        summary,
+        severity,
+        fixed_in,
+        reference_url,
+        entries,
+        aliases: parsed["aliases"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a.as_str().map(str::to_string))
+            .collect(),
+    }
+}
+
+/// The first `fixed` event across all affected ranges of an OSV record.
+fn first_fixed(parsed: &Value) -> Option<String> {
+    parsed
         .get("affected")
         .and_then(|a| a.as_array())
         .and_then(|affected| {
@@ -292,28 +340,7 @@ fn fetch_vuln_details(id: &str) -> VulnDetails {
                         })
                     })
             })
-        });
-
-    // Reference: prefer ADVISORY type, then first URL
-    let reference_url = parsed
-        .get("references")
-        .and_then(|r| r.as_array())
-        .and_then(|refs| {
-            refs.iter()
-                .find(|r| r.get("type").and_then(|t| t.as_str()) == Some("ADVISORY"))
-                .or_else(|| refs.first())
         })
-        .and_then(|r| r.get("url"))
-        .and_then(|u| u.as_str())
-        .map(|s| s.to_string());
-
-    VulnDetails {
-        complete: true,
-        summary,
-        severity,
-        fixed_in,
-        reference_url,
-    }
 }
 
 /// Query OSV for `packages`. A transport failure is an `Err`; a response that
@@ -397,7 +424,7 @@ fn query_osv(packages: &[Package], checks: &mut Vec<Check>) -> Result<Vec<Vulner
                 .unwrap_or("UNKNOWN")
                 .to_string();
             // OSV querybatch only returns id/modified/aliases — fetch full record for details.
-            let details = fetch_vuln_details(&id);
+            let details = fetch_vuln_details(&id, pkg.ecosystem, &pkg.name, &pkg.version);
             if !details.complete {
                 without_details.push(id.clone());
             }
@@ -411,6 +438,8 @@ fn query_osv(packages: &[Package], checks: &mut Vec<Check>) -> Result<Vec<Vulner
                 reference_url: details.reference_url,
                 source_file: pkg.source_file.clone(),
                 ecosystem: pkg.ecosystem,
+                entries: details.entries,
+                aliases: details.aliases,
             });
         }
     }
@@ -491,7 +520,9 @@ fn query_offline(
                 Ok(entries) => vulns.extend(entries.into_iter().map(|e| Vulnerability {
                     package: pkg.name.clone(),
                     version: pkg.version.clone(),
-                    fixed_in: e.fixed_in().map(str::to_string),
+                    fixed_in: e.fixed_after(eco, &pkg.version),
+                    entries: vec![e.clone()],
+                    aliases: Vec::new(),
                     vuln_id: e.id,
                     summary: if e.summary.is_empty() {
                         "No summary available".to_string()
@@ -523,6 +554,149 @@ fn query_offline(
         }
     }
     vulns
+}
+
+/// Advisories for `packages` from the configured source: the OSV API, an
+/// offline snapshot, or the API falling back to a snapshot (`auto`).
+/// Packages that could not be checked are reported through `checks`.
+fn query(
+    packages: &[Package],
+    source: config::AuditSource,
+    max_age: Duration,
+    checks: &mut Vec<Check>,
+) -> Vec<Vulnerability> {
+    if source == config::AuditSource::Offline {
+        return query_offline(packages, max_age, None, checks);
+    }
+    let mut all_vulns: Vec<Vulnerability> = Vec::new();
+    // OSV batch API supports up to 1000 queries; chunk if needed
+    let chunks = packages.chunks(1000).count();
+    for (i, chunk) in packages.chunks(1000).enumerate() {
+        match query_osv(chunk, checks) {
+            Ok(vulns) => all_vulns.extend(vulns),
+            Err(e) if source == config::AuditSource::Auto => {
+                // The API failed; a fresh offline snapshot can still
+                // answer. If none can, query_offline says so.
+                let reason = format!("{e:#}");
+                all_vulns.extend(query_offline(chunk, max_age, Some(&reason), checks));
+            }
+            Err(e) => {
+                // A failed query leaves its packages unchecked — that is not a
+                // pass. Keep going: other chunks may still answer.
+                let id = if chunks > 1 {
+                    format!("osv:batch-{}", i + 1)
+                } else {
+                    "osv".to_string()
+                };
+                checks.push(Check::incomplete(
+                    id,
+                    format!("{} package(s) not checked: {e:#}", chunk.len()),
+                ));
+            }
+        }
+    }
+    all_vulns
+}
+
+/// One advisory affecting one package version.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Advisory {
+    pub id: String,
+    pub summary: String,
+    pub severity: Severity,
+    /// The fix for this version's release line, if the advisory names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed_in: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    /// The affected ranges, for working out which versions are safe.
+    #[serde(skip)]
+    pub entries: Vec<crate::modules::osv_db::Entry>,
+    /// Other ids of this advisory that were merged into it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+}
+
+/// Advisories for each `(ecosystem, name, version)`, with details, from the
+/// source `[audit]` configures. Packages that could not be checked are
+/// reported through `checks`.
+pub fn advisories(
+    queries: &[(crate::deps::Ecosystem, String, String)],
+    cfg: &config::AuditConfig,
+    checks: &mut Vec<Check>,
+) -> Vec<Vec<Advisory>> {
+    if queries.is_empty() {
+        return Vec::new();
+    }
+    let packages: Vec<Package> = queries
+        .iter()
+        .map(|(eco, name, version)| Package {
+            name: name.clone(),
+            version: version.clone(),
+            ecosystem: eco.osv(),
+            source_file: PathBuf::new(),
+        })
+        .collect();
+    let max_age = Duration::from_secs(cfg.max_db_age_hours.saturating_mul(3600));
+    let vulns = query(&packages, cfg.source, max_age, checks);
+    queries
+        .iter()
+        .map(|(eco, name, version)| {
+            let mut out: Vec<Advisory> = vulns
+                .iter()
+                .filter(|v| {
+                    v.ecosystem == eco.osv() && &v.package == name && &v.version == version
+                })
+                .map(|v| Advisory {
+                    id: v.vuln_id.clone(),
+                    summary: v.summary.clone(),
+                    severity: v
+                        .severity
+                        .as_deref()
+                        .map_or(Severity::Unknown, Severity::parse),
+                    fixed_in: v.fixed_in.clone(),
+                    reference: v.reference_url.clone(),
+                    entries: v.entries.clone(),
+                    aliases: v.aliases.clone(),
+                })
+                .collect();
+            out.sort_by(|a, b| a.id.cmp(&b.id));
+            out.dedup_by(|a, b| a.id == b.id);
+            merge_aliases(out)
+        })
+        .collect()
+}
+
+/// One entry per advisory: OSV lists the same issue under each database's
+/// id (`RUSTSEC-…` and `GHSA-…`). Keeps the one with a known severity,
+/// recording the others as aliases.
+fn merge_aliases(list: Vec<Advisory>) -> Vec<Advisory> {
+    let same = |a: &Advisory, b: &Advisory| a.aliases.contains(&b.id) || b.aliases.contains(&a.id);
+    let mut out: Vec<Advisory> = Vec::new();
+    for a in list {
+        let Some(i) = out.iter().position(|b| same(&a, b)) else {
+            out.push(a);
+            continue;
+        };
+        let b = out.remove(i);
+        let (mut keep, other) =
+            if b.severity == Severity::Unknown && a.severity != Severity::Unknown {
+                (a, b)
+            } else {
+                (b, a)
+            };
+        if !keep.aliases.contains(&other.id) {
+            keep.aliases.push(other.id);
+        }
+        if keep.fixed_in.is_none() {
+            keep.fixed_in = other.fixed_in;
+        }
+        if keep.entries.is_empty() {
+            keep.entries = other.entries;
+        }
+        out.insert(i, keep);
+    }
+    out
 }
 
 /// Advisory IDs affecting each `(ecosystem, name, version)` — no details,
@@ -642,45 +816,10 @@ pub fn run_audit(
         })
         .collect();
 
-    let mut all_vulns: Vec<Vulnerability> = Vec::new();
-    if source == config::AuditSource::Offline {
-        all_vulns = query_offline(&to_query, max_age, None, &mut report.checks);
-    } else {
-        // OSV batch API supports up to 1000 queries; chunk if needed
-        let bar = terminal::create_progress_bar(1);
-        bar.set_message("Querying OSV API...");
-        let chunks = to_query.chunks(1000).count();
-        for (i, chunk) in to_query.chunks(1000).enumerate() {
-            match query_osv(chunk, &mut report.checks) {
-                Ok(vulns) => all_vulns.extend(vulns),
-                Err(e) if source == config::AuditSource::Auto => {
-                    // The API failed; a fresh offline snapshot can still
-                    // answer. If none can, query_offline says so.
-                    let reason = format!("{e:#}");
-                    all_vulns.extend(query_offline(
-                        chunk,
-                        max_age,
-                        Some(&reason),
-                        &mut report.checks,
-                    ));
-                }
-                Err(e) => {
-                    // A failed query leaves its packages unchecked — that is not a
-                    // pass. Keep going: other chunks may still answer.
-                    let id = if chunks > 1 {
-                        format!("osv:batch-{}", i + 1)
-                    } else {
-                        "osv".to_string()
-                    };
-                    report.checks.push(Check::incomplete(
-                        id,
-                        format!("{} package(s) not checked: {e:#}", chunk.len()),
-                    ));
-                }
-            }
-        }
-        bar.finish_and_clear();
-    }
+    let bar = terminal::create_progress_bar(1);
+    bar.set_message("Querying OSV...");
+    let all_vulns = query(&to_query, source, max_age, &mut report.checks);
+    bar.finish_and_clear();
 
     // Deprecated config suppressions first, then exceptions and the baseline.
     let (ignored_vulns, rest): (Vec<_>, Vec<_>) = all_vulns

@@ -104,6 +104,19 @@ source = "auto"
 # Oldest offline snapshot audit will use; older data makes the run incomplete
 max_db_age_hours = 24
 
+[dependency_review]
+# `greengate deps review`: introduced advisories at or above this severity
+# fail (low | medium | high | critical); below it, they are warnings.
+fail_on_severity = "high"
+# Which kinds of problem fail the review; the rest are warnings.
+fail_on = ["new-advisory", "release-risk", "denied-license", "source-policy"]
+# SPDX licenses no new or changed dependency may use.
+deny_licenses = []
+# When set, only these SPDX licenses are acceptable.
+allow_licenses = []
+# A dependency whose license is missing or unreadable: off | warn | fail.
+unknown_license = "warn"
+
 [supply_chain]
 # Halt the install when any layer of the zero-trust gate detects a threat (default: true).
 block_phantom_scripts = true

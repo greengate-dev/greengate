@@ -34,6 +34,15 @@ inputs:
       in RUNNER_TEMP.
     required: false
     default: ''
+  dependency-review:
+    description: >-
+      "true" to also run `greengate deps review --annotate` on pull requests:
+      one comment summarising the dependency changes (updated in place) and a
+      check run annotating the lockfile lines. Needs `contents: read`,
+      `pull-requests: write` and `checks: write`, and a checkout with
+      history (`fetch-depth: 0`) so the merge base can be found.
+    required: false
+    default: 'false'
 
 outputs:
   status:
@@ -112,6 +121,7 @@ runs:
         GG_PROFILE: ${{ inputs.profile }}
         GG_ARGS: ${{ inputs.args }}
         GG_REPORT: ${{ inputs.report }}
+        GG_DEPENDENCY_REVIEW: ${{ inputs.dependency-review }}
       run: |
         set -uo pipefail
         set -f  # GG_ARGS is word-split on purpose; never glob-expand it
@@ -125,9 +135,22 @@ runs:
           PROFILE_ARGS=(--profile "$GG_PROFILE")
         fi
 
+        REVIEW_CODE=0
+        if [ "$GG_DEPENDENCY_REVIEW" = "true" ] && [ -n "${GITHUB_BASE_REF:-}" ]; then
+          greengate ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} deps review --annotate \
+            --report "${RUNNER_TEMP:-/tmp}/greengate-deps-review.json"
+          REVIEW_CODE=$?
+        fi
+
         # shellcheck disable=SC2086
         greengate run ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} --report "$REPORT" $GG_ARGS
         CODE=$?
+        # Findings (1) outrank every other result; otherwise the higher code.
+        if [ "$CODE" -ne 1 ] && [ "$REVIEW_CODE" -ne 0 ]; then
+          if [ "$REVIEW_CODE" -eq 1 ] || [ "$REVIEW_CODE" -gt "$CODE" ]; then
+            CODE=$REVIEW_CODE
+          fi
+        fi
 
         echo "report-path=${REPORT}" >> "$GITHUB_OUTPUT"
         case "$REPORT" in

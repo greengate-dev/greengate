@@ -8,6 +8,8 @@
 //! published it. This module fetches those facts from npm, PyPI and
 //! crates.io; `deps check` turns them into policy.
 
+pub mod requirements;
+
 use crate::deps::Ecosystem;
 use crate::utils::files;
 use crate::utils::http::{self, Fetched};
@@ -39,6 +41,10 @@ pub struct Release {
     pub provenance: Option<bool>,
     /// Deprecation or yank message, if withdrawn.
     pub withdrawn: Option<String>,
+    /// The license the registry records, as written there (usually SPDX).
+    /// PyPI only records it per project, so this is the latest release's.
+    #[serde(default)]
+    pub license: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -72,6 +78,7 @@ fn earlier_publishers<'a>(
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // one per package; not worth a Box
 pub enum Lookup {
     Found(History),
     /// The registry does not have this version (or package).
@@ -192,6 +199,9 @@ struct NpmVersion {
     dist: Option<NpmDist>,
     #[serde(default)]
     deprecated: Option<serde_json::Value>,
+    /// `"MIT"`, or the old `{ "type": "MIT" }` form.
+    #[serde(default)]
+    license: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -225,6 +235,11 @@ fn npm_release(p: &Packument, v: &str) -> Option<Release> {
             .and_then(|d| d.as_str())
             .filter(|d| !d.is_empty())
             .map(str::to_string),
+        license: m.license.as_ref().and_then(|l| {
+            l.as_str()
+                .or_else(|| l.get("type").and_then(|t| t.as_str()))
+                .map(str::to_string)
+        }),
     })
 }
 
@@ -270,7 +285,46 @@ fn npm(name: &str, version: &str, registry: Option<&str>) -> Lookup {
 #[derive(Deserialize)]
 struct PypiProject {
     #[serde(default)]
+    info: PypiInfo,
+    #[serde(default)]
     releases: HashMap<String, Vec<PypiFile>>,
+}
+
+#[derive(Deserialize, Default)]
+struct PypiInfo {
+    license_expression: Option<String>,
+    license: Option<String>,
+    #[serde(default)]
+    classifiers: Vec<String>,
+}
+
+impl PypiInfo {
+    /// The SPDX expression if declared (PEP 639), else the `License ::`
+    /// classifiers, else a short free-text `license` field.
+    fn license(&self) -> Option<String> {
+        if let Some(e) = self
+            .license_expression
+            .as_ref()
+            .filter(|e| !e.trim().is_empty())
+        {
+            return Some(e.trim().to_string());
+        }
+        let classifiers: Vec<&str> = self
+            .classifiers
+            .iter()
+            .filter_map(|c| c.strip_prefix("License :: "))
+            .map(|c| c.rsplit(" :: ").next().unwrap_or(c))
+            .collect();
+        if !classifiers.is_empty() {
+            return Some(classifiers.join(" OR "));
+        }
+        // Some projects paste the whole license text here.
+        self.license
+            .as_ref()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && l.len() <= 80 && !l.contains('\n'))
+            .map(str::to_string)
+    }
 }
 
 #[derive(Deserialize)]
@@ -320,6 +374,7 @@ fn pypi_release(name: &str, version: &str, files: &[PypiFile], pypi: &str) -> Op
                 .find_map(|f| f.yanked_reason.clone().filter(|r| !r.is_empty()))
                 .unwrap_or_else(|| "yanked".to_string())
         }),
+        license: None,
     })
 }
 
@@ -338,9 +393,10 @@ fn pypi(name: &str, version: &str) -> Lookup {
             else {
                 return Lookup::Missing;
             };
-            let Some(this) = pypi_release(name, this_key, files, &pypi) else {
+            let Some(mut this) = pypi_release(name, this_key, files, &pypi) else {
                 return Lookup::Missing;
             };
+            this.license = p.info.license();
             let with_files = p
                 .releases
                 .iter()
@@ -377,6 +433,7 @@ struct CrateVersion {
     yank_message: Option<String>,
     published_by: Option<CrateUser>,
     trustpub_data: Option<serde_json::Value>,
+    license: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -398,6 +455,7 @@ fn crate_release(v: &CrateVersion) -> Release {
                 .filter(|m| !m.is_empty())
                 .unwrap_or_else(|| "yanked".into())
         }),
+        license: v.license.clone(),
     }
 }
 
@@ -448,7 +506,7 @@ fn crates(name: &str, version: &str) -> Lookup {
 
 /// Bumped whenever `History` changes shape, so older entries are refetched
 /// instead of read with fields silently defaulted.
-const CACHE_FORMAT: u32 = 1;
+const CACHE_FORMAT: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct Cached {

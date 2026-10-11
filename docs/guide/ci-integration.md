@@ -44,6 +44,14 @@ jobs:
       - name: Dependency Audit (OSV)
         run: greengate audit
 
+      # What this PR does to the dependency tree: new advisories with the
+      # smallest fix, licenses, release risk — one PR comment, updated in place
+      - name: Dependency Review
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: greengate deps review --annotate
+
       # Test impact analysis — run only tests affected by this PR's diff
       - name: Test Impact Analysis
         if: github.event_name == 'pull_request'

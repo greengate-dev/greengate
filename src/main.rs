@@ -438,6 +438,28 @@ enum DepsAction {
         #[arg(long, default_value = ".")]
         path: std::path::PathBuf,
     },
+    /// Review what a change does to the dependency tree: every package added,
+    /// removed, upgraded or downgraded since the merge base, with its license,
+    /// the advisories it introduces or fixes, release risk and source policy,
+    /// and how to fix each new advisory. [dependency_review] decides what fails.
+    Review {
+        /// Compare with the merge base of this ref and HEAD (default: the
+        /// pull request's base branch in GitHub Actions, otherwise HEAD)
+        #[arg(long)]
+        base: Option<String>,
+        /// Directory to search (default: current directory)
+        #[arg(long, default_value = ".")]
+        path: std::path::PathBuf,
+        /// Output format: text, json (greengate.deps-review/v1) or markdown
+        /// (the pull-request comment)
+        #[arg(long, default_value = "text")]
+        format: modules::review::ReviewFormat,
+        /// Post the review to the pull request: one comment, updated in
+        /// place, and a check run annotating lockfile lines. Needs
+        /// GITHUB_TOKEN, GITHUB_REPOSITORY and GITHUB_SHA.
+        #[arg(long)]
+        annotate: bool,
+    },
     /// Show how a package ends up in the project: the chain from a direct
     /// dependency to it
     Why {
@@ -794,6 +816,29 @@ fn run() -> anyhow::Result<ExitCode> {
             });
             return exit.finish("deps-check", result);
         }
+        Commands::Deps {
+            action:
+                DepsAction::Review {
+                    base,
+                    path,
+                    format,
+                    annotate,
+                },
+        } => {
+            modules::suppress::preflight(&cfg)?;
+            let result = modules::review::run_review(modules::review::ReviewOpts {
+                root: &path,
+                base: base.as_deref(),
+                cfg: &cfg,
+                format,
+                annotate,
+                policy: modules::suppress::Policy::new(Default::default(), &cfg),
+                now: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            });
+            return exit.finish("deps-review", result);
+        }
         Commands::Deps { action } => match action {
             DepsAction::List { path, format } => {
                 modules::deps_cmd::run_list(&path, &cfg.deps.exclude_patterns, format)?
@@ -801,7 +846,9 @@ fn run() -> anyhow::Result<ExitCode> {
             DepsAction::Why { package, path } => {
                 modules::deps_cmd::run_why(&path, &cfg.deps.exclude_patterns, &package)?
             }
-            DepsAction::Check { .. } => unreachable!("handled above"),
+            DepsAction::Check { .. } | DepsAction::Review { .. } => {
+                unreachable!("handled above")
+            }
         },
         Commands::Db { action } => match action {
             DbAction::Update { ecosystems, all } => {

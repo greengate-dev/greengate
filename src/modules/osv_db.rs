@@ -116,6 +116,69 @@ impl Entry {
                 _ => None,
             })
     }
+
+    /// The lowest `fixed` version above `version` in a range that affects
+    /// it: the fix for the release line `version` is on, not one for another
+    /// line. Falls back to [`Entry::fixed_in`] when versions do not parse.
+    pub fn fixed_after(&self, eco: &str, version: &str) -> Option<String> {
+        let mut best: Option<(Ver, &str)> = None;
+        let mut unparsed = false;
+        for range in self
+            .ranges
+            .iter()
+            .filter(|r| r.kind != "GIT")
+            .filter(|r| in_range(eco, r, version) != Some(false))
+        {
+            let Some(target) = parse_version(eco, &range.kind, version) else {
+                unparsed = true;
+                continue;
+            };
+            for e in &range.events {
+                let Event::Fixed(f) = e else { continue };
+                match parse_version(eco, &range.kind, f) {
+                    Some(fv) if fv > target && best.as_ref().is_none_or(|(b, _)| fv < *b) => {
+                        best = Some((fv, f));
+                    }
+                    Some(_) => {}
+                    None => unparsed = true,
+                }
+            }
+        }
+        match best {
+            Some((_, f)) => Some(f.to_string()),
+            None if unparsed => self.fixed_in().map(str::to_string),
+            None => None,
+        }
+    }
+}
+
+/// The lowest fix for `version` across an advisory's `entries`.
+pub fn fixed_for(entries: &[Entry], eco: &str, version: &str) -> Option<String> {
+    entries
+        .iter()
+        .filter_map(|e| e.fixed_after(eco, version))
+        .min_by(|a, b| {
+            parse_version(eco, "ECOSYSTEM", a)
+                .zip(parse_version(eco, "ECOSYSTEM", b))
+                .map_or(Ordering::Equal, |(x, y)| x.cmp(&y))
+        })
+}
+
+/// The `affected` entries of a full OSV record for `name` in `eco`.
+pub fn entries_for(doc: &Value, eco: &str, name: &str) -> Vec<Entry> {
+    let want = normalize(eco, name);
+    doc["affected"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| {
+            a["package"]["ecosystem"].as_str() == Some(eco)
+                && a["package"]["name"]
+                    .as_str()
+                    .is_some_and(|n| normalize(eco, n) == want)
+        })
+        .map(|a| entry_from(doc, a))
+        .collect()
 }
 
 /// Lookup key for a package name. PyPI names are case- and
@@ -460,7 +523,7 @@ fn parse_version(eco: &str, kind: &str, v: &str) -> Option<Ver> {
 }
 
 /// Does `entry` affect `version`? `None` when it cannot be decided.
-fn affects(eco: &str, entry: &Entry, version: &str) -> Option<bool> {
+pub(crate) fn affects(eco: &str, entry: &Entry, version: &str) -> Option<bool> {
     let bare = |v: &str| v.strip_prefix('v').unwrap_or(v).to_string();
     if entry.versions.iter().any(|v| bare(v) == bare(version)) {
         return Some(true);
@@ -536,6 +599,41 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn fix_for_the_installed_release_line() {
+        // GHSA-xvch-5gv4-984h (minimist): < 0.2.4, and >= 1.0.0 < 1.2.6.
+        let e = entry(
+            vec![range(
+                "SEMVER",
+                &[
+                    ("introduced", "0"),
+                    ("fixed", "0.2.4"),
+                    ("introduced", "1.0.0"),
+                    ("fixed", "1.2.6"),
+                ],
+            )],
+            &[],
+        );
+        assert_eq!(e.fixed_after("npm", "0.0.8").as_deref(), Some("0.2.4"));
+        assert_eq!(e.fixed_after("npm", "1.2.0").as_deref(), Some("1.2.6"));
+        // The same, as two separate ranges: only the affecting one counts.
+        let split = vec![
+            entry(
+                vec![range(
+                    "SEMVER",
+                    &[("introduced", "1.0.0"), ("fixed", "1.2.6")],
+                )],
+                &[],
+            ),
+            entry(
+                vec![range("SEMVER", &[("introduced", "0"), ("fixed", "0.2.4")])],
+                &[],
+            ),
+        ];
+        assert_eq!(fixed_for(&split, "npm", "0.0.8").as_deref(), Some("0.2.4"));
+        assert_eq!(fixed_for(&split, "npm", "1.1.0").as_deref(), Some("1.2.6"));
     }
 
     fn entry(ranges: Vec<Range>, versions: &[&str]) -> Entry {

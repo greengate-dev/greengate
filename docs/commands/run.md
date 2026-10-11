@@ -60,7 +60,8 @@ steps = [
 ]
 ```
 
-`scan`, `audit` and `ci-lint` steps accept `--since-baseline`, and `scan` accepts
+`deps-review` reviews the change's dependency updates (it accepts `--base` and
+`--annotate`). `scan`, `audit` and `ci-lint` steps accept `--since-baseline`, and `scan` accepts
 `--changed-since <ref>`. Exceptions in `.greengate/exceptions.toml` apply to
 every step.
 

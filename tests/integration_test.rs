@@ -3576,3 +3576,362 @@ fn ci_lint_honours_inline_ignore() {
         "our own action"
     );
 }
+
+// ── deps review ───────────────────────────────────────────────────────────────
+
+type HttpLog = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+
+/// A fake HTTP server: `respond(method, path, body)` answers every request,
+/// and each request is logged.
+fn fake_http(respond: fn(&str, &str, &str) -> (u16, String)) -> (String, HttpLog) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log: HttpLog = Default::default();
+    let seen = log.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap_or(0);
+            let mut len = 0;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; len];
+            let _ = reader.read_exact(&mut body);
+            let body = String::from_utf8_lossy(&body).into_owned();
+            let mut parts = request.split_whitespace();
+            let method = parts.next().unwrap_or("").to_string();
+            let path = parts.next().unwrap_or("").to_string();
+            seen.lock()
+                .unwrap()
+                .push((method.clone(), path.clone(), body.clone()));
+            let (status, out) = respond(&method, &path, &body);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}",
+                out.len()
+            );
+        }
+    });
+    (format!("http://{addr}"), log)
+}
+
+/// OSV: lodash 4.17.20 has one advisory, fixed in 4.17.21.
+fn review_osv(method: &str, path: &str, body: &str) -> (u16, String) {
+    if method == "POST" && path == "/v1/querybatch" {
+        let q: serde_json::Value = serde_json::from_str(body).unwrap();
+        let results: Vec<serde_json::Value> = q["queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| {
+                if q["package"]["name"] == "lodash" && q["version"] == "4.17.20" {
+                    serde_json::json!({"vulns": [{"id": "GHSA-test-lodash"}]})
+                } else {
+                    serde_json::json!({})
+                }
+            })
+            .collect();
+        return (200, serde_json::json!({ "results": results }).to_string());
+    }
+    if path == "/v1/vulns/GHSA-test-lodash" {
+        return (
+            200,
+            serde_json::json!({
+                "id": "GHSA-test-lodash",
+                "summary": "Prototype pollution in lodash",
+                "database_specific": {"severity": "HIGH"},
+                "affected": [{
+                    "package": {"ecosystem": "npm", "name": "lodash"},
+                    "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "4.17.21"}]}]
+                }]
+            })
+            .to_string(),
+        );
+    }
+    (404, "{}".into())
+}
+
+/// npm: lodash (MIT) and copyleft (AGPL), both old releases.
+fn review_registry(_: &str, path: &str, _: &str) -> (u16, String) {
+    let doc = |license: &str, versions: &[&str]| {
+        let mut time = serde_json::Map::new();
+        let mut vs = serde_json::Map::new();
+        for v in versions {
+            time.insert(v.to_string(), serde_json::json!("2020-01-01T00:00:00.000Z"));
+            vs.insert(
+                v.to_string(),
+                serde_json::json!({"license": license, "_npmUser": {"name": "maint"}}),
+            );
+        }
+        serde_json::json!({"time": time, "versions": vs}).to_string()
+    };
+    match path {
+        "/lodash" => (200, doc("MIT", &["4.17.20", "4.17.21"])),
+        "/copyleft" => (200, doc("AGPL-3.0-only", &["1.0.0"])),
+        _ => (404, "{}".into()),
+    }
+}
+
+fn lock_v3(deps: &[(&str, &str)]) -> String {
+    let mut packages = serde_json::Map::new();
+    let root_deps: serde_json::Map<String, serde_json::Value> = deps
+        .iter()
+        .map(|(n, v)| (n.to_string(), serde_json::json!(v)))
+        .collect();
+    packages.insert(
+        String::new(),
+        serde_json::json!({"name": "app", "version": "1.0.0", "dependencies": root_deps}),
+    );
+    for (n, v) in deps {
+        packages.insert(
+            format!("node_modules/{n}"),
+            serde_json::json!({
+                "version": v,
+                "resolved": format!("https://registry.npmjs.org/{n}/-/{n}-{v}.tgz"),
+                "integrity": "sha512-x"
+            }),
+        );
+    }
+    serde_json::to_string_pretty(&serde_json::json!({
+        "name": "app", "version": "1.0.0", "lockfileVersion": 3, "packages": packages
+    }))
+    .unwrap()
+}
+
+/// A repository whose `main` has no dependencies and whose working tree
+/// adds lodash 4.17.20 (pinned) and copyleft 1.0.0.
+fn review_repo(dir: &std::path::Path) {
+    init_git_repo(dir);
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("package-lock.json"), lock_v3(&[])).unwrap();
+    git_commit_all(dir, "base");
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","version":"1.0.0","dependencies":{"lodash":"4.17.20","copyleft":"^1.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        lock_v3(&[("lodash", "4.17.20"), ("copyleft", "1.0.0")]),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(".greengate.toml"),
+        "[dependency_review]\ndeny_licenses = [\"AGPL-3.0-only\"]\n",
+    )
+    .unwrap();
+}
+
+fn review_cmd(dir: &std::path::Path, osv: &str, npm: &str) -> Command {
+    let mut c = Command::new(binary());
+    c.args(["deps", "review", "--base", "main"])
+        .current_dir(dir)
+        .env("GREENGATE_OSV_URL", osv)
+        .env("GREENGATE_NPM_REGISTRY", npm)
+        .env("GREENGATE_CACHE_DIR", dir.join(".cache"))
+        .env_remove("GITHUB_BASE_REF");
+    c
+}
+
+#[test]
+fn deps_review_reports_advisories_licenses_and_fixes() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    review_repo(d);
+    let (osv, _) = fake_http(review_osv);
+    let (npm, _) = fake_http(review_registry);
+    let out = review_cmd(d, &osv, &npm)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["schema"], "greengate.deps-review/v1");
+    let changes = doc["changes"].as_array().unwrap();
+    let lodash = changes.iter().find(|c| c["name"] == "lodash").unwrap();
+    assert_eq!(lodash["kind"], "added");
+    assert_eq!(lodash["direct"], true);
+    assert_eq!(lodash["license"], "MIT");
+    assert_eq!(lodash["introduced"][0]["id"], "GHSA-test-lodash");
+    assert_eq!(lodash["fix"]["fixed_in"], "4.17.21");
+    // Pinned in package.json: the project's own requirement must move.
+    assert_eq!(lodash["fix"]["steps"][0]["kind"], "raise_requirement");
+    assert_eq!(
+        lodash["fix"]["steps"][0]["command"],
+        "npm install lodash@^4.17.21"
+    );
+    let rules: Vec<&str> = doc["report"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap())
+        .collect();
+    assert!(rules.contains(&"OSV/GHSA-test-lodash"), "{rules:?}");
+    assert!(rules.contains(&"LICENSE/Denied"), "{rules:?}");
+}
+
+#[test]
+fn deps_review_policy_and_exceptions() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    review_repo(d);
+    let (osv, _) = fake_http(review_osv);
+    let (npm, _) = fake_http(review_registry);
+    // Advisories warn below critical; licenses are not denied; an exception
+    // waives nothing else — the review passes with warnings.
+    std::fs::write(
+        d.join(".greengate.toml"),
+        "[dependency_review]\nfail_on_severity = \"critical\"\n",
+    )
+    .unwrap();
+    let out = review_cmd(d, &osv, &npm).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("Warnings") && stderr.contains("GHSA-test-lodash"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("npm install lodash@^4.17.21"), "{stderr}");
+
+    // Back to failing on high, with an exception for the advisory.
+    std::fs::write(d.join(".greengate.toml"), "").unwrap();
+    std::fs::create_dir_all(d.join(".greengate")).unwrap();
+    std::fs::write(
+        d.join(".greengate/exceptions.toml"),
+        format!(
+            "[[exception]]\nid = \"EX-1\"\nmatch = {{ advisory = \"GHSA-test-lodash\", package = \"lodash\" }}\nreason = \"not reachable\"\nowner = \"@web\"\nexpires = \"{}\"\n",
+            date_in(10)
+        ),
+    )
+    .unwrap();
+    let (code, report) = {
+        let path = d.join("r.json");
+        let out = review_cmd(d, &osv, &npm)
+            .arg("--report")
+            .arg(&path)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path).unwrap())
+                .unwrap(),
+        )
+    };
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["suppressed"][0]["suppression"]["id"], "EX-1");
+}
+
+#[test]
+fn deps_review_without_changes_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    review_repo(d);
+    git_commit_all(d, "head");
+    let (osv, log) = fake_http(review_osv);
+    let (npm, _) = fake_http(review_registry);
+    let out = Command::new(binary())
+        .args(["deps", "review", "--base", "HEAD"])
+        .current_dir(d)
+        .env("GREENGATE_OSV_URL", &osv)
+        .env("GREENGATE_NPM_REGISTRY", &npm)
+        .env("GREENGATE_CACHE_DIR", d.join(".cache"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("no dependency changes"), "{stderr}");
+    assert!(log.lock().unwrap().is_empty(), "nothing to look up");
+}
+
+/// GitHub: one existing greengate comment (id 99) on PR 7.
+fn review_github(method: &str, path: &str, _: &str) -> (u16, String) {
+    match (method, path) {
+        ("POST", "/repos/o/r/check-runs") => (201, r#"{"id": 5}"#.into()),
+        ("PATCH", "/repos/o/r/check-runs/5") => (200, "{}".into()),
+        ("GET", p) if p.starts_with("/repos/o/r/issues/7/comments") => (
+            200,
+            r#"[{"id": 98, "body": "LGTM"}, {"id": 99, "body": "<!-- greengate:deps-review -->\nold"}]"#.into(),
+        ),
+        ("PATCH", "/repos/o/r/issues/comments/99") => (200, "{}".into()),
+        _ => (404, "{}".into()),
+    }
+}
+
+#[test]
+fn deps_review_annotate_updates_one_comment() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    review_repo(d);
+    let (osv, _) = fake_http(review_osv);
+    let (npm, _) = fake_http(review_registry);
+    let (gh, log) = fake_http(review_github);
+    let out = review_cmd(d, &osv, &npm)
+        .args(["--annotate", "--format", "markdown"])
+        .env("GITHUB_API_URL", &gh)
+        .env("GITHUB_TOKEN", "t")
+        .env("GITHUB_REPOSITORY", "o/r")
+        .env("GITHUB_SHA", "abc")
+        .env("GITHUB_REF", "refs/pull/7/merge")
+        .env_remove("GITHUB_EVENT_PATH")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let md = String::from_utf8_lossy(&out.stdout);
+    assert!(md.starts_with("<!-- greengate:deps-review -->"), "{md}");
+    assert!(
+        md.contains("### How to fix") && md.contains("npm install lodash@^4.17.21"),
+        "{md}"
+    );
+    let log = log.lock().unwrap();
+    let calls: Vec<(&str, &str)> = log
+        .iter()
+        .map(|(m, p, _)| (m.as_str(), p.as_str()))
+        .collect();
+    assert!(
+        calls.contains(&("PATCH", "/repos/o/r/issues/comments/99")),
+        "{calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|(m, p)| *m == "POST" && p.contains("/issues/")),
+        "updated in place, not posted again: {calls:?}"
+    );
+    let annotated = log
+        .iter()
+        .find(|(m, p, b)| {
+            *m == "PATCH" && p.ends_with("/check-runs/5") && b.contains("annotations")
+        })
+        .expect("annotations were sent");
+    let body: serde_json::Value = serde_json::from_str(&annotated.2).unwrap();
+    let a = &body["output"]["annotations"][0];
+    assert_eq!(a["path"], "package-lock.json");
+    assert!(
+        a["start_line"].as_u64().unwrap() > 1,
+        "points at the lockfile entry: {a}"
+    );
+    let done = log
+        .iter()
+        .find(|(m, p, b)| *m == "PATCH" && p.ends_with("/check-runs/5") && b.contains("completed"))
+        .unwrap();
+    assert!(done.2.contains("\"failure\""));
+}

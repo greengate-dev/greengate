@@ -22,6 +22,7 @@ pub mod pipeline;
 pub mod pr_review;
 pub mod provenance;
 pub mod reassure;
+pub mod review;
 pub mod sast;
 pub mod sbom;
 pub mod scanner;

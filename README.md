@@ -96,6 +96,7 @@ Commands are grouped by concern. Each runs standalone or as a step in `greengate
 | `greengate sbom` | Generate a [CycloneDX 1.5](https://cyclonedx.org) SBOM from the project's dependency files, with the dependency graph, scopes and hashes. |
 | `greengate deps list` / `deps why <pkg>` | Show every package greengate reads from the lockfiles, and the chain that pulls a package in. |
 | `greengate deps check` | Gate new or upgraded packages on release risk — cooldown, new install scripts, lost provenance, unfamiliar publishers, withdrawn releases — and every package on registry binding, dependency confusion and git/URL sources. |
+| `greengate deps review` | Review what a pull request does to the dependency tree — every package added, removed, upgraded or downgraded, with its license, the advisories it introduces or fixes, release risk, and **the smallest fix for each new advisory** (refresh, upgrade the direct parent, or override). One PR comment, updated in place, with `--annotate` or the action's `dependency-review: true`. |
 | `greengate sbom --attest` | Generate a SBOM and sign it with [Sigstore](https://sigstore.dev) keyless signing. Produces a bundle file anchored in the Rekor public transparency log. No private key required. |
 | `greengate sbom --verify <file>` | Verify a SBOM against a cosign bundle. Fails if the signature is invalid or the bundle is missing from the Rekor log. |
 

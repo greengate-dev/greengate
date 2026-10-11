@@ -153,6 +153,24 @@ pub fn get_json_capped<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// GET `url` as text, reading at most `max_bytes`.
+pub fn get_text_capped(url: &str, max_bytes: u64, user_agent: &str) -> Fetched<String> {
+    match agent().get(url).set("User-Agent", user_agent).call() {
+        Ok(resp) => {
+            let mut text = String::new();
+            match resp.into_reader().take(max_bytes).read_to_string(&mut text) {
+                Ok(_) => Fetched::Json(text),
+                Err(e) => Fetched::Unavailable(format!("unreadable response from {url}: {e}")),
+            }
+        }
+        Err(ureq::Error::Status(404 | 410, _)) => Fetched::NotFound,
+        Err(ureq::Error::Status(code, _)) => {
+            Fetched::Unavailable(format!("{url} returned HTTP {code}"))
+        }
+        Err(e) => Fetched::Unavailable(format!("{url}: {e}")),
+    }
+}
+
 /// HTTP status of a GET to `url` (for existence probes), or `None` on a
 /// transport failure.
 pub fn status_of(url: &str, user_agent: &str) -> Option<u16> {

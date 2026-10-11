@@ -136,7 +136,7 @@ fn severity(level: Level) -> Severity {
     }
 }
 
-fn package_finding(
+pub(crate) fn package_finding(
     rule: &str,
     level: Level,
     lock: &Lockfile,
@@ -189,7 +189,7 @@ fn records_integrity(lock: &Lockfile) -> bool {
     }
 }
 
-fn lockfile_policies(lock: &Lockfile, policy: &SupplyChainConfig, report: &mut Report) {
+pub(crate) fn lockfile_policies(lock: &Lockfile, policy: &SupplyChainConfig, report: &mut Report) {
     let mut unbound: Vec<String> = Vec::new();
     for p in lock.dependencies() {
         // Registry binding and dependency confusion.
@@ -684,6 +684,7 @@ mod tests {
             publisher: Some(by.into()),
             provenance: Some(prov),
             withdrawn: None,
+            license: None,
         }
     }
 

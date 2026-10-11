@@ -38,6 +38,92 @@ pub struct Config {
     pub policy: PolicyConfig,
     #[serde(default)]
     pub deps: DepsConfig,
+    #[serde(default)]
+    pub dependency_review: DependencyReviewConfig,
+}
+
+/// `greengate deps review` policy, under `[dependency_review]`.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct DependencyReviewConfig {
+    /// Advisories a change introduces fail at or above this severity and
+    /// warn below it. Advisories without a severity count as meeting it.
+    #[serde(default = "default_fail_on_severity")]
+    pub fail_on_severity: SeverityThreshold,
+    /// Which kinds of problem fail the review; the rest are warnings.
+    #[serde(default = "default_fail_on")]
+    pub fail_on: Vec<ReviewFailOn>,
+    /// SPDX ids no new or changed dependency may use.
+    #[serde(default)]
+    pub deny_licenses: Vec<String>,
+    /// When set, only these SPDX ids are acceptable.
+    #[serde(default)]
+    pub allow_licenses: Vec<String>,
+    /// A dependency whose license is missing or unreadable.
+    #[serde(default = "level_warn")]
+    pub unknown_license: Level,
+}
+
+impl Default for DependencyReviewConfig {
+    fn default() -> Self {
+        DependencyReviewConfig {
+            fail_on_severity: default_fail_on_severity(),
+            fail_on: default_fail_on(),
+            deny_licenses: Vec::new(),
+            allow_licenses: Vec::new(),
+            unknown_license: Level::Warn,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum SeverityThreshold {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl SeverityThreshold {
+    /// Whether an advisory of `severity` meets the threshold.
+    pub fn met_by(self, severity: crate::report::Severity) -> bool {
+        use crate::report::Severity as S;
+        let rank = match severity {
+            // Unrated advisories are not assumed harmless.
+            S::Unknown | S::Critical => 4,
+            S::High => 3,
+            S::Medium => 2,
+            S::Low => 1,
+        };
+        rank > self as u8
+    }
+}
+
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewFailOn {
+    /// An advisory the change introduces, at or above `fail_on_severity`.
+    NewAdvisory,
+    /// A release-risk signal at level `fail` (see `[supply_chain.release]`).
+    ReleaseRisk,
+    /// A license in `deny_licenses`, or outside `allow_licenses`.
+    DeniedLicense,
+    /// A registry or source rule at level `fail` (`[supply_chain]`).
+    SourcePolicy,
+}
+
+fn default_fail_on_severity() -> SeverityThreshold {
+    SeverityThreshold::High
+}
+
+fn default_fail_on() -> Vec<ReviewFailOn> {
+    vec![
+        ReviewFailOn::NewAdvisory,
+        ReviewFailOn::ReleaseRisk,
+        ReviewFailOn::DeniedLicense,
+        ReviewFailOn::SourcePolicy,
+    ]
 }
 
 /// Dependency discovery, under `[deps]`: shared by `audit`, `sbom` and
@@ -895,6 +981,11 @@ pub fn apply_profile(cfg: &mut Config, profile: Profile) {
                 if *level == Level::Warn {
                     *level = Level::Fail;
                 }
+            }
+            // Dependency review: every new advisory, and unknown licenses.
+            cfg.dependency_review.fail_on_severity = SeverityThreshold::Low;
+            if cfg.dependency_review.unknown_license == Level::Warn {
+                cfg.dependency_review.unknown_license = Level::Fail;
             }
             // Raise coverage threshold to 90 % if not already higher
             if cfg.coverage.min < 90.0 {
