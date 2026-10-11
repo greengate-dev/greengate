@@ -1,13 +1,17 @@
 ---
 title: 'watch-install — Zero-Trust Supply Chain Gate'
-description: 'Three-layer npm/yarn/pnpm/bun supply chain gate: pre-flight postinstall script scanning (entropy + eval/network signals), runtime phantom-file detection, and exec-drop analysis. Stops supply-chain attacks before they reach your machine.'
+description: 'npm/yarn/pnpm/bun install gate with lifecycle-script checks, polled phantom-file detection, and post-install executable-drop checks. Does not isolate the installer.'
 ---
 
 # watch-install — Zero-Trust Supply Chain Quality Gate
 
-> **Intercept package installs before malicious code reaches your machine.**
+> **Observe install-time script and filesystem signals.**
 
-`greengate watch-install` is a zero-trust quality gate that wraps any package manager and enforces three independent layers of supply-chain security. It catches both known attack patterns (CVE-tracked) and novel, behaviour-based attacks that vulnerability databases cannot see — including the class of attacks represented by the [2025 axios-ecosystem compromise](#background).
+`greengate watch-install` wraps a package manager with lifecycle-script checks,
+polled phantom-file detection, and post-install executable-drop checks. It does
+not query CVE databases or isolate the installer. Existing scripts can be
+blocked before execution; newly installed scripts and runtime events are
+reported after the package manager runs.
 
 ---
 
@@ -50,7 +54,11 @@ greengate watch-install bun install
 
 ### Layer 1 — Pre-flight static script scan
 
-Before the install runs, `watch-install` scans every `preinstall`, `install`, and `postinstall` script found in present `node_modules/*/package.json` files for signals of malicious intent. The same scan runs again after the install completes on all packages — catching freshly downloaded packages too.
+Before the install runs, `watch-install` checks `preinstall`, `install`, and
+`postinstall` strings in existing top-level packages and scoped packages under
+`node_modules`. The same pass runs after installation for newly present packages.
+It does not recursively inspect every nested package or the source of helper
+files invoked by a hook. Signals may also occur in legitimate build tooling.
 
 **Signals detected:**
 
@@ -62,23 +70,32 @@ Before the install runs, `watch-install` scans every `preinstall`, `install`, an
 | HTTP client libraries | `fetch(`, `axios`, `got(`, `request(`, `superagent` |
 | Process / shell spawn | `child_process`, `execSync(`, `spawnSync(`, `exec(`, `spawn(`, `curl `, `wget ` |
 | Env exfiltration | `process.env` |
-| **High entropy** | Shannon entropy > 4.8 over any 64-char window — a reliable indicator of obfuscated or minified malicious payloads |
+| **High entropy** | Shannon entropy > 4.8 over a 64-char window — may indicate obfuscation or benign minified code |
 
 Finding any signal, or exceeding the entropy threshold, produces a `SCRIPT_THREAT` finding.
 
 ### Layer 2 — Runtime phantom-file detection
 
-A 250 ms polling thread watches `node_modules/` while the package manager runs. If a file is written by a postinstall script and then deleted before the install exits — the classic dropper pattern — it is flagged as a `PHANTOM`.
+A 250 ms polling thread watches `node_modules/` while the package manager runs.
+A file observed as newly created and later deleted is flagged as a `PHANTOM`.
+Files created and deleted between observations can be missed. The watcher
+cannot establish which process created a file or whether it was executed;
+legitimate native-build cleanup can trigger the same signal.
 
 ```
 postinstall → write binary → execute → unlink to hide evidence
 ```
 
-This is the primary pattern used in the 2025 axios-ecosystem compromise.
+The [install benchmark](https://github.com/greengate-dev/greengate/blob/main/bench/INSTALL_RESULTS.md)
+measures controlled examples of this pattern and benign native-build cleanup.
 
 ### Layer 3 — Post-install executable-drop detection
 
-After the install completes, any new executable file that appeared in the project root (outside `node_modules/`) that was not present before the install is flagged as an `EXEC_DROP`. Legitimate package managers never place executables outside `node_modules/`.
+After the install completes, a new executable file directly in the project root
+is flagged as an `EXEC_DROP`. This check is non-recursive: executables in project
+subdirectories are not covered. Legitimate tooling can also create executables,
+so findings require review. Neither this check nor phantom-file detection
+prevents the wrapped process from executing first.
 
 ---
 
@@ -180,7 +197,7 @@ For teams not yet ready to block on findings, start in audit-only mode:
 | `greengate audit` | Pre/post install | Known CVEs in the OSV database for your lock file |
 | `greengate watch-install` | During and after install | Runtime dropper behaviour, obfuscated scripts, and exec-drops that CVE databases cannot see |
 
-Run both for complete coverage:
+Run both to combine filesystem/script signals with known-advisory checks:
 
 ```yaml
 - run: greengate watch-install npm ci   # zero-trust gate: behaviour + static scan
@@ -191,15 +208,20 @@ Run both for complete coverage:
 
 ## Background
 
-In early 2025, the [axios](https://github.com/axios/axios) npm ecosystem was the subject of a supply-chain compromise discussion where attackers targeted postinstall hooks to execute and then self-delete malicious payloads. This attack pattern — write, execute, unlink — leaves no trace in `node_modules/` after the install finishes, making it invisible to static scanners and lock-file diffing tools.
+An installer can create a payload, execute it, then delete it. A final snapshot
+or lock-file diff alone does not show that temporary file. The watcher attempts
+to observe creation and deletion during installation; the benchmark uses
+harmless fixtures to measure this behavior and its polling limitations.
 
-Beyond dropper-style attacks, modern supply-chain attacks increasingly rely on obfuscated scripts that exfiltrate environment variables (CI secrets, tokens, cloud credentials) via HTTP requests made during install time. The Layer 1 static scan targets this exact vector.
+Lifecycle script strings can also contain networking, environment access, or
+dynamic-code operations. Static scanning flags those signals for review, but
+does not establish that they are malicious or inspect invoked helper-file code.
 
 ---
 
 ## Limitations
 
-- **Pure network exfiltration without file writes** — if a postinstall script sends data over the network without writing any file, there is no filesystem event for Layer 2 to observe. Layer 1 static scanning catches the network call pattern in the script source. Pair with network egress controls in CI for defence in depth.
+- **Pure network exfiltration without file writes** — there is no filesystem event for Layer 2 to observe. Layer 1 may flag network patterns in the lifecycle script string, but does not inspect network traffic or helper-file source.
 - **Windows** — phantom detection works on Windows via `std::fs` polling, but exec-drop detection uses file-extension heuristics (`.exe`, `.bat`, `.cmd`, `.ps1`) rather than the execute bit.
 - **Very fast droppers** — files created and deleted within a single 250 ms poll window may be missed by Layer 2. Layer 1 static scanning of the postinstall script provides a second line of defence for these cases.
 - **Obfuscation at install time** — if a package downloads and decodes its malicious payload at runtime (not in the static script text), Layer 1 will not see it. Layer 2 runtime detection still applies.

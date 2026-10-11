@@ -70,9 +70,14 @@ For this case, use `// greengate: ignore` on the assignment line, or add `safeHt
 | TypeScript (`.ts`, `.tsx`) | ✅ | ✅ | ✅ |
 | Python (`.py`) | ✅ | ❌ | ❌ |
 | Go (`.go`) | ✅ | ❌ | ❌ |
-| Ruby, PHP, Java, C#, Rust | ❌ | ❌ | ❌ |
+| Rust (`.rs`) | ✅ | ❌ | ❌ |
+| Ruby, PHP, Java, C# | ❌ | ❌ | ❌ |
 
-Python and Go SAST uses pattern-only matching (no taint tracking). Taint tracking is JS/TS only.
+Python, Go, and Rust use AST query rules without taint tracking. Rust rules
+flag `unsafe` blocks, `Command::new(...)`, `.unwrap()`, and `.expect()` for
+review; these constructs are not necessarily vulnerabilities. Rust analysis
+does not establish whether command arguments are attacker-controlled.
+Taint tracking is JS/TS only.
 
 ---
 
@@ -116,9 +121,20 @@ Raising `entropy_threshold` (e.g. to `5.0`) reduces false positives but may miss
 
 ---
 
-## No inter-process or runtime analysis
+## Runtime analysis boundaries
 
-GreenGate is a **static** analysis tool. It cannot:
+Code and secret scanning are static. `watch-install` additionally observes
+filesystem changes during the wrapped command, but does not isolate the
+process or inspect network traffic. Its 250 ms polling can miss files created
+and deleted between observations. Preflight checks inspect existing packages;
+newly installed lifecycle scripts are checked after execution. The slopsquat
+guard checks explicitly supplied package names, not the full resolved tree
+(`npm ci` and `pip-install -r requirements.txt` do not supply names to it).
+
+The [install-protection benchmark](https://github.com/greengate-dev/greengate/blob/main/bench/INSTALL_RESULTS.md)
+reports detection timing, misses, and native-build false positives separately.
+
+GreenGate cannot:
 
 - Detect secrets injected at runtime via environment variables (those are generally safe — use env vars instead of hardcoding).
 - Detect vulnerabilities that only manifest under specific runtime conditions (race conditions, logic bugs, SSRF depending on user-controlled URLs at runtime).

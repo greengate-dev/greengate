@@ -48,6 +48,30 @@ jobs:
       - name: Run all tests
         run: cargo test --verbose
 
+      - name: Verify install benchmark scoring
+        run: python3 -m unittest discover -s bench/install -p 'test_*.py'
+
+      - name: Benchmark install protection and native builds
+        run: |
+          mkdir -p "$RUNNER_TEMP/greengate-bench-home"
+          env -i PATH=/usr/bin:/bin \
+            HOME="$RUNNER_TEMP/greengate-bench-home" TMPDIR="$RUNNER_TEMP" \
+            python3 bench/install/run.py \
+            --greengate-bin "$PWD/target/debug/greengate" \
+            --cc /usr/bin/gcc --repeats 3 \
+            --out "$RUNNER_TEMP/INSTALL_RESULTS.md" \
+            --json-out "$RUNNER_TEMP/INSTALL_RESULTS.json"
+
+      - name: Upload install benchmark observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-benchmark
+          path: |
+            ${{ runner.temp }}/INSTALL_RESULTS.md
+            ${{ runner.temp }}/INSTALL_RESULTS.json
+          if-no-files-found: error
+
   # ── 3. Dogfood — greengate scans itself ──────────────────────────────────────
   self-scan:
     name: Self-Scan

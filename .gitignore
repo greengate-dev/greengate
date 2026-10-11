@@ -11,3 +11,6 @@
 .DS_Store
 .vscode/
 .idea/
+
+# Internal planning docs (not published)
+/plans/
