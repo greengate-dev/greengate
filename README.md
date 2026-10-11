@@ -196,21 +196,23 @@ TIA walks the import graph using AST parsing to find which test files transitive
 
 **macOS (Apple Silicon):**
 ```bash
-curl -sL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-macos-arm64 \
-  -o /usr/local/bin/greengate && chmod +x /usr/local/bin/greengate
+curl -fsSL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-macos-arm64 -o greengate
+sudo install -m 755 greengate /usr/local/bin/greengate
 ```
 
 **macOS (Intel):**
 ```bash
-curl -sL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-macos-amd64 \
-  -o /usr/local/bin/greengate && chmod +x /usr/local/bin/greengate
+curl -fsSL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-macos-amd64 -o greengate
+sudo install -m 755 greengate /usr/local/bin/greengate
 ```
 
 **Linux (x64, musl — works in Alpine/Docker):**
 ```bash
-curl -sL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-linux-amd64 \
-  -o /usr/local/bin/greengate && chmod +x /usr/local/bin/greengate
+curl -fsSL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-linux-amd64 -o greengate
+sudo install -m 755 greengate /usr/local/bin/greengate
 ```
+
+`/usr/local/bin` is root-owned on most Linux distributions and on macOS, hence the `sudo`. To install without root, use `install -m 755 greengate ~/.local/bin/greengate` instead and make sure `~/.local/bin` is on your `PATH`.
 
 **Windows (x64) — PowerShell:**
 ```powershell
