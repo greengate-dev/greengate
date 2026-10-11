@@ -241,10 +241,9 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<()> {
             ));
         }
         Ok(s) if !s.success() => {
-            terminal::warn(
-                "`cargo add` exited with non-zero status — Cargo.toml may be unchanged.",
-            );
-            return Ok(());
+            return Err(anyhow::anyhow!(
+                "`cargo add` failed ({s}) — Cargo.toml was not updated."
+            ));
         }
         _ => {}
     }

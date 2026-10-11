@@ -1304,20 +1304,133 @@ fn watch_install_enforce_sandbox_false_ignores_exec_drop() {
 
 #[test]
 #[cfg(unix)]
-fn watch_install_pm_failure_emits_warning() {
-    // Wrapped pm exits non-zero. Greengate should warn about it.
+fn watch_install_pm_failure_fails_the_gate() {
+    // A failed install never ran to completion, so it cannot be a pass.
     let dir = tempfile::tempdir().unwrap();
 
     let output = Command::new(binary())
-        .args(["watch-install", "sh", "-c", "exit 1"])
+        .args(["watch-install", "sh", "-c", "exit 3"])
         .current_dir(dir.path())
         .output()
         .unwrap();
 
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("non-zero"),
-        "failed pm must emit a warning to stderr; stderr: {}",
-        stderr
+        !output.status.success(),
+        "failed pm must fail the gate; stderr: {stderr}"
     );
+    assert!(
+        stderr.contains("did not complete"),
+        "failure must be explained; stderr: {stderr}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn watch_install_no_fail_does_not_mask_pm_failure() {
+    // --no-fail relaxes findings, not a broken install.
+    let dir = tempfile::tempdir().unwrap();
+
+    let status = Command::new(binary())
+        .args(["watch-install", "--no-fail", "sh", "-c", "exit 3"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+
+    assert!(
+        !status.success(),
+        "--no-fail must not turn a failed install into a pass"
+    );
+}
+
+// ── pip-install / cargo-add ───────────────────────────────────────────────────
+//
+// A fake executable stands in for pip / cargo. Registry lookups are disabled so
+// the tests stay offline.
+
+#[cfg(unix)]
+const OFFLINE_SUPPLY_CHAIN: &str = "[supply_chain]\nslopsquat_check = false\n";
+
+/// Write an executable shell script that records its arguments to `args.log`
+/// and exits with `code`.
+#[cfg(unix)]
+fn fake_tool(dir: &std::path::Path, name: &str, code: i32) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    let log = dir.join("args.log");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = show ] && exit 0\necho \"$@\" >> '{}'\nexit {code}\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+#[cfg(unix)]
+fn pip_install_runs_the_install_subcommand() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".greengate.toml"), OFFLINE_SUPPLY_CHAIN).unwrap();
+    let pip = fake_tool(dir.path(), "fake-pip", 0);
+
+    for args in [&["requests"][..], &["install", "requests"][..]] {
+        let status = Command::new(binary())
+            .args(["pip-install", "--pip", pip.to_str().unwrap()])
+            .args(args)
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "clean pip install must pass: {args:?}");
+    }
+
+    let log = std::fs::read_to_string(dir.path().join("args.log")).unwrap();
+    assert_eq!(
+        log, "install requests\ninstall requests\n",
+        "pip must be called as `pip install <args>`, with `install` never doubled"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn pip_install_pip_failure_fails_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".greengate.toml"), OFFLINE_SUPPLY_CHAIN).unwrap();
+    let pip = fake_tool(dir.path(), "fake-pip", 1);
+
+    let status = Command::new(binary())
+        .args(["pip-install", "--no-fail", "--pip", pip.to_str().unwrap()])
+        .arg("requests")
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+
+    assert!(!status.success(), "a failed pip install must fail the gate");
+}
+
+#[test]
+#[cfg(unix)]
+fn cargo_add_failure_fails_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".greengate.toml"), OFFLINE_SUPPLY_CHAIN).unwrap();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir(&bin_dir).unwrap();
+    fake_tool(&bin_dir, "cargo", 101);
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let status = Command::new(binary())
+        .args(["cargo-add", "serde"])
+        .env("PATH", path)
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+
+    assert!(!status.success(), "a failed `cargo add` must fail the gate");
 }

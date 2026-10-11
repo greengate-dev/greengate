@@ -383,8 +383,10 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
         )
     })?;
 
-    // 7. Check whether the package manager itself reported an error.
-    match &pm_status {
+    // 7. Check whether the package manager itself reported an error. A failed
+    //    install still gets the post-install checks below — whatever it left
+    //    behind is evidence — but it can never be reported as a pass.
+    let pm_failure = match &pm_status {
         Err(e) => {
             return Err(anyhow::anyhow!(
                 "Failed to launch `{}`: {}. Is it installed and on PATH?",
@@ -392,14 +394,12 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
                 e
             ));
         }
-        Ok(status) if !status.success() => {
-            terminal::warn(&format!(
-                "`{}` exited with non-zero status — install may be incomplete.",
-                opts.package_manager
-            ));
-        }
-        _ => {}
-    }
+        Ok(status) if !status.success() => Some(format!(
+            "`{}` failed ({status}) — the install did not complete.",
+            opts.package_manager
+        )),
+        _ => None,
+    };
 
     // 8. Layer 1 (post-install pass) — scan scripts of newly installed packages.
     //    Catches packages that weren't in node_modules/ before this install run.
@@ -464,6 +464,10 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
             "Zero-Trust Supply Chain Gate: {} blocking runtime event(s) detected — halting.",
             blocking_count
         ));
+    }
+
+    if let Some(failure) = pm_failure {
+        return Err(anyhow::anyhow!(failure));
     }
 
     if findings.is_empty() {

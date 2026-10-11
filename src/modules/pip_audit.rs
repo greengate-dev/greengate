@@ -150,14 +150,15 @@ const PY_SIGNALS: &[(&str, &str)] = &[
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
+    let install_args = install_args(&opts.args);
     terminal::info(&format!(
-        "Zero-Trust Supply Chain Gate (pip): intercepting `{} {}`",
+        "Zero-Trust Supply Chain Gate (pip): intercepting `{} install {}`",
         opts.pip,
-        opts.args.join(" ")
+        install_args.join(" ")
     ));
 
     // ── Layer 1: Typosquat pre-flight ─────────────────────────────────────────
-    let packages_to_install = extract_package_names(&opts.args);
+    let packages_to_install = extract_package_names(install_args);
     let mut typosquats: Vec<(String, String)> = Vec::new(); // (requested, closest_match)
     for pkg in &packages_to_install {
         if let Some(candidate) = check_typosquat(pkg) {
@@ -228,10 +229,13 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
 
     // ── Run pip ───────────────────────────────────────────────────────────────
     let status = std::process::Command::new(&opts.pip) // greengate: ignore — intentionally wrapping pip to intercept the install
-        .args(&opts.args)
+        .arg("install")
+        .args(install_args)
         .status();
 
-    match &status {
+    // A failed install still gets the post-install checks below — whatever it
+    // left behind is evidence — but it can never be reported as a pass.
+    let pip_failure = match &status {
         Err(e) => {
             return Err(anyhow::anyhow!(
                 "Failed to launch `{}`: {}. Is pip installed and on PATH?",
@@ -239,14 +243,12 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
                 e
             ));
         }
-        Ok(s) if !s.success() => {
-            terminal::warn(&format!(
-                "`{}` exited with non-zero status — install may be incomplete.",
-                opts.pip
-            ));
-        }
-        _ => {}
-    }
+        Ok(s) if !s.success() => Some(format!(
+            "`{}` failed ({s}) — the install did not complete.",
+            opts.pip
+        )),
+        _ => None,
+    };
 
     // ── Layer 2: RECORD-driven static analysis ────────────────────────────────
     let post_dist_info = snapshot_dist_info_dirs(&site_packages_dirs);
@@ -355,6 +357,10 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
         ));
     }
 
+    if let Some(failure) = pip_failure {
+        return Err(anyhow::anyhow!(failure));
+    }
+
     if script_threats.is_empty() && new_executables.is_empty() && typosquats.is_empty() {
         terminal::success(
             "Zero-Trust Supply Chain Gate (pip): clean — no typosquats, suspicious scripts, \
@@ -377,6 +383,16 @@ struct PipThreat {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Extract plain package names from pip args (skip flags and version specs).
+/// The arguments to pass after `pip install`. The command takes them without
+/// the subcommand (`greengate pip-install requests`), but a leading `install`
+/// is tolerated so it is neither sent twice nor checked as a package name.
+fn install_args(args: &[String]) -> &[String] {
+    match args.split_first() {
+        Some((first, rest)) if first == "install" => rest,
+        _ => args,
+    }
+}
+
 fn extract_package_names(args: &[String]) -> Vec<String> {
     let mut names = Vec::new();
     let mut skip_next = false;
@@ -656,6 +672,21 @@ mod tests {
             .collect();
         let names = extract_package_names(&args);
         assert_eq!(names, vec!["requests", "flask", "numpy"]);
+    }
+
+    #[test]
+    fn install_args_drops_a_leading_install_only() {
+        let to_vec = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(install_args(&to_vec(&["requests"])), to_vec(&["requests"]));
+        assert_eq!(
+            install_args(&to_vec(&["install", "requests"])),
+            to_vec(&["requests"])
+        );
+        // A package literally named `install` later in the list is kept.
+        assert_eq!(
+            install_args(&to_vec(&["-U", "install"])),
+            to_vec(&["-U", "install"])
+        );
     }
 
     #[test]
