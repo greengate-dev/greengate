@@ -219,7 +219,7 @@ fn check_dockerfile(path: &Path, content: &str) -> Vec<LintIssue> {
 
     if !has_healthcheck {
         issues.push(LintIssue {
-            file: file.clone(),
+            file,
             line: 0,
             rule: "no-healthcheck",
             detail: "No HEALTHCHECK defined — add one for container health monitoring".to_string(),

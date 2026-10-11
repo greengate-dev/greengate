@@ -1,5 +1,5 @@
 use crate::modules::scanner::{
-    Finding, compile_patterns_for_scan, emit_findings, scan_text_content,
+    Finding, Severity, compile_patterns, emit_findings, scan_text_content,
 };
 use crate::utils::config::ScanConfig;
 use anyhow::{Context, Result};
@@ -84,7 +84,7 @@ pub fn run_image_scan(opts: ImageScanOpts<'_>) -> Result<()> {
         opts.image
     ));
 
-    let patterns = compile_patterns_for_scan(opts.scan_cfg)?;
+    let patterns = compile_patterns(opts.scan_cfg)?;
     let mut all_findings: Vec<Finding> = Vec::new();
 
     for (idx, layer_tar) in layer_tars.iter().enumerate() {
@@ -138,7 +138,7 @@ pub fn run_image_scan(opts: ImageScanOpts<'_>) -> Result<()> {
         return Ok(());
     }
 
-    emit_findings(&all_findings, &opts.format)?;
+    emit_findings(&all_findings, opts.format)?;
 
     if !opts.no_fail {
         anyhow::bail!(
@@ -239,22 +239,22 @@ fn scan_dir_recursive(
             continue;
         }
 
-        let Ok(text) = std::str::from_utf8(&content) else {
-            continue;
-        };
+        // Lossy, as in `files::read_text`: a non-UTF-8 byte must not hide the
+        // rest of the file. NUL-containing (binary) content was skipped above.
+        let text = String::from_utf8_lossy(&content);
 
         // Build a human-readable path label: image::layer:<digest>::/path/in/layer
         let rel = path.strip_prefix(base).unwrap_or(&path);
         let label_str = format!("{}::layer:{}::{}", image, layer_digest, rel.display());
         let label = PathBuf::from(&label_str);
 
-        let mut file_findings = scan_text_content(&label, text, patterns, scan_cfg);
+        let mut file_findings = scan_text_content(&label, &text, patterns, scan_cfg);
 
         // Prioritise interesting paths in the severity reporting
         if is_sensitive_path(rel) {
             for f in &mut file_findings {
-                if f.severity == "medium" {
-                    f.severity = "high".to_string();
+                if f.severity == Severity::Medium {
+                    f.severity = Severity::High;
                 }
             }
         }

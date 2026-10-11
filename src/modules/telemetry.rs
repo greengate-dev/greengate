@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn scan_metrics_groups_by_severity() {
-        use crate::modules::scanner::Finding;
+        use crate::modules::scanner::{Finding, Severity};
         use std::path::PathBuf;
 
         let findings = vec![
@@ -421,7 +421,7 @@ mod tests {
                 path: PathBuf::from("a.js"),
                 rule_id: "AWS Access Key".to_string(),
                 line: 1,
-                severity: "critical".to_string(),
+                severity: Severity::Critical,
                 commit: None,
                 blame: None,
             },
@@ -429,7 +429,7 @@ mod tests {
                 path: PathBuf::from("b.js"),
                 rule_id: "AWS Access Key".to_string(),
                 line: 2,
-                severity: "critical".to_string(),
+                severity: Severity::Critical,
                 commit: None,
                 blame: None,
             },
@@ -437,7 +437,7 @@ mod tests {
                 path: PathBuf::from("c.js"),
                 rule_id: "SAST/EvalUsage".to_string(),
                 line: 5,
-                severity: "high".to_string(),
+                severity: Severity::High,
                 commit: None,
                 blame: None,
             },

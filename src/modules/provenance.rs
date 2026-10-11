@@ -8,6 +8,7 @@
 //! added lines, reports the split, and can fail the build when the AI-authored
 //! share of new code exceeds a configured threshold.
 
+use crate::utils::output::ReportFormat;
 use crate::utils::terminal;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -19,8 +20,7 @@ pub struct ProvenanceOpts {
     /// Fail if the AI-authored share of added lines exceeds this percent.
     /// `None` = report only (never fails).
     pub max_ai_lines_pct: Option<u8>,
-    /// Output format: "text" (default), "json", or "sarif".
-    pub format: String,
+    pub format: ReportFormat,
 }
 
 /// (substring, display name) for tools we recognise. Matched case-insensitively
@@ -180,10 +180,10 @@ pub fn run_provenance(opts: ProvenanceOpts) -> Result<()> {
         by_tool,
     };
 
-    match opts.format.as_str() {
-        "json" => emit_json(&s),
-        "sarif" => emit_sarif(&s),
-        _ => emit_text(&s),
+    match opts.format {
+        ReportFormat::Json => emit_json(&s),
+        ReportFormat::Sarif => emit_sarif(&s),
+        ReportFormat::Text => emit_text(&s),
     }
 
     // Gate applies regardless of output format.
@@ -193,7 +193,7 @@ pub fn run_provenance(opts: ProvenanceOpts) -> Result<()> {
                 "Provenance gate: AI-authored code is {ai_line_pct}% of new lines, exceeding the {max}% ceiling."
             ));
         }
-        if opts.format == "text" {
+        if opts.format == ReportFormat::Text {
             terminal::success(&format!(
                 "Provenance gate passed: {ai_line_pct}% AI-authored ≤ {max}% ceiling."
             ));

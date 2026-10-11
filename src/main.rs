@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
 use modules::scanner::{DiffMode, OutputFormat, ScanOpts};
+use modules::tia::TiaFormat;
+use utils::config::Profile;
+use utils::output::ReportFormat;
 
 mod modules;
 mod utils;
@@ -9,9 +12,9 @@ mod utils;
 #[command(version)]
 #[command(about = "A high-performance DevOps CLI tool in Rust", long_about = None)]
 struct Cli {
-    /// Apply a preset quality profile: strict, relaxed, or ci
+    /// Apply a preset quality profile
     #[arg(long, global = true)]
-    profile: Option<String>,
+    profile: Option<Profile>,
 
     #[command(subcommand)]
     command: Commands,
@@ -21,9 +24,9 @@ struct Cli {
 enum Commands {
     /// Scans the current directory for hardcoded secrets and PII
     Scan {
-        /// Output format: text (default), json, sarif, junit, gitlab
+        /// Output format
         #[arg(long, default_value = "text")]
-        format: String,
+        format: OutputFormat,
         /// Only scan git-staged files (git diff --cached)
         #[arg(long)]
         staged: bool,
@@ -230,9 +233,9 @@ enum Commands {
         /// Image reference to scan (e.g. nginx:latest, ghcr.io/org/app:sha-abc123)
         #[arg(value_name = "IMAGE")]
         image: String,
-        /// Output format: text (default), json, sarif, junit, gitlab
+        /// Output format
         #[arg(long, default_value = "text")]
-        format: String,
+        format: OutputFormat,
         /// Report findings but do not exit non-zero
         #[arg(long)]
         no_fail: bool,
@@ -249,15 +252,15 @@ enum Commands {
         /// Diff against staged changes instead of committed diff
         #[arg(long)]
         staged: bool,
-        /// Output format: newline (default, pipe-friendly), text, or json
+        /// Output format (newline is pipe-friendly)
         #[arg(long, default_value = "newline")]
-        format: String,
+        format: TiaFormat,
     },
     /// Lints GitHub Actions workflow files for security misconfigurations
     CiLint {
-        /// Output format: text (default), json, sarif
+        /// Output format
         #[arg(long, default_value = "text")]
-        format: String,
+        format: ReportFormat,
         /// Path to a single workflow file to lint (instead of auto-discovering .github/workflows/)
         #[arg(long)]
         file: Option<String>,
@@ -279,9 +282,9 @@ enum Commands {
         /// Fail if Complexity Score exceeds this value; 0 = warn only (overrides config)
         #[arg(long)]
         complexity_budget: Option<u32>,
-        /// Output format: text (default), json, sarif
+        /// Output format
         #[arg(long, default_value = "text")]
-        format: String,
+        format: ReportFormat,
         /// Post results as a GitHub Check Run with annotations and a PR comment
         #[arg(long)]
         annotate: bool,
@@ -295,9 +298,9 @@ enum Commands {
         /// Fail if AI-authored code exceeds this percent of added lines (0-100)
         #[arg(long)]
         max_ai_lines_pct: Option<u8>,
-        /// Output format: text (default), json, sarif
+        /// Output format
         #[arg(long, default_value = "text")]
-        format: String,
+        format: ReportFormat,
     },
 }
 
@@ -308,8 +311,8 @@ fn main() -> anyhow::Result<()> {
     // Suppress the "Loaded config" info message when emitting structured output
     // so that JSON/SARIF/JUnit parsers don't see unexpected text on stderr.
     let silent = matches!(
-        &cli.command,
-        Commands::Scan { format, .. } if matches!(format.as_str(), "json" | "sarif" | "junit" | "gitlab")
+        cli.command,
+        Commands::Scan { format, .. } if format != OutputFormat::Text
     );
     let mut cfg = if silent {
         utils::config::load_silent()?
@@ -318,7 +321,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     // Apply profile overrides on top of the loaded config
-    if let Some(ref profile) = cli.profile {
+    if let Some(profile) = cli.profile {
         utils::config::apply_profile(&mut cfg, profile);
     }
 
@@ -336,13 +339,6 @@ fn main() -> anyhow::Result<()> {
             dry_run,
             triage,
         } => {
-            let output_format = match format.as_str() {
-                "json" => OutputFormat::Json,
-                "sarif" => OutputFormat::Sarif,
-                "junit" => OutputFormat::Junit,
-                "gitlab" => OutputFormat::Gitlab,
-                _ => OutputFormat::Text,
-            };
             let diff = if history {
                 Some(DiffMode::History)
             } else if staged {
@@ -352,7 +348,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             let opts = ScanOpts {
-                format: output_format.clone(),
+                format,
                 diff,
                 config: &cfg.scan,
                 sast_config: &cfg.sast,
@@ -378,33 +374,21 @@ fn main() -> anyhow::Result<()> {
             // Baseline: save mode
             if update_baseline {
                 modules::baseline::save_baseline(&findings)?;
-                return modules::scanner::emit_findings(&findings, &output_format);
+                return modules::scanner::emit_findings(&findings, format);
             }
 
             // Baseline: compare mode — only fail on new findings
             if since_baseline {
                 let baseline = modules::baseline::load_baseline()?;
-                let new_findings: Vec<&modules::scanner::Finding> =
-                    modules::baseline::filter_new_findings(&findings, &baseline);
-                let suppressed = findings.len() - new_findings.len();
+                let total = findings.len();
+                modules::baseline::retain_new_findings(&mut findings, &baseline);
                 modules::baseline::print_baseline_summary(
+                    total,
                     findings.len(),
-                    new_findings.len(),
-                    suppressed,
+                    total - findings.len(),
                 );
-                if !new_findings.is_empty() {
-                    let owned: Vec<modules::scanner::Finding> = new_findings
-                        .into_iter()
-                        .map(|f| modules::scanner::Finding {
-                            path: f.path.clone(),
-                            rule_id: f.rule_id.clone(),
-                            line: f.line,
-                            commit: f.commit.clone(),
-                            severity: f.severity.clone(),
-                            blame: f.blame.clone(),
-                        })
-                        .collect();
-                    return modules::scanner::emit_findings(&owned, &output_format);
+                if !findings.is_empty() {
+                    return modules::scanner::emit_findings(&findings, format);
                 }
                 return Ok(());
             }
@@ -436,7 +420,7 @@ fn main() -> anyhow::Result<()> {
             {
                 eprintln!("greengate: warning: GitHub annotation failed: {}", e);
             }
-            modules::scanner::emit_findings(&findings, &output_format)?;
+            modules::scanner::emit_findings(&findings, format)?;
         }
         Commands::Lint { dir } => {
             let target = dir.unwrap_or(cfg.lint.target_dir);
@@ -600,16 +584,9 @@ fn main() -> anyhow::Result<()> {
             format,
             no_fail,
         } => {
-            let output_format = match format.as_str() {
-                "json" => OutputFormat::Json,
-                "sarif" => OutputFormat::Sarif,
-                "junit" => OutputFormat::Junit,
-                "gitlab" => OutputFormat::Gitlab,
-                _ => OutputFormat::Text,
-            };
             modules::image_scan::run_image_scan(modules::image_scan::ImageScanOpts {
                 image,
-                format: output_format,
+                format,
                 no_fail,
                 scan_cfg: &cfg.scan,
             })?;
@@ -646,10 +623,8 @@ fn main() -> anyhow::Result<()> {
             )?;
         }
         Commands::CiLint { format, file } => {
-            let result = modules::ci_lint::run_ci_lint(modules::ci_lint::CiLintOpts {
-                format: &format,
-                file,
-            });
+            let result =
+                modules::ci_lint::run_ci_lint(modules::ci_lint::CiLintOpts { format, file });
             modules::telemetry::emit(
                 &modules::telemetry::command_metrics(
                     "ci-lint",

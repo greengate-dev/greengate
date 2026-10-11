@@ -25,8 +25,16 @@ pub struct TiaOpts {
     pub base: String,
     /// Diff against staged files instead of committed diff.
     pub staged: bool,
-    /// Output format: "newline" (default, pipe-friendly), "text", or "json".
-    pub format: String,
+    pub format: TiaFormat,
+}
+
+/// Output format for `greengate tia`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum TiaFormat {
+    /// One test path per line, ready to pass to a test runner (default)
+    Newline,
+    Text,
+    Json,
 }
 
 // ── Output types ───────────────────────────────────────────────────────────────
@@ -101,10 +109,10 @@ pub fn run_tia(opts: TiaOpts, cfg: &TiaConfig) -> Result<()> {
         config_files_changed: config_files.iter().map(|s| s.to_string()).collect(),
     };
 
-    match opts.format.as_str() {
-        "json" => emit_json(&output)?,
-        "text" => emit_text(&output),
-        _ => emit_newline(&output),
+    match opts.format {
+        TiaFormat::Json => emit_json(&output)?,
+        TiaFormat::Text => emit_text(&output),
+        TiaFormat::Newline => emit_newline(&output),
     }
 
     Ok(())

@@ -647,15 +647,23 @@ fn load_inner(verbose: bool) -> Result<Config> {
     Ok(cfg)
 }
 
-/// Apply a named profile on top of an already-loaded config.
+/// A preset quality profile, selected with `--profile`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Profile {
+    /// Tighter quality gates (higher coverage, lower entropy threshold)
+    Strict,
+    /// Looser gates (lower coverage, higher entropy threshold)
+    Relaxed,
+    /// CI-optimised: strict gates + SAST enabled, code-smell rules off
+    Ci,
+}
+
+/// Apply a profile on top of an already-loaded config.
 ///
-/// Profiles adjust thresholds without requiring a config file change:
-///   `strict`  — tighter quality gates (higher coverage, lower entropy threshold)
-///   `relaxed` — looser gates (lower coverage, higher entropy threshold)
-///   `ci`      — CI-optimised: strict gates + SAST enabled, no interactive output
-pub fn apply_profile(cfg: &mut Config, profile: &str) {
+/// Profiles adjust thresholds without requiring a config file change.
+pub fn apply_profile(cfg: &mut Config, profile: Profile) {
     match profile {
-        "strict" => {
+        Profile::Strict => {
             // Raise coverage threshold to 90 % if not already higher
             if cfg.coverage.min < 90.0 {
                 cfg.coverage.min = 90.0;
@@ -678,7 +686,7 @@ pub fn apply_profile(cfg: &mut Config, profile: &str) {
                 cfg.lighthouse.min_accessibility = 95;
             }
         }
-        "relaxed" => {
+        Profile::Relaxed => {
             // Lower coverage threshold to 70 % if not already lower
             if cfg.coverage.min > 70.0 {
                 cfg.coverage.min = 70.0;
@@ -688,7 +696,7 @@ pub fn apply_profile(cfg: &mut Config, profile: &str) {
                 cfg.scan.entropy_threshold = 5.0;
             }
         }
-        "ci" => {
+        Profile::Ci => {
             // Same as strict, but also disable code-smell rules that produce noise in CI
             if cfg.coverage.min < 80.0 {
                 cfg.coverage.min = 80.0;
@@ -704,12 +712,6 @@ pub fn apply_profile(cfg: &mut Config, profile: &str) {
                     cfg.sast.disabled_rules.push(rule.to_string());
                 }
             }
-        }
-        other => {
-            eprintln!(
-                "⚠️  Unknown profile '{}'. Valid profiles: strict, relaxed, ci",
-                other
-            );
         }
     }
 }

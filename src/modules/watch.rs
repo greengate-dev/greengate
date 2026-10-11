@@ -94,7 +94,7 @@ fn run_scan_once(staged: bool) -> Result<()> {
         None
     };
 
-    let result = scanner::run_scan(ScanOpts {
+    let result = scanner::run_scan(&ScanOpts {
         format: OutputFormat::Text,
         diff,
         config: &cfg.scan,

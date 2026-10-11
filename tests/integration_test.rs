@@ -345,6 +345,150 @@ fn scan_history_flag_accepted() {
     }
 }
 
+#[test]
+fn scan_history_reports_secret_on_line_starting_with_plus_plus() {
+    let dir = tempfile::tempdir().unwrap();
+    init_git_repo(dir.path());
+    std::fs::write(dir.path().join("a.c"), "int x;\n").unwrap();
+    git_commit_all(dir.path(), "init");
+    std::fs::write(
+        dir.path().join("a.c"),
+        "int x;\n++counter; // AKIAQWERTYUIOPASDFGH\nkey = \"AKIAZXCVBNMLKJHGFDSA\";\n",
+    )
+    .unwrap();
+    git_commit_all(dir.path(), "add keys");
+
+    let output = Command::new(binary())
+        .args(["scan", "--history", "--format", "json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut lines: Vec<u64> = json["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule"] == "AWS Access Key")
+        .map(|f| f["line"].as_u64().unwrap())
+        .collect();
+    lines.sort_unstable();
+    assert_eq!(lines, [2, 3], "both keys, at their real line numbers");
+}
+
+// ── Non-UTF-8 content ─────────────────────────────────────────────────────────
+
+#[test]
+fn scan_detects_secret_in_latin1_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("latin1.env"),
+        b"# caf\xe9 config\nAWS_KEY=AKIAQWERTYUIOPASDFGH\n",
+    )
+    .unwrap();
+    // With SAST on, Python files skip the regex pass, so this checks SAST too.
+    std::fs::write(
+        dir.path().join("settings.py"),
+        b"# r\xe9glages\nKEY = \"AKIAZXCVBNMLKJHGFDSA\"\n",
+    )
+    .unwrap();
+
+    let output = Command::new(binary())
+        .args(["scan", "--format", "json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "secrets in non-UTF-8 files must fail the scan"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let mut files: Vec<&str> = json["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule"] == "AWS Access Key")
+        .map(|f| f["file"].as_str().unwrap())
+        .collect();
+    files.sort_unstable();
+    assert_eq!(files, ["./latin1.env", "./settings.py"]);
+}
+
+// ── --fix ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn scan_fix_redacts_without_changing_line_endings() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("app.env");
+    std::fs::write(
+        &file,
+        "# config\r\nAWS_KEY=AKIAQWERTYUIOPASDFGH\r\nREGION=eu-west-1\nLAST=1",
+    )
+    .unwrap();
+
+    let status = Command::new(binary())
+        .args(["scan", "--fix"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "# config\r\nAWS_KEY=<REDACTED>\r\nREGION=eu-west-1\nLAST=1",
+        "only the secret changes; CRLF, LF and the missing final newline survive"
+    );
+}
+
+// ── Typed flags ───────────────────────────────────────────────────────────────
+
+#[test]
+fn unknown_format_is_rejected_not_defaulted() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(binary())
+        .args(["scan", "--format", "sarf"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "clap usage error");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("possible values"), "stderr: {stderr}");
+}
+
+#[test]
+fn unknown_profile_is_rejected_not_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(binary())
+        .args(["--profile", "strcit", "scan"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "clap usage error");
+}
+
+#[test]
+fn pipeline_step_with_bad_flag_value_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"ci-lint --format sarf\"]\n",
+    )
+    .unwrap();
+
+    let output = Command::new(binary())
+        .arg("run")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid --format"), "stderr: {stderr}");
+}
+
 // ── Features 4+5: Multi-lockfile audit + Go support ───────────────────────────
 
 #[test]
