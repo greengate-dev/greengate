@@ -30,8 +30,8 @@ use crate::utils::terminal;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -348,23 +348,21 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
     let pre_modules = snapshot_dir("node_modules");
     let pre_root = snapshot_root_executables(".");
 
-    // 3. Shared state updated by the polling thread.
-    let state = Arc::new(Mutex::new(WatchState::new(pre_modules)));
+    // 3. Layer 2 — Runtime phantom-file detection thread (250 ms polling).
+    //    Started *before* the child process so we don't miss early events. The
+    //    thread owns the watch state outright and hands it back through `join`,
+    //    so there is no lock, and no partial state to read if it panics.
     let done = Arc::new(AtomicBool::new(false));
-
-    // 4. Layer 2 — Runtime phantom-file detection thread (250 ms polling).
-    //    Started *before* the child process so we don't miss early events.
-    let state_clone = Arc::clone(&state);
     let done_clone = Arc::clone(&done);
     let poll_thread = std::thread::spawn(move || {
+        let mut state = WatchState::new(pre_modules);
         while !done_clone.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_millis(250));
-            let current = snapshot_dir("node_modules");
-            state_clone.lock().unwrap().update(current);
+            state.update(snapshot_dir("node_modules"));
         }
         // One final scan after the child exits to catch any last-moment events.
-        let current = snapshot_dir("node_modules");
-        state_clone.lock().unwrap().update(current);
+        state.update(snapshot_dir("node_modules"));
+        state
     });
 
     // 5. Run the wrapped package manager and inherit its stdio so the developer
@@ -376,7 +374,14 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
     // 6. Signal the polling thread to stop and wait for it to finish its
     //    final scan before we read the accumulated findings.
     done.store(true, Ordering::Relaxed);
-    let _ = poll_thread.join();
+    // A watcher that panicked observed only part of the install, so its
+    // findings cannot be reported as a clean result.
+    let watch_state = poll_thread.join().map_err(|_| {
+        anyhow::anyhow!(
+            "Zero-Trust Supply Chain Gate: the node_modules watcher crashed, so \
+             phantom-file detection is incomplete — halting."
+        )
+    })?;
 
     // 7. Check whether the package manager itself reported an error.
     match &pm_status {
@@ -415,8 +420,7 @@ pub fn run_watch_install(opts: WatchInstallOpts) -> Result<()> {
     }
 
     // 9. Collect all phantom findings from the Layer 2 watcher.
-    let mut watch_state = state.lock().unwrap();
-    let mut findings: Vec<PhantomFinding> = watch_state.phantoms();
+    let mut findings: Vec<PhantomFinding> = watch_state.into_phantoms();
 
     // 10. Layer 3 — Detect new executables in the project root (exec-drop).
     if opts.enforce_sandbox {
@@ -523,9 +527,9 @@ impl WatchState {
         self.prev = current;
     }
 
-    /// Drain and return the accumulated phantom findings.
-    fn phantoms(&mut self) -> Vec<PhantomFinding> {
-        std::mem::take(&mut self.phantom_list)
+    /// The accumulated phantom findings.
+    fn into_phantoms(self) -> Vec<PhantomFinding> {
+        self.phantom_list
     }
 }
 
@@ -788,7 +792,7 @@ mod tests {
         // Poll 2: file disappears
         state.update(snap(&[]));
 
-        let phantoms = state.phantoms();
+        let phantoms = state.into_phantoms();
         assert_eq!(phantoms.len(), 1);
         assert_eq!(phantoms[0].package, "evil-pkg");
         assert!(
@@ -820,7 +824,7 @@ mod tests {
         state.update(snap(&["node_modules/pkg/run.sh"])); // create again
         state.update(snap(&[])); // delete  → phantom #2
 
-        let phantoms = state.phantoms();
+        let phantoms = state.into_phantoms();
         assert_eq!(
             phantoms.len(),
             2,
@@ -838,7 +842,7 @@ mod tests {
         ]));
         state.update(snap(&[])); // both deleted
 
-        let phantoms = state.phantoms();
+        let phantoms = state.into_phantoms();
         assert_eq!(phantoms.len(), 2);
         let packages: Vec<&str> = phantoms.iter().map(|p| p.package.as_str()).collect();
         assert!(packages.contains(&"pkg-a"));

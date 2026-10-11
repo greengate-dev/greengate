@@ -80,13 +80,18 @@ pub fn score(pkg: &str, meta: &PackageMeta, in_lockfile: bool, cfg: &SlopConfig)
     }
 
     let mut points: u32 = 0;
+    // Signals the registry did not give us. A missing signal is *not* a clean
+    // signal: npm's adoption figure comes from a separate, rate-limited API, so
+    // a transient failure there must not quietly clear an unvetted package.
+    let mut unverified: Vec<&str> = Vec::new();
 
     match meta.age_days {
         Some(age) if age < cfg.min_age_days => {
             points += 2;
             reasons.push(format!("registered {age} day(s) ago (very new)"));
         }
-        _ => {}
+        Some(_) => {}
+        None => unverified.push("registration date"),
     }
 
     match meta.downloads {
@@ -94,7 +99,8 @@ pub fn score(pkg: &str, meta: &PackageMeta, in_lockfile: bool, cfg: &SlopConfig)
             points += 1;
             reasons.push(format!("{dl} total download(s) (low adoption)"));
         }
-        _ => {}
+        Some(_) => {}
+        None => unverified.push("adoption"),
     }
 
     if !meta.has_repository {
@@ -102,11 +108,22 @@ pub fn score(pkg: &str, meta: &PackageMeta, in_lockfile: bool, cfg: &SlopConfig)
         reasons.push("no source repository declared".to_string());
     }
 
+    if !unverified.is_empty() {
+        reasons.push(format!(
+            "could not verify {} — the registry did not report it, so this package is not cleared",
+            unverified.join(" or ")
+        ));
+    }
+
     // Context note (not itself a point) — clarifies why the package was checked.
     reasons.push("newly introduced — not present in your lock file".to_string());
 
     let suspicion = match points {
-        0 => Suspicion::Low,
+        // Nothing scored *and* every signal was actually checked.
+        0 if unverified.is_empty() => Suspicion::Low,
+        // Nothing scored, but at least one check could not run. Report it as
+        // Medium (visible, non-blocking) rather than silently passing.
+        0 => Suspicion::Medium,
         1..=2 => Suspicion::Medium,
         _ => Suspicion::High,
     };
@@ -170,6 +187,61 @@ impl Ecosystem {
     }
 }
 
+/// Is `name` a well-formed package name for `eco`?
+///
+/// Names reach us from manifests and lock files, which are attacker-controlled
+/// in a pull request, and we interpolate them into registry URLs. A name
+/// carrying URL syntax (`/`, `?`, `#`, `..`) would resolve to a *different*
+/// endpoint and yield a verdict for the wrong package — a silent fail-open on
+/// the very check this module exists to perform. Anything not plainly a package
+/// name is rejected before it is ever fetched.
+fn is_plausible_name(eco: Ecosystem, name: &str) -> bool {
+    // npm's published limit; comfortably above crates.io (64) and PyPI.
+    if name.is_empty() || name.len() > 214 || name == "." || name == ".." {
+        return false;
+    }
+
+    // npm scoped names are the only legitimate use of `@` and `/`.
+    if eco == Ecosystem::Npm
+        && let Some(scoped) = name.strip_prefix('@')
+    {
+        let Some((scope, rest)) = scoped.split_once('/') else {
+            return false;
+        };
+        return is_plain_segment(scope) && is_plain_segment(rest);
+    }
+
+    is_plain_segment(name)
+}
+
+/// One path segment's worth of package name: no URL syntax, no traversal.
+fn is_plain_segment(seg: &str) -> bool {
+    !seg.is_empty()
+        && seg != "."
+        && seg != ".."
+        && seg.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && seg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// Percent-encode `seg` for use as a single URL path segment.
+///
+/// Defence in depth behind [`is_plausible_name`]: `@` is left literal because
+/// registries expect it in scoped names and RFC 3986 permits it in a path
+/// segment, while `/` encodes to `%2F` exactly as the npm client sends it.
+fn encode_segment(seg: &str) -> String {
+    let mut out = String::with_capacity(seg.len());
+    for b in seg.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'@') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 enum Fetched {
     Json(serde_json::Value),
     NotFound,
@@ -180,8 +252,12 @@ enum Fetched {
 /// (network / transport / parse) outcome so the caller can fail **open** on the
 /// latter — an offline or air-gapped install is never blocked by a hiccup.
 fn get_json(url: &str) -> Fetched {
-    match ureq::get(url).set("User-Agent", USER_AGENT).call() {
-        Ok(resp) => match serde_json::from_reader(resp.into_reader()) {
+    match crate::utils::http::agent()
+        .get(url)
+        .set("User-Agent", USER_AGENT)
+        .call()
+    {
+        Ok(resp) => match crate::utils::http::read_json(resp) {
             Ok(v) => Fetched::Json(v),
             Err(_) => Fetched::Unavailable,
         },
@@ -221,7 +297,8 @@ fn parse_crates(v: &serde_json::Value) -> PackageMeta {
 }
 
 pub fn fetch_crates(name: &str) -> Option<PackageMeta> {
-    match get_json(&format!("https://crates.io/api/v1/crates/{name}")) {
+    let encoded = encode_segment(name);
+    match get_json(&format!("https://crates.io/api/v1/crates/{encoded}")) {
         Fetched::Json(v) => Some(parse_crates(&v)),
         Fetched::NotFound => Some(not_found()),
         Fetched::Unavailable => None,
@@ -239,7 +316,7 @@ fn parse_npm(v: &serde_json::Value) -> PackageMeta {
 }
 
 pub fn fetch_npm(name: &str) -> Option<PackageMeta> {
-    let encoded = name.replace('/', "%2F"); // scoped @scope/name
+    let encoded = encode_segment(name); // scoped @scope/name → @scope%2Fname
     match get_json(&format!("https://registry.npmjs.org/{encoded}")) {
         Fetched::Json(v) => {
             let mut meta = parse_npm(&v);
@@ -288,10 +365,11 @@ fn parse_pypi(v: &serde_json::Value) -> PackageMeta {
 }
 
 pub fn fetch_pypi(name: &str) -> Option<PackageMeta> {
-    match get_json(&format!("https://pypi.org/pypi/{name}/json")) {
+    let encoded = encode_segment(name);
+    match get_json(&format!("https://pypi.org/pypi/{encoded}/json")) {
         Fetched::Json(v) => {
             let mut meta = parse_pypi(&v);
-            let norm = name.to_lowercase().replace('_', "-");
+            let norm = encode_segment(&name.to_lowercase().replace('_', "-"));
             if let Fetched::Json(d) =
                 get_json(&format!("https://pypistats.org/api/packages/{norm}/recent"))
             {
@@ -336,6 +414,18 @@ pub fn guard(
     for raw in names {
         let name = raw.trim();
         if name.is_empty() || allow.iter().any(|a| a.eq_ignore_ascii_case(name)) {
+            continue;
+        }
+        if !is_plausible_name(eco, name) {
+            reports.push(SlopReport {
+                package: name.to_string(),
+                suspicion: Suspicion::High,
+                reasons: vec![format!(
+                    "'{name}' is not a well-formed {} package name — refusing to query the registry with it",
+                    eco.label()
+                )],
+                kind: "SLOPSQUAT",
+            });
             continue;
         }
         let internal = matches_internal(name, &policy.internal_patterns);
@@ -629,5 +719,88 @@ mod tests {
         let m = parse_npm(&v);
         assert!(m.exists && m.has_repository);
         assert!(m.age_days.unwrap() > 4000, "created in 2011");
+    }
+
+    // ── Name validation / URL safety ────────────────────────────────────────
+
+    #[test]
+    fn accepts_ordinary_package_names() {
+        assert!(is_plausible_name(Ecosystem::Cargo, "serde"));
+        assert!(is_plausible_name(Ecosystem::Cargo, "tree-sitter-rust"));
+        assert!(is_plausible_name(Ecosystem::Pypi, "python_dateutil"));
+        assert!(is_plausible_name(Ecosystem::Npm, "left-pad"));
+        assert!(is_plausible_name(Ecosystem::Npm, "@types/node"));
+    }
+
+    #[test]
+    fn rejects_names_carrying_url_syntax() {
+        // Each of these would have resolved to a *different* registry endpoint
+        // and produced a verdict for the wrong package.
+        for bad in [
+            "../../api/v1/crates/serde",
+            "serde?fields=x",
+            "serde#frag",
+            "serde/extra",
+            "..",
+            ".",
+            "",
+            "-leading-dash",
+        ] {
+            assert!(
+                !is_plausible_name(Ecosystem::Cargo, bad),
+                "should reject {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_npm_scopes() {
+        assert!(!is_plausible_name(Ecosystem::Npm, "@noslash"));
+        assert!(!is_plausible_name(Ecosystem::Npm, "@/empty-scope"));
+        assert!(!is_plausible_name(Ecosystem::Npm, "@scope/"));
+        assert!(!is_plausible_name(Ecosystem::Npm, "@scope/a/b"));
+    }
+
+    #[test]
+    fn encode_segment_neutralises_url_syntax_but_keeps_plain_names() {
+        assert_eq!(encode_segment("serde"), "serde");
+        assert_eq!(encode_segment("tree-sitter.rs_1~"), "tree-sitter.rs_1~");
+        assert_eq!(encode_segment("@types/node"), "@types%2Fnode");
+        assert_eq!(encode_segment("a?b#c"), "a%3Fb%23c");
+        assert_eq!(encode_segment("../x"), "..%2Fx");
+    }
+
+    // ── Unknown signals must not read as "clean" ────────────────────────────
+
+    #[test]
+    fn unverified_signals_do_not_clear_a_new_package() {
+        // Registry answered, but gave us neither an age nor an adoption figure
+        // (npm's downloads API is a separate, rate-limited call). The package
+        // declares a repo, so nothing scores — it must still not come back Low.
+        let meta = PackageMeta {
+            exists: true,
+            age_days: None,
+            downloads: None,
+            has_repository: true,
+        };
+        let r = score("mystery-pkg", &meta, false, &cfg());
+        assert_eq!(r.suspicion, Suspicion::Medium);
+        assert!(
+            r.reasons.iter().any(|s| s.contains("could not verify")),
+            "reasons should say what went unchecked: {:?}",
+            r.reasons
+        );
+    }
+
+    #[test]
+    fn fully_verified_healthy_package_is_low() {
+        let meta = PackageMeta {
+            exists: true,
+            age_days: Some(4000),
+            downloads: Some(50_000_000),
+            has_repository: true,
+        };
+        let r = score("serde", &meta, false, &cfg());
+        assert_eq!(r.suspicion, Suspicion::Low);
     }
 }

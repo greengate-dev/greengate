@@ -7,6 +7,8 @@
 /// | CI/UnpinnedAction                | medium   | `uses:` ref is a tag/branch, not a commit SHA  |
 /// | CI/ExpressionInjection           | critical | User-controlled `${{...}}` in a run: step      |
 /// | CI/PullRequestTargetWithCheckout | critical | `pull_request_target` + checkout of PR code    |
+use crate::modules::scanner::Severity;
+use crate::utils::output::ReportFormat;
 use crate::utils::terminal;
 use anyhow::Result;
 use regex::Regex;
@@ -23,11 +25,11 @@ pub struct CiLintFinding {
     pub line: usize,
     pub rule_id: &'static str,
     pub message: String,
-    pub severity: &'static str,
+    pub severity: Severity,
 }
 
-pub struct CiLintOpts<'a> {
-    pub format: &'a str,
+pub struct CiLintOpts {
+    pub format: ReportFormat,
     /// If Some, scan only this file. If None, auto-discover .github/workflows/.
     pub file: Option<String>,
 }
@@ -86,9 +88,9 @@ pub fn run_ci_lint(opts: CiLintOpts) -> Result<()> {
     }
 
     match opts.format {
-        "json" => emit_json(&all_findings)?,
-        "sarif" => emit_sarif(&all_findings)?,
-        _ => emit_text(&all_findings),
+        ReportFormat::Json => emit_json(&all_findings)?,
+        ReportFormat::Sarif => emit_sarif(&all_findings)?,
+        ReportFormat::Text => emit_text(&all_findings),
     }
 
     anyhow::bail!("CI lint: {} issue(s) found.", all_findings.len());
@@ -115,7 +117,7 @@ fn find_workflow_files() -> Vec<PathBuf> {
 
 // ── Per-file linter ───────────────────────────────────────────────────────────
 
-fn lint_workflow(path: &PathBuf) -> Result<Vec<CiLintFinding>> {
+fn lint_workflow(path: &Path) -> Result<Vec<CiLintFinding>> {
     let content = std::fs::read_to_string(path)?;
     let mut findings: Vec<CiLintFinding> = Vec::new();
 
@@ -150,7 +152,7 @@ fn check_line_patterns(path: &Path, content: &str) -> Vec<CiLintFinding> {
                          Pin to a full commit SHA to prevent supply-chain attacks: \
                          `{action}@<40-char-sha>`."
                     ),
-                    severity: "medium",
+                    severity: Severity::Medium,
                 });
             }
         }
@@ -166,7 +168,7 @@ fn check_line_patterns(path: &Path, content: &str) -> Vec<CiLintFinding> {
                      Assign the value to an env var first: `env: SAFE: ${{ expr }}` \
                      then reference `$SAFE` in `run:`."
                     .to_string(),
-                severity: "critical",
+                severity: Severity::Critical,
             });
         }
     }
@@ -248,7 +250,7 @@ fn check_prt_checkout(path: &Path, content: &str) -> Vec<CiLintFinding> {
                               arbitrary code with repo write access. Either remove the `ref:` \
                               override, or switch to `pull_request` trigger."
                         .to_string(),
-                    severity: "critical",
+                    severity: Severity::Critical,
                 });
                 break; // one finding per file is enough
             }
@@ -270,7 +272,7 @@ fn emit_text(findings: &[CiLintFinding]) {
         };
         eprintln!(
             "  [{}] [{}] {}\n    {}\n",
-            f.severity.to_uppercase(),
+            f.severity.as_str().to_uppercase(),
             f.rule_id,
             loc,
             f.message
@@ -313,11 +315,7 @@ fn emit_sarif(findings: &[CiLintFinding]) -> Result<()> {
     let results: Vec<_> = findings
         .iter()
         .map(|f| {
-            let level = match f.severity {
-                "critical" | "high" => "error",
-                "medium" => "warning",
-                _ => "note",
-            };
+            let level = f.severity.sarif_level();
             json!({
                 "ruleId": f.rule_id,
                 "level": level,

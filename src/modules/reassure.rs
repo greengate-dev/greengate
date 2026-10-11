@@ -29,7 +29,7 @@ struct ComponentResult {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_reassure(opts: ReassureOpts) -> Result<()> {
+pub fn run_reassure(opts: ReassureOpts<'_>) -> Result<()> {
     terminal::info(&format!("Parsing Reassure report: {}", opts.current));
 
     let current = load_report(opts.current)?;
@@ -46,7 +46,7 @@ pub fn run_reassure(opts: ReassureOpts) -> Result<()> {
         None => None,
     };
 
-    if baseline.is_none() {
+    let Some(base) = baseline else {
         eprintln!();
         eprintln!(
             "  {:<40}  {:>10}  {:>8}",
@@ -64,9 +64,8 @@ pub fn run_reassure(opts: ReassureOpts) -> Result<()> {
         eprintln!();
         terminal::info("No baseline provided — metrics reported above (no gating applied).");
         return Ok(());
-    }
+    };
 
-    let base = baseline.unwrap();
     let mut regressions = 0usize;
 
     eprintln!();
@@ -82,39 +81,31 @@ pub fn run_reassure(opts: ReassureOpts) -> Result<()> {
 
     for name in &names {
         let cur = &current.results[*name];
-        let delta_mean_str;
-        let delta_renders_str;
-        let flag;
+        let (delta_mean_str, delta_renders_str) = match base.results.get(*name) {
+            Some(base_res) => {
+                let pct = (cur.mean_time - base_res.mean_time) / base_res.mean_time * 100.0;
+                let renders_increased = cur.renders > base_res.renders;
+                let is_regressed = pct > opts.threshold || renders_increased;
+                if is_regressed {
+                    regressions += 1;
+                }
+                let flag = if is_regressed { " ❌" } else { "" };
 
-        if let Some(base_res) = base.results.get(*name) {
-            let pct = (cur.mean_time - base_res.mean_time) / base_res.mean_time * 100.0;
-            let renders_increased = cur.renders > base_res.renders;
-            let is_regressed = pct > opts.threshold || renders_increased;
-
-            if is_regressed {
-                regressions += 1;
-                flag = " ❌";
-            } else {
-                flag = "";
+                let delta_mean = if pct >= 0.0 {
+                    format!("+{:.1}%{}", pct, flag)
+                } else {
+                    format!("{:.1}%", pct)
+                };
+                let delta_renders = if renders_increased {
+                    format!("+{:.1} ❌", cur.renders - base_res.renders)
+                } else {
+                    "─".to_string()
+                };
+                (delta_mean, delta_renders)
             }
-
-            delta_mean_str = if pct >= 0.0 {
-                format!("+{:.1}%{}", pct, flag)
-            } else {
-                format!("{:.1}%", pct)
-            };
-
-            delta_renders_str = if renders_increased {
-                format!("+{:.1} ❌", cur.renders - base_res.renders)
-            } else {
-                "─".to_string()
-            };
-        } else {
             // New component — no baseline to compare
-            delta_mean_str = "new".to_string();
-            delta_renders_str = "─".to_string();
-            flag = "";
-        }
+            None => ("new".to_string(), "─".to_string()),
+        };
 
         eprintln!(
             "  {:<40}  {:>10.1}  {:>8.1}  {:>9}  {:>10}",
@@ -124,7 +115,6 @@ pub fn run_reassure(opts: ReassureOpts) -> Result<()> {
             delta_mean_str,
             delta_renders_str,
         );
-        let _ = flag; // suppress unused warning in the non-regression branch
     }
 
     eprintln!();

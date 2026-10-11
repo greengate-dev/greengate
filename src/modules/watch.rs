@@ -87,14 +87,14 @@ fn diff_snapshots(
 }
 
 fn run_scan_once(staged: bool) -> Result<()> {
-    let cfg = config::load();
+    let cfg = config::load()?;
     let diff = if staged {
         Some(scanner::DiffMode::Staged)
     } else {
         None
     };
 
-    let result = scanner::run_scan(ScanOpts {
+    let result = scanner::run_scan(&ScanOpts {
         format: OutputFormat::Text,
         diff,
         config: &cfg.scan,

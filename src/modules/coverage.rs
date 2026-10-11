@@ -202,7 +202,7 @@ pub fn run_coverage(file: &str, min: f64) -> Result<()> {
     below.sort_by(|a, b| {
         let pct_a = a.hit as f64 / a.found as f64;
         let pct_b = b.hit as f64 / b.found as f64;
-        pct_a.partial_cmp(&pct_b).unwrap()
+        pct_a.total_cmp(&pct_b)
     });
 
     if !below.is_empty() {

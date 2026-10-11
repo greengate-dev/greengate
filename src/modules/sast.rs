@@ -1,5 +1,6 @@
 use crate::modules::scanner::{
-    Finding, check_entropy, is_known_false_positive, is_sast_file, make_finding,
+    Finding, check_entropy, collect_scanned, is_sast_file, make_finding, pattern_hits,
+    scan_one_file,
 };
 use crate::modules::taint::{TaintCache, taint_for_sink};
 use crate::utils::{
@@ -20,7 +21,7 @@ use tree_sitter::{Language, Parser, Query, QueryCursor};
 /// Checks the matched line itself AND the line immediately after it.
 /// Formatters (Prettier, ESLint) often move `// greengate: ignore` comments
 /// inside object literals to the next line, e.g.:
-/// ```
+/// ```text
 ///   dangerouslySetInnerHTML={{          ← flagged line (row N)
 ///     // greengate: ignore               ← comment on row N+1
 ///     __html: sanitized,
@@ -142,24 +143,15 @@ fn scan_string_literals(
                 continue;
             }
 
-            // Run every secret/PII regex against the string literal value only
-            for (name, regex) in patterns {
-                if let Some(m) = regex.find(text) {
-                    if is_known_false_positive(m.as_str()) {
-                        continue;
-                    }
-                    findings.push(make_finding(
-                        path.to_path_buf(),
-                        name.clone(),
-                        line_no,
-                        None,
-                    ));
-                }
-            }
-
-            // Entropy check on the literal value itself
-            for rule_id in check_entropy(text, scan_config) {
-                findings.push(make_finding(path.to_path_buf(), rule_id, line_no, None));
+            // Every secret/PII regex and the entropy check run against the
+            // string literal value only.
+            for rule in pattern_hits(text, patterns).chain(check_entropy(text, scan_config)) {
+                findings.push(make_finding(
+                    path.to_path_buf(),
+                    rule.to_string(),
+                    line_no,
+                    None,
+                ));
             }
         }
     }
@@ -532,7 +524,7 @@ fn html_value_node<'a>(
 /// Returns true if `node` represents a known-safe HTML value:
 ///   • a static string / template literal with no interpolations
 ///   • a call to a known sanitizer function (DOMPurify.sanitize, JSON.stringify, …)
-fn is_safe_html_value(node: tree_sitter::Node, source: &[u8]) -> bool {
+fn is_safe_html_value(node: tree_sitter::Node<'_>, source: &[u8]) -> bool {
     match node.kind() {
         // Static string literal — no dynamic content, no injection vector
         "string" => true,
@@ -572,7 +564,7 @@ fn is_safe_html_value(node: tree_sitter::Node, source: &[u8]) -> bool {
 /// `regex.exec(str)`, `model.exec()`, and promise-chain `.exec()` calls are
 /// common patterns that do NOT involve child_process and should not be flagged.
 /// We suppress when the object is a known non-shell type or a regex literal.
-fn exec_is_non_shell(matched: tree_sitter::Node, source: &[u8]) -> bool {
+fn exec_is_non_shell(matched: tree_sitter::Node<'_>, source: &[u8]) -> bool {
     // matched is the call_expression; function is a member_expression
     let Some(func) = matched.child_by_field_name("function") else {
         return false;
@@ -843,7 +835,7 @@ const NESTING_NODE_KINDS: &[&str] = &[
 ];
 
 /// Returns the number of source lines occupied by a function node's body.
-fn count_function_lines(node: tree_sitter::Node) -> usize {
+fn count_function_lines(node: tree_sitter::Node<'_>) -> usize {
     let body = node.child_by_field_name("body").unwrap_or(node);
     let start = body.start_position().row;
     let end = body.end_position().row;
@@ -851,14 +843,14 @@ fn count_function_lines(node: tree_sitter::Node) -> usize {
 }
 
 /// Returns the number of formal parameters for a function-like node.
-fn count_parameters(node: tree_sitter::Node) -> usize {
+fn count_parameters(node: tree_sitter::Node<'_>) -> usize {
     node.child_by_field_name("parameters")
         .map(|p| p.named_child_count())
         .unwrap_or(0)
 }
 
 /// Recursively computes the maximum nesting depth within `node`.
-fn max_nesting_depth_in(node: tree_sitter::Node, current: usize) -> usize {
+fn max_nesting_depth_in(node: tree_sitter::Node<'_>, current: usize) -> usize {
     let mut depth = current;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -881,7 +873,7 @@ fn scan_complexity(
     let mut findings = Vec::new();
 
     // Iterative stack traversal — avoids recursion on deeply nested files.
-    let mut stack: Vec<tree_sitter::Node> = vec![tree.root_node()];
+    let mut stack: Vec<tree_sitter::Node<'_>> = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if FUNCTION_NODE_KINDS.contains(&node.kind()) {
             let line_no = node.start_position().row + 1;
@@ -951,6 +943,8 @@ fn scan_complexity(
 
 // ── Per-file scanner ──────────────────────────────────────────────────────────
 
+/// Read and scan one file; test convenience over [`scan_source`].
+#[cfg(test)]
 fn scan_file(
     path: &Path,
     sast_config: &SastConfig,
@@ -958,11 +952,25 @@ fn scan_file(
     scan_config: &ScanConfig,
     custom_rule_srcs: &[(String, String)],
 ) -> Vec<Finding> {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
+    let source = std::fs::read_to_string(path).expect("test fixture is readable UTF-8");
+    scan_source(
+        path,
+        &source,
+        sast_config,
+        secret_patterns,
+        scan_config,
+        custom_rule_srcs,
+    )
+}
 
+fn scan_source(
+    path: &Path,
+    source: &str,
+    sast_config: &SastConfig,
+    secret_patterns: &[(String, Regex)],
+    scan_config: &ScanConfig,
+    custom_rule_srcs: &[(String, String)],
+) -> Vec<Finding> {
     let lang = match language_for(path) {
         Some(l) => l,
         None => return Vec::new(),
@@ -980,7 +988,7 @@ fn scan_file(
     }
 
     // tree-sitter is error-tolerant; parse() returns None only on hard timeout/cancel.
-    let tree = match parser.parse(&source, None) {
+    let tree = match parser.parse(source, None) {
         Some(t) => t,
         None => return Vec::new(),
     };
@@ -1068,16 +1076,19 @@ pub fn run_sast_scan(
         })
         .collect();
 
-    let findings: Vec<Finding> = js_ts
+    let results: Vec<Result<Vec<Finding>, String>> = js_ts
         .par_iter()
-        .flat_map(|path| {
-            let result = scan_file(
-                path,
-                sast_config,
-                secret_patterns,
-                scan_config,
-                &custom_rule_srcs,
-            );
+        .map(|path| {
+            let result = scan_one_file(path, |source| {
+                scan_source(
+                    path,
+                    source,
+                    sast_config,
+                    secret_patterns,
+                    scan_config,
+                    &custom_rule_srcs,
+                )
+            });
             if let Some(b) = &bar {
                 b.inc(1);
             }
@@ -1089,7 +1100,7 @@ pub fn run_sast_scan(
         b.finish_with_message("SAST scan complete.");
     }
 
-    Ok(findings)
+    Ok(collect_scanned(results))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
