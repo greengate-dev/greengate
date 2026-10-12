@@ -13,7 +13,9 @@
 //!    including the helper files its scripts call.
 //! 5. **Execute** — run approved scripts one package at a time, dependencies
 //!    first: in a sandbox when available (no network, writes confined to the
-//!    package, credentials masked), always with a scrubbed environment.
+//!    package, private home, project secrets masked), always with an
+//!    allowlisted environment. Unfinished checks stop the install before
+//!    this phase (and before fetching) unless `on_incomplete = "warn"`.
 //! 6. **Verify files** — unisolated, compare the tree before and after each
 //!    script and watch for files that appear and vanish.
 //!
@@ -32,7 +34,7 @@ mod yarn;
 
 use crate::deps::Lockfile;
 use crate::modules::{deps_check, slopsquat};
-use crate::report::{Check, Finding, Report, Severity};
+use crate::report::{Check, Finding, OnIncomplete, Report, Severity, Status};
 use crate::utils::config::SupplyChainConfig;
 use crate::utils::terminal;
 use anyhow::{Result, bail};
@@ -46,6 +48,9 @@ pub struct InstallOpts<'a> {
     pub plan_only: bool,
     pub isolate: IsolateMode,
     pub no_fail: bool,
+    /// `[policy] on_incomplete` (or `--allow-incomplete`): whether an
+    /// unfinished check stops the install before package code runs.
+    pub on_incomplete: OnIncomplete,
     pub policy: &'a SupplyChainConfig,
     /// Where advisories come from (`[audit] source`).
     pub audit: &'a crate::utils::config::AuditConfig,
@@ -134,6 +139,98 @@ fn package_finding(
         *source = Some(dir.to_path_buf());
     }
     f
+}
+
+/// The gate between phases: whether the install stops here, before the next
+/// phase downloads or runs package code. It stops on a blocking finding, on
+/// a check that failed to run, and on one left incomplete unless
+/// `on_incomplete` is `warn` — so a run that will exit non-zero never runs
+/// package code first. The caller says what was (not) done.
+fn must_halt(report: &Report, opts: &InstallOpts<'_>) -> bool {
+    (!report.findings.is_empty() && !opts.no_fail) || unfinished(report, opts)
+}
+
+/// Whether a check failed to run or (under `on_incomplete = "fail"`) did
+/// not finish — either way the run will not pass, so no package code may
+/// run after it.
+fn unfinished(report: &Report, opts: &InstallOpts<'_>) -> bool {
+    let blocking = report
+        .unfinished()
+        .any(|c| c.status == Status::Error || opts.on_incomplete == OnIncomplete::Fail);
+    if blocking {
+        terminal::warn(
+            "Not every check finished, and an unchecked dependency is not a safe one \
+             (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).",
+        );
+    }
+    blocking
+}
+
+/// `[supply_chain] require_isolation` with no sandbox: records that `what`
+/// was not run and returns true, so the caller stops before running it.
+fn isolation_missing(
+    report: &mut Report,
+    opts: &InstallOpts<'_>,
+    isolation: sandbox::Isolation,
+    what: &str,
+) -> bool {
+    if isolation != sandbox::Isolation::None || !opts.policy.require_isolation {
+        return false;
+    }
+    report.checks.push(Check::incomplete(
+        "install:execute",
+        format!("no sandbox is available and [supply_chain] require_isolation is set — {what}"),
+    ));
+    print_install(report, "");
+    true
+}
+
+/// Refuse caller arguments that would undo a flag greengate sets for a phase
+/// (`--ignore-scripts=false`, `--no-package-lock-only`, `--mode skip-build`…),
+/// and `--`, after which greengate's own flags would stop being flags. Each
+/// of `owned` (without dashes) may only appear in its affirmative form; a
+/// `name=value` entry allows exactly that value too.
+fn reject_overrides(manager: &str, args: &[String], owned: &[&str]) -> Result<()> {
+    for (i, a) in args.iter().enumerate() {
+        if a == "--" {
+            bail!(
+                "`--` is not supported by greengate install: greengate adds its own {manager} flags after yours"
+            );
+        }
+        let Some(flag) = a.strip_prefix("--") else {
+            continue;
+        };
+        let (name, value) = match flag.split_once('=') {
+            Some((n, v)) => (n, Some(v)),
+            None => (flag, None),
+        };
+        let negated = name.strip_prefix("no-");
+        for o in owned {
+            let (o_name, o_value) = match o.split_once('=') {
+                Some((n, v)) => (n, Some(v)),
+                None => (*o, None),
+            };
+            let next = args.get(i + 1).map(String::as_str);
+            let affirmative = match (o_value, value) {
+                (None, None) => !matches!(next, Some("false" | "0")),
+                (None, Some(v)) => matches!(v, "true" | "1"),
+                (Some(want), Some(v)) => want == v,
+                (Some(want), None) => next == Some(want),
+            };
+            if negated == Some(o_name) || (name == o_name && !affirmative) {
+                bail!(
+                    "`{a}` conflicts with how greengate install runs {manager}: it sets `--{o_name}` itself so no package code runs before the checks"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether the caller asked that no install scripts run at all.
+fn ignore_scripts(args: &[String]) -> bool {
+    args.iter()
+        .any(|a| matches!(a.as_str(), "--ignore-scripts" | "--ignore-scripts=true"))
 }
 
 /// Phase 1 policy: `deps check` on everything the planned lockfile adds or
@@ -372,5 +469,81 @@ fn print_install(report: &Report, note: &str) {
             }
         }
         terminal::success("greengate install: done.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::config::Config;
+
+    fn opts(cfg: &Config, on_incomplete: OnIncomplete, no_fail: bool) -> InstallOpts<'_> {
+        InstallOpts {
+            manager: "npm".into(),
+            args: Vec::new(),
+            plan_only: false,
+            isolate: IsolateMode::None,
+            no_fail,
+            on_incomplete,
+            policy: &cfg.supply_chain,
+            audit: &cfg.audit,
+            review: &cfg.dependency_review,
+            now: 0,
+            pip: "pip".into(),
+        }
+    }
+
+    #[test]
+    fn unfinished_checks_halt_before_package_code_runs() {
+        let cfg: Config = toml::from_str("").unwrap();
+        let mut r = Report::new("install");
+        r.checks.push(Check::passed("install:plan"));
+        assert!(!must_halt(&r, &opts(&cfg, OnIncomplete::Fail, false)));
+
+        r.checks
+            .push(Check::incomplete("osv", "offline snapshot missing"));
+        assert!(must_halt(&r, &opts(&cfg, OnIncomplete::Fail, false)));
+        // `--no-fail` waives findings, not unchecked dependencies.
+        assert!(must_halt(&r, &opts(&cfg, OnIncomplete::Fail, true)));
+        assert!(!must_halt(&r, &opts(&cfg, OnIncomplete::Warn, false)));
+
+        r.checks.push(Check::error("registry", "unreachable"));
+        assert!(must_halt(&r, &opts(&cfg, OnIncomplete::Warn, false)));
+    }
+
+    #[test]
+    fn require_isolation_stops_unisolated_runs() {
+        let cfg: Config = toml::from_str("[supply_chain]\nrequire_isolation = true\n").unwrap();
+        let o = opts(&cfg, OnIncomplete::Fail, false);
+        let mut r = Report::new("install");
+        assert!(!isolation_missing(
+            &mut r,
+            &o,
+            sandbox::Isolation::Bwrap,
+            "x"
+        ));
+        assert!(isolation_missing(&mut r, &o, sandbox::Isolation::None, "x"));
+        assert_eq!(r.exit_code(OnIncomplete::Fail), 3);
+    }
+
+    #[test]
+    fn overrides_of_phase_flags_are_refused() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let owned = &["ignore-scripts", "mode=skip-build"];
+        assert!(reject_overrides("x", &a(&["--ignore-scripts"]), owned).is_ok());
+        assert!(reject_overrides("x", &a(&["--mode=skip-build"]), owned).is_ok());
+        assert!(reject_overrides("x", &a(&["--mode", "skip-build"]), owned).is_ok());
+        for bad in [
+            &["--ignore-scripts=false"][..],
+            &["--no-ignore-scripts"],
+            &["--ignore-scripts", "false"],
+            &["--mode=update-lockfile"],
+            &["--mode", "skip-cache"],
+            &["--"],
+        ] {
+            assert!(reject_overrides("x", &a(bad), owned).is_err(), "{bad:?}");
+        }
+        assert!(ignore_scripts(&a(&["ci", "--ignore-scripts=true"])));
+        assert!(!ignore_scripts(&a(&["ci"])));
     }
 }

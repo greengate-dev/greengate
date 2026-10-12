@@ -14,7 +14,8 @@ This page tracks planned features and the reasoning behind their prioritisation.
 - **[`greengate install`](/commands/install)** replaces the planned
   `sandbox-install`: no package code runs before the complete tree is
   checked, and install scripts run one package at a time in bubblewrap with
-  no network, the system read-only and credentials masked — without Docker
+  no network, the system read-only, a private home and an allowlisted
+  environment — without Docker
   or an async runtime. `watch-install`, `pip-install` and `cargo-add` route
   through it and are removed in 0.5.
 - **[`deps review`](/commands/deps#deps-review-what-a-change-does-to-the-dependency-tree)**

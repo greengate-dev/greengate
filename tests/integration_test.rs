@@ -701,11 +701,11 @@ fn write_lodash_lock(dir: &std::path::Path) {
 }
 
 /// A port nothing listens on: bind, note the port, close.
+/// A URL nothing answers. Port 1 is privileged and never handed out for
+/// `bind(0)`, so — unlike a just-released ephemeral port — a fake server in
+/// a test running in parallel cannot take it over.
 fn closed_port_url() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener);
-    format!("http://{addr}")
+    "http://127.0.0.1:1".into()
 }
 
 #[test]
@@ -2835,6 +2835,84 @@ fn install_plan_changes_nothing() {
 }
 
 #[test]
+fn install_ignore_scripts_runs_no_dependency_script() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("builder", BUILD)]);
+    let (code, report, stderr) = install(
+        dir.path(),
+        &["--isolate", "none", "npm", "install", "--ignore-scripts"],
+    );
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    assert!(dir.path().join("node_modules/builder/index.js").is_file());
+    assert!(
+        !dir.path().join("node_modules/builder/build/out").exists(),
+        "a dependency script ran despite --ignore-scripts"
+    );
+    assert!(!dir.path().join("root-ran").exists());
+}
+
+#[test]
+fn install_plan_flags_cannot_be_turned_off() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("builder", BUILD)]);
+    let (code, _, stderr) = install(
+        dir.path(),
+        &[
+            "--plan",
+            "npm",
+            "install",
+            "--ignore-scripts=false",
+            "--package-lock-only=false",
+        ],
+    );
+    assert_eq!(code, Some(4), "{stderr}");
+    assert!(
+        stderr.contains("conflicts with how greengate install runs npm"),
+        "{stderr}"
+    );
+    assert!(!dir.path().join("node_modules").exists());
+    assert!(!dir.path().join("root-ran").exists());
+}
+
+#[test]
+fn install_pip_honours_require_isolation() {
+    let dir = tempfile::tempdir().unwrap();
+    // A pip that records being run: it must not be.
+    let pip = dir.path().join("fake-pip");
+    std::fs::write(&pip, "#!/bin/sh\ntouch \"$(dirname \"$0\")/pip-ran\"\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&pip, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\nrequire_isolation = true\n",
+    )
+    .unwrap();
+    let (code, report, stderr) = install(
+        dir.path(),
+        &[
+            "--isolate",
+            "none",
+            "--pip",
+            pip.to_str().unwrap(),
+            "pip",
+            "install",
+            "requests",
+        ],
+    );
+    assert_eq!(code, Some(3), "{stderr}\n{report}");
+    assert!(!dir.path().join("pip-ran").exists(), "pip ran unisolated");
+}
+
+#[test]
 fn install_rejects_non_install_commands() {
     let dir = tempfile::tempdir().unwrap();
     let (code, _, stderr) = install(dir.path(), &["npm", "run", "build"]);
@@ -3399,6 +3477,53 @@ fn scan_new_since_reports_only_new_findings() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn pipeline_scan_step_honours_new_since() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init_git_repo(d);
+    std::fs::write(d.join("old.py"), format!("KEY = \"{KEY_A}\"\n")).unwrap();
+    std::fs::write(
+        d.join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"scan --new-since HEAD\"]\n",
+    )
+    .unwrap();
+    git_commit_all(d, "base");
+
+    // The existing finding is not new: the step passes, as `scan` does.
+    let (code, report) = report_of(d, &["scan", "--new-since", "HEAD"]);
+    assert_eq!(code, Some(0), "{report}");
+    let (code, report) = report_of(d, &["run"]);
+    assert_eq!(code, Some(0), "{report}");
+
+    // A new one fails both.
+    std::fs::write(d.join("new.py"), "N = \"AKIAMNBVCXZLKJHGFD78\"\n").unwrap();
+    let (code, report) = report_of(d, &["run"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(finding_paths(&report, "findings"), ["new.py:1"]);
+}
+
+#[test]
+fn pipeline_step_with_unknown_flag_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"scan --new-sinse HEAD\"]\n",
+    )
+    .unwrap();
+    let output = Command::new(binary())
+        .arg("run")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not take '--new-sinse'"),
+        "stderr: {stderr}"
+    );
 }
 
 #[test]

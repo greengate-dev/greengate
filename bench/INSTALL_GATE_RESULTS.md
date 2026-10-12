@@ -1,6 +1,6 @@
 # greengate install gate — benchmark results
 
-_Generated 2026-10-12 14:53 UTC · greengate 0.3.4 · 15 scenarios · 3 trial(s) per scenario and mode._
+_Generated 2026-10-12 15:25 UTC · greengate 0.4.0 · 15 scenarios · 3 trial(s) per scenario and mode._
 
 > `greengate install` driving real npm, pip and cargo against a local fixture registry. Payloads are inert but observable (a canary in $HOME, a request to the fixture server, a change to another package, a .pth left in site-packages); outcomes are judged by whether that effect happened. No internet access; no real malware.
 
@@ -34,7 +34,7 @@ Added wall time over the same install without greengate (benign scenarios): medi
 | Benign installs passed but broken | 0 / 21 |
 | Errors / skipped | 0 / 0 |
 
-Added wall time over the same install without greengate (benign scenarios): median 0.3 s, max 1.5 s.
+Added wall time over the same install without greengate (benign scenarios): median 0.3 s, max 1.0 s.
 
 ## Registry metadata and OSV unreachable
 
@@ -42,11 +42,10 @@ Every scenario again (`--isolate bwrap` when available), with release metadata a
 
 | Result | Trials |
 |---|---:|
-| incomplete | 8 |
-| blocked | 2 |
+| incomplete | 10 |
 | nothing to look up | 5 |
 
-Of the 10 trial(s) that needed metadata, **0 passed unchecked** (8 incomplete, 2 blocked). Installs of an unchanged lockfile (`npm ci`) look nothing up: release checks cover what an install adds or changes.
+Of the 10 trial(s) that needed metadata, **0 passed unchecked** (10 incomplete, 0 blocked). Installs of an unchanged lockfile (`npm ci`) look nothing up: release checks cover what an install adds or changes.
 
 ## Scenarios
 
@@ -76,4 +75,4 @@ Of the 10 trial(s) that needed metadata, **0 passed unchecked** (8 incomplete, 2
 - `npm-prebuilt-download` uses the documented allowlists (`allow_postinstall`, `script_network`), as a real esbuild-style package would.
 - These are a dozen curated scenarios, not a measure of real-world attack prevalence.
 
-- Environment: Linux-7.2.8-200.fc44.x86_64-x86_64-with-glibc2.43; Python 3.14.7; binary SHA-256 `fb06b796c47b9516b20777394e2fad2ff0d7bb4f953110724600fe6a93eeb889`.
+- Environment: Linux-7.2.8-200.fc44.x86_64-x86_64-with-glibc2.43; Python 3.14.7; binary SHA-256 `ad37ddc7f85e09c07b99cfe4400afe89430cc8c6d232b123e8b5fbaef836c116`.

@@ -27,6 +27,15 @@ pub fn parse_args(args: &[String]) -> Result<Sub> {
     {
         bail!("greengate install does not handle global installs");
     }
+    if rest
+        .iter()
+        .any(|a| a == "-C" || a == "--prefix" || a.starts_with("--prefix="))
+    {
+        bail!(
+            "--prefix is not supported by greengate install; run it from that directory instead"
+        );
+    }
+    super::reject_overrides("npm", rest, PLAN_FLAGS)?;
     match sub.as_str() {
         "install" | "i" | "in" | "add" | "isntall" => Ok(Sub::Install(rest.to_vec())),
         "ci" | "clean-install" | "install-clean" => Ok(Sub::Ci(rest.to_vec())),
@@ -60,6 +69,9 @@ impl Sub {
             .collect()
     }
 }
+
+/// What the plan step sets; the caller may not turn these off.
+const PLAN_FLAGS: &[&str] = &["package-lock-only", "ignore-scripts", "package-lock"];
 
 pub const MANIFESTS: &[&str] = &[
     "package.json",
@@ -196,7 +208,8 @@ fn run(cmd: &mut Command, what: &str) -> Result<()> {
 }
 
 /// Phase 1: resolve the tree into `work/package-lock.json` without
-/// downloading packages or running any code.
+/// downloading packages or running any code. greengate's flags come after
+/// the caller's: npm takes the last value of an option.
 pub fn plan(work: &Path, sub: &Sub) -> Result<()> {
     match sub {
         Sub::Ci(_) => {
@@ -208,16 +221,12 @@ pub fn plan(work: &Path, sub: &Sub) -> Result<()> {
             Ok(())
         }
         Sub::Install(args) => run(
-            npm()
-                .current_dir(work)
-                .args([
-                    "install",
-                    "--package-lock-only",
-                    "--ignore-scripts",
-                    "--no-audit",
-                    "--no-fund",
-                ])
-                .args(args),
+            npm().current_dir(work).arg("install").args(args).args([
+                "--package-lock-only",
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+            ]),
             "`npm install --package-lock-only`",
         ),
     }
@@ -280,5 +289,27 @@ mod tests {
         assert_eq!(sub.ci_flags(), ["--omit=dev"]);
         assert!(parse_args(&args(&["run", "build"])).is_err());
         assert!(parse_args(&args(&["install", "-g", "x"])).is_err());
+        assert!(parse_args(&args(&["install", "--prefix", "app", "x"])).is_err());
+    }
+
+    #[test]
+    fn plan_flags_cannot_be_turned_off() {
+        for bad in [
+            &["install", "--ignore-scripts=false"][..],
+            &["install", "--package-lock-only=false"],
+            &["install", "--no-package-lock-only"],
+            &["install", "--ignore-scripts", "false"],
+            &["install", "--no-package-lock"],
+            &["ci", "--", "--ignore-scripts"],
+        ] {
+            assert!(parse_args(&args(bad)).is_err(), "{bad:?}");
+        }
+        for ok in [
+            &["ci", "--ignore-scripts"][..],
+            &["install", "--ignore-scripts=true", "left-pad"],
+            &["install", "--package-lock-only"],
+        ] {
+            assert!(parse_args(&args(ok)).is_ok(), "{ok:?}");
+        }
     }
 }

@@ -45,6 +45,12 @@ pub enum Sub {
 }
 
 pub fn parse_args(args: &[String]) -> Result<Sub> {
+    if args.iter().any(|a| a == "--cwd" || a.starts_with("--cwd=")) {
+        bail!("--cwd is not supported by greengate install; run it from that directory instead");
+    }
+    // `ignore-scripts` (Yarn 1) and `mode=skip-build` (Berry) ask for less,
+    // never more; any other `--mode` would change what the plan does.
+    super::reject_overrides("yarn", args, &["ignore-scripts", "mode=skip-build"])?;
     match args.split_first() {
         None => Ok(Sub::Install(Vec::new())),
         Some((sub, rest)) => match sub.as_str() {
@@ -73,29 +79,41 @@ fn run(cmd: &mut Command, what: &str) -> Result<()> {
     Ok(())
 }
 
-fn without<'a>(args: &'a [String], drop: &[&str]) -> impl Iterator<Item = &'a String> {
-    let drop: Vec<String> = drop.iter().map(|d| d.to_string()).collect();
-    args.iter().filter(move |a| !drop.contains(a))
+/// `args` without `drop`, and without a `--mode skip-build` pair (the plan
+/// has its own mode).
+fn without<'a>(args: &'a [String], drop: &[&str]) -> Vec<&'a String> {
+    let mut out = Vec::new();
+    let mut it = args.iter().peekable();
+    while let Some(a) = it.next() {
+        if a == "--mode" && it.peek().is_some_and(|v| *v == "skip-build") {
+            it.next();
+        } else if !drop.contains(&a.as_str()) && a != "--mode=skip-build" {
+            out.push(a);
+        }
+    }
+    out
 }
 
+/// Whether the caller asked Berry to skip builds.
+pub fn skip_build(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--mode=skip-build")
+        || args
+            .windows(2)
+            .any(|w| w[0] == "--mode" && w[1] == "skip-build")
+}
+
+/// greengate's flags come after the caller's, so they are the ones that hold.
 pub fn plan(work: &Path, sub: &Sub, berry: bool) -> Result<()> {
     let mut cmd = yarn(work);
-    match (sub, berry) {
-        (Sub::Install(a), false) => {
-            cmd.args(["install", "--ignore-scripts", "--non-interactive"])
-                .args(without(a, &["--frozen-lockfile", "--immutable"]));
-        }
-        (Sub::Add(a), false) => {
-            cmd.args(["add", "--ignore-scripts", "--non-interactive"])
-                .args(a);
-        }
-        (Sub::Install(a), true) => {
-            cmd.args(["install", "--mode=update-lockfile"])
-                .args(without(a, &["--immutable", "--frozen-lockfile"]));
-        }
-        (Sub::Add(a), true) => {
-            cmd.args(["add", "--mode=update-lockfile"]).args(a);
-        }
+    let lock_flags = ["--frozen-lockfile", "--immutable"];
+    match sub {
+        Sub::Install(a) => cmd.arg("install").args(without(a, &lock_flags)),
+        Sub::Add(a) => cmd.arg("add").args(without(a, &[])),
+    };
+    if berry {
+        cmd.arg("--mode=update-lockfile");
+    } else {
+        cmd.args(["--ignore-scripts", "--non-interactive"]);
     }
     run(&mut cmd, "the yarn plan")
 }

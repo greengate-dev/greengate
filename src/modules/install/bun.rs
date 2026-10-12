@@ -27,6 +27,10 @@ pub fn parse_args(args: &[String]) -> Result<Sub> {
     if rest.iter().any(|a| a == "-g" || a == "--global") {
         bail!("greengate install does not handle global installs");
     }
+    if rest.iter().any(|a| a == "--cwd" || a.starts_with("--cwd=")) {
+        bail!("--cwd is not supported by greengate install; run it from that directory instead");
+    }
+    super::reject_overrides("bun", rest, &["lockfile-only", "ignore-scripts"])?;
     match sub.as_str() {
         "install" | "i" => Ok(Sub::Install(rest.to_vec())),
         "add" | "a" => Ok(Sub::Add(rest.to_vec())),
@@ -48,17 +52,19 @@ fn run(cmd: &mut Command, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// greengate's flags come after the caller's.
 pub fn plan(work: &Path, sub: &Sub) -> Result<()> {
     let mut cmd = bun(work);
     match sub {
         Sub::Install(a) => {
-            cmd.args(["install", "--lockfile-only"])
+            cmd.arg("install")
                 .args(a.iter().filter(|x| *x != "--frozen-lockfile"));
         }
         Sub::Add(a) => {
-            cmd.args(["add", "--lockfile-only"]).args(a);
+            cmd.arg("add").args(a);
         }
     }
+    cmd.args(["--lockfile-only", "--ignore-scripts"]);
     run(&mut cmd, "`bun --lockfile-only`")
 }
 

@@ -7,7 +7,7 @@
 /// Each step is either a bare command name ("scan") or a command with flags
 /// ("coverage --min 80"). The runner dispatches directly to the same module
 /// functions used by the CLI, so no subprocess spawning is needed.
-use crate::modules::scanner::{DiffMode, OutputFormat, ScanOpts};
+use crate::modules::scanner::{OutputFormat, ScanOpts};
 use crate::modules::tia::TiaFormat;
 use crate::report::{Check, OnIncomplete, Report, Status};
 use crate::utils::output::ReportFormat;
@@ -169,7 +169,94 @@ fn baseline_policy(args: &[&str], cfg: &config::Config) -> crate::modules::suppr
     )
 }
 
+/// The flags each step takes: (switches, flags with a value, flags whose
+/// value is optional). Anything else fails the step instead of being
+/// silently ignored.
+fn step_flags(
+    command: &str,
+) -> Option<(
+    &'static [&'static str],
+    &'static [&'static str],
+    &'static [&'static str],
+)> {
+    Some(match command {
+        "scan" => (
+            &["--staged", "--history", "--since-baseline"],
+            &["--changed-since", "--since"],
+            &["--new-since"],
+        ),
+        "lint" => (&[], &["--dir"], &[]),
+        "docker-lint" => (&[], &["--file"], &[]),
+        "coverage" => (&[], &["--file", "--min"], &[]),
+        "audit" => (&["--offline", "--since-baseline"], &[], &[]),
+        "lighthouse" => (&[], &["--url"], &[]),
+        "reassure" => (&[], &["--current", "--baseline"], &[]),
+        "review" => (
+            &["--staged", "--annotate"],
+            &[
+                "--base",
+                "--coverage-file",
+                "--min-coverage",
+                "--complexity-budget",
+                "--format",
+            ],
+            &[],
+        ),
+        "tia" => (&["--staged"], &["--base", "--format"], &[]),
+        "sbom" => (&[], &["--output", "--lockfile"], &[]),
+        "deps-check" => (&["--all"], &["--base"], &[]),
+        "deps-review" => (&["--annotate"], &["--base"], &[]),
+        "ci-lint" => (&[], &["--format", "--file"], &[]),
+        _ => return None,
+    })
+}
+
+fn check_step_flags(command: &str, args: &[&str]) -> Result<()> {
+    let Some((switches, values, optional)) = step_flags(command) else {
+        return Ok(()); // an unknown step fails in dispatch
+    };
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i];
+        if values.contains(&a) {
+            if args.get(i + 1).is_none_or(|v| v.starts_with("--")) {
+                anyhow::bail!("step '{command}': {a} needs a value");
+            }
+            i += 1;
+        } else if optional.contains(&a) {
+            if args.get(i + 1).is_some_and(|v| !v.starts_with("--")) {
+                i += 1;
+            }
+        } else if !switches.contains(&a) {
+            anyhow::bail!(
+                "step '{command}' does not take '{a}' (it takes: {})",
+                switches
+                    .iter()
+                    .chain(values)
+                    .chain(optional)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+/// The value of a flag whose value is optional: `Some("")` when it has none.
+fn optional_value<'a>(args: &[&'a str], flag: &str) -> Option<&'a str> {
+    let i = args.iter().position(|a| *a == flag)?;
+    Some(
+        args.get(i + 1)
+            .copied()
+            .filter(|v| !v.starts_with("--"))
+            .unwrap_or(""),
+    )
+}
+
 fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report> {
+    check_step_flags(command, args)?;
     match command {
         "scan" => {
             let staged = args.contains(&"--staged");
@@ -177,13 +264,14 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
                 .or_else(|| flag_value(args, "--since"))
                 .map(str::to_string);
             let history = args.contains(&"--history");
-            let diff = if history {
-                Some(DiffMode::History)
-            } else if staged {
-                Some(DiffMode::Staged)
-            } else {
-                since.map(DiffMode::Since)
-            };
+            let new_since = optional_value(args, "--new-since");
+            if new_since.is_some() && (staged || history || since.is_some()) {
+                anyhow::bail!(
+                    "step 'scan': --new-since cannot be combined with --staged, --history or --changed-since"
+                );
+            }
+            let (diff, new_since) =
+                crate::modules::scanner::select_diff(staged, history, since, new_since)?;
             crate::modules::scanner::run_scan(
                 &ScanOpts {
                     format: OutputFormat::Text,
@@ -192,6 +280,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
                     sast_config: &cfg.sast,
                 },
                 baseline_policy(args, cfg),
+                new_since.as_ref(),
             )
         }
 

@@ -5,7 +5,8 @@
 
 use super::sandbox::{self, Isolation, Sandbox};
 use super::{
-    Backup, InstallOpts, Scratch, inspect, package_finding, plan_policy, print_install, rel,
+    Backup, InstallOpts, Scratch, inspect, isolation_missing, must_halt, package_finding,
+    plan_policy, print_install, rel,
 };
 use crate::deps;
 use crate::modules::pip_audit::extract_package_names;
@@ -204,6 +205,18 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
     {
         plan_args.clear(); // install exactly the committed lockfile
     }
+    // Locking and syncing both run sdist build backends.
+    if (!plan_args.is_empty() || !opts.plan_only)
+        && isolation_missing(
+            &mut report,
+            &opts,
+            isolation,
+            "uv runs sdist build code while locking and syncing, so nothing was run",
+        )
+    {
+        backup.restore()?;
+        return Ok(report);
+    }
     let before = inspect::snapshot(&project, skip);
     if !plan_args.is_empty() {
         let (ok, log) = run_uv(plan_args.clone(), false)?;
@@ -246,7 +259,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
         )),
         &opts,
     )?;
-    if opts.plan_only || (!report.findings.is_empty() && !opts.no_fail) {
+    if opts.plan_only || must_halt(&report, &opts) {
         backup.restore()?;
         print_install(
             &report,

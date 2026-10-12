@@ -1,6 +1,6 @@
 ---
 title: 'install — Inspect Before Any Package Code Runs'
-description: 'Install npm, pnpm, Yarn, Bun, pip, uv and Cargo dependencies with no package code running before greengate has checked the complete tree: plan, fetch with scripts off, inspect every install script, then run approved scripts in a bubblewrap sandbox with no network, confined writes and masked credentials.'
+description: 'Install npm, pnpm, Yarn, Bun, pip, uv and Cargo dependencies with no package code running before greengate has checked the complete tree: plan, fetch with scripts off, inspect every install script, then run approved scripts in a bubblewrap sandbox with no network, confined writes, a private home directory and an allowlisted environment.'
 ---
 
 # install — Inspect Before Any Package Code Runs
@@ -55,17 +55,33 @@ suspicious ones block (`INSTALL/StartupCode`).
 `--plan` stops after **Inspect**, working entirely in the scratch copy: the
 project is not modified and no package code runs.
 
+The install stops before any phase that downloads or runs package code when
+a check failed to run, or did not finish (an unreachable registry, a missing
+offline OSV snapshot) — unless `[policy] on_incomplete = "warn"` or
+`--allow-incomplete`. A run that will exit non-zero never runs package code
+first.
+
+The flags greengate sets for a phase cannot be turned off from the command
+line: `--ignore-scripts=false`, `--no-package-lock-only`, a Berry `--mode`
+other than `skip-build`, `--` and the like are refused. `--prefix`, `--dir`
+and `--cwd` are refused too; run greengate from that directory.
+
 ## How scripts run
 
 With **bubblewrap** (Linux, `--isolate auto` picks it when it works), each
 package's scripts run in a sandbox where:
 
-- the whole system is read-only except that package's own directory and a
-  private temp directory,
+- the system is read-only, and writes are confined to that package's own
+  directory and a private temp directory,
+- the home directory, `/tmp` and `/run` are private and empty, except the
+  toolchains a build needs (`PATH` entries, `~/.nvm`, `~/.cargo`, `~/.rustup`,
+  `~/.local/share/uv`, node-gyp headers, …), which stay read-only; credential
+  files inside those (`~/.cargo/credentials`, …) stay masked,
+- the project's secret files are masked: `.env` and `.env.*`, `.npmrc`,
+  `.yarnrc.yml`, `.pypirc`, `.netrc`, `.git-credentials`, `.git/config`,
 - there is no network (unless the package is listed in
-  `[supply_chain] script_network`),
-- credential files are masked (`~/.ssh`, `~/.aws`, `~/.npmrc`, `~/.netrc`,
-  `~/.config/gh`, a project `.npmrc`, …).
+  `[supply_chain] script_network`), and the script has its own namespaces
+  and terminal session.
 
 A package's own code will run at runtime anyway; the sandbox makes sure
 install time grants it nothing more. So a script with suspicious patterns is
@@ -79,11 +95,20 @@ scripts are **not run** unless the package is in
 `[supply_chain] allow_postinstall`, and writes outside the package are
 detected afterwards (`INSTALL/ForeignWrite`, `INSTALL/PhantomFile`) rather
 than prevented. Set `[supply_chain] require_isolation = true` to refuse to
-run scripts at all without a sandbox (the run is then incomplete).
+run package code at all without a sandbox (the run is then incomplete). For
+pip and uv that includes planning, which runs sdist build backends.
 
-In both modes, environment variables that look like credentials
-(`*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `AWS_*`, `SSH_AUTH_SOCK`, …) are removed
-from install scripts; keep specific ones with `[supply_chain] env_allow`.
+In both modes, install scripts see an **allowlisted environment**: `PATH`,
+`HOME`, locale, compilers and their flags, `pkg-config`, CA bundles, proxies,
+toolchain locations and package-manager settings (`npm_config_*`, `PIP_*`,
+`UV_*`, `YARN_*`, `CARGO_*`, `NODE_*`, …). Everything else is removed —
+`DATABASE_URL`, `REDIS_URL` and the like included — and so is anything that
+looks like a credential (`*_TOKEN`, `*_KEY`, `*_SECRET`, `*PASSWORD*`,
+`*_AUTH*`, `AWS_*`, `SSH_AUTH_SOCK`, …) even with an allowed prefix. Pass
+others with `[supply_chain] env_allow`: exact names, or `PREFIX_*`.
+
+`--ignore-scripts` means no install scripts at all: dependencies' are not run
+either (they are still inspected and reported).
 
 The project's own `preinstall`/`install`/`postinstall`/`prepare` scripts run
 afterwards as usual — they are the project's code.
@@ -114,6 +139,6 @@ greengate install [--plan] [--isolate auto|bwrap|none] [--no-fail] [--pip PIP] <
 [supply_chain]
 require_isolation = false         # no sandbox → do not run scripts (incomplete)
 script_network = ["puppeteer"]    # packages whose scripts may use the network
-env_allow = ["NODE_EXTRA_CA_CERTS"]
+env_allow = ["SHARP_*", "ELECTRON_MIRROR"]  # extra variables for install scripts
 allow_postinstall = ["sharp"]     # run unisolated even with suspicious patterns
 ```

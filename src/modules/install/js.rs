@@ -3,7 +3,8 @@
 use super::inspect::{self, Installed, ScriptPackage};
 use super::sandbox::{self, Isolation, Sandbox};
 use super::{
-    InstallOpts, Scratch, bun, npm, package_finding, plan_policy, pnpm, print_install, rel, yarn,
+    InstallOpts, Scratch, bun, ignore_scripts, isolation_missing, must_halt, npm, package_finding,
+    plan_policy, pnpm, print_install, rel, unfinished, yarn,
 };
 use crate::deps::{self, Lockfile};
 use crate::report::{Check, Report, Severity};
@@ -188,10 +189,14 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
         )),
         &opts,
     )?;
-    if !report.findings.is_empty() && !opts.no_fail {
+    if must_halt(&report, &opts) {
         eprintln!("Install halted at the plan: nothing was downloaded and no package code ran.");
         return Ok(report);
     }
+    // `--ignore-scripts` (Berry: `--mode=skip-build`) holds for dependency
+    // scripts too, not only the project's own.
+    let no_scripts =
+        ignore_scripts(&opts.args) || (js == Js::Berry && yarn::skip_build(&opts.args));
 
     // ── 2. Fetch ─────────────────────────────────────────────────────────────
     let target = if opts.plan_only {
@@ -286,7 +291,19 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
             .iter()
             .any(|a| a == &sp.pkg.name);
         let verb = if opts.plan_only { "would run" } else { "runs" };
-        if !sp.suspicious() {
+        if no_scripts {
+            if sp.suspicious() {
+                report.warnings.push(package_finding(
+                    "INSTALL/SuspiciousScript",
+                    Severity::Medium,
+                    &sp.pkg.name,
+                    &sp.pkg.version,
+                    &sp.pkg.dir,
+                    format!("{} — not run (--ignore-scripts)", sp.evidence()),
+                ));
+            }
+            approved.push(sp);
+        } else if !sp.suspicious() {
             approved.push(sp);
         } else if allowlisted || (isolation == Isolation::Bwrap && js != Js::Berry) {
             // Isolated, a script can reach nothing its package's own code
@@ -341,8 +358,13 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
     report
         .checks
         .push(Check::passed("install:inspect").with_source(format!(
-            "{} package(s) run install scripts{}",
+            "{} package(s) {} install scripts{}",
             names.len(),
+            if no_scripts {
+                "have (none run: --ignore-scripts)"
+            } else {
+                "run"
+            },
             if names.is_empty() {
                 String::new()
             } else {
@@ -357,12 +379,27 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
         );
         return Ok(report);
     }
-    if isolation == Isolation::None && opts.policy.require_isolation && !approved.is_empty() {
-        report.checks.push(Check::incomplete(
-            "install:execute",
-            "no sandbox is available and [supply_chain] require_isolation is set — install scripts were not run",
-        ));
+    if no_scripts {
+        report.checks.push(
+            Check::passed("install:execute").with_source(
+                "--ignore-scripts: no install scripts ran, the project's own included",
+            ),
+        );
         print_install(&report, "");
+        return Ok(report);
+    }
+    if !approved.is_empty()
+        && isolation_missing(
+            &mut report,
+            &opts,
+            isolation,
+            "install scripts were not run",
+        )
+    {
+        return Ok(report);
+    }
+    if unfinished(&report, &opts) {
+        print_install(&report, "Install halted before running any install script.");
         return Ok(report);
     }
 
@@ -515,9 +552,9 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
         ));
     }
 
-    // The project's own lifecycle scripts, skipped by --ignore-scripts. They
-    // are the project's code, so they run normally.
-    if !opts.args.iter().any(|a| a == "--ignore-scripts") {
+    // The project's own lifecycle scripts (--ignore-scripts returned above).
+    // They are the project's code, so they run normally.
+    {
         let manifest: serde_json::Value = std::fs::read_to_string(project.join("package.json"))
             .ok()
             .and_then(|m| serde_json::from_str(&m).ok())

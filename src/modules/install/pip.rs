@@ -8,7 +8,10 @@
 //! file in it runs at every Python start, so those are inspected.
 
 use super::sandbox::{self, Isolation, Sandbox};
-use super::{InstallOpts, Scratch, package_finding, plan_policy, print_install};
+use super::{
+    InstallOpts, Scratch, isolation_missing, must_halt, package_finding, plan_policy,
+    print_install,
+};
 use crate::deps::{self, Ecosystem, Format, Lockfile, Package, Source};
 use crate::modules::pip_audit::{extract_package_names, scan_python_signals};
 use crate::report::{Check, Report, Severity};
@@ -191,6 +194,12 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
             "editable and --target installs are not supported by greengate install yet; use `greengate pip-install`"
         );
     }
+    if rest
+        .iter()
+        .any(|a| a == "--report" || a.starts_with("--report="))
+    {
+        bail!("--report is set by greengate install itself (the plan is read from it)");
+    }
     let pip = opts.pip.as_str();
     let project = std::env::current_dir()?;
     let mut report = Report::new("install");
@@ -199,6 +208,14 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
     let tmp = scratch.0.join("tmp");
     std::fs::create_dir_all(&tmp)?;
     let isolation = sandbox::detect(opts.isolate)?;
+    if isolation_missing(
+        &mut report,
+        &opts,
+        isolation,
+        "resolving runs the build code of any sdist, so pip was not run",
+    ) {
+        return Ok(report);
+    }
 
     // ── 1. Plan ──────────────────────────────────────────────────────────────
     // Resolving an sdist runs its build backend: do it in the sandbox (with
@@ -284,7 +301,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
             "resolving these sdists ran their build backends without isolation".into(),
         ));
     }
-    if !report.findings.is_empty() && !opts.no_fail {
+    if must_halt(&report, &opts) {
         eprintln!("Install halted at the plan: nothing was installed.");
         return Ok(report);
     }
@@ -460,7 +477,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
         );
         return Ok(report);
     }
-    if !report.findings.is_empty() && !opts.no_fail {
+    if must_halt(&report, &opts) {
         print_install(
             &report,
             "Install halted before building or installing anything.",

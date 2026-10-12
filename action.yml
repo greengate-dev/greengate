@@ -51,7 +51,9 @@ outputs:
       Empty if the report could not be read.
     value: ${{ steps.run.outputs.status }}
   findings:
-    description: Total number of findings reported across all pipeline steps.
+    description: >-
+      Total number of findings across all pipeline steps and, when enabled,
+      the dependency review.
     value: ${{ steps.run.outputs.findings }}
   incomplete:
     description: Number of checks that did not complete.
@@ -135,10 +137,16 @@ runs:
           PROFILE_ARGS=(--profile "$GG_PROFILE")
         fi
 
+        # The review writes the same format as the run, so the two merge.
+        case "$REPORT" in
+          *.sarif|*.SARIF) REVIEW_REPORT="${RUNNER_TEMP:-/tmp}/greengate-deps-review.sarif" ;;
+          *)               REVIEW_REPORT="${RUNNER_TEMP:-/tmp}/greengate-deps-review.json" ;;
+        esac
+        rm -f "$REVIEW_REPORT"
         REVIEW_CODE=0
         if [ "$GG_DEPENDENCY_REVIEW" = "true" ] && [ -n "${GITHUB_BASE_REF:-}" ]; then
           greengate ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} deps review --annotate \
-            --report "${RUNNER_TEMP:-/tmp}/greengate-deps-review.json"
+            --report "$REVIEW_REPORT"
           REVIEW_CODE=$?
         fi
 
@@ -152,19 +160,43 @@ runs:
           fi
         fi
 
-        echo "report-path=${REPORT}" >> "$GITHUB_OUTPUT"
         case "$REPORT" in
           *.sarif|*.SARIF)
-            FILTER_STATUS='if .runs[0].invocations[0].executionSuccessful then (if (.runs[0].results | length) > 0 then "findings" else "passed" end) else "incomplete" end'
-            FILTER_FINDINGS='.runs[0].results | length'
-            FILTER_INCOMPLETE='.runs[0].invocations[0].toolExecutionNotifications | length'
+            # One run per command; the review's run follows the pipeline's.
+            MERGE='.[0].runs += .[1].runs | .[0]'
+            FILTER_STATUS='if all(.runs[]; .invocations[0].executionSuccessful) then (if ([.runs[].results | length] | add) > 0 then "findings" else "passed" end) else "incomplete" end'
+            FILTER_FINDINGS='[.runs[].results | length] | add'
+            FILTER_INCOMPLETE='[.runs[].invocations[0].toolExecutionNotifications // [] | length] | add'
             ;;
           *)
+            # The review's checks under deps-review/, its findings with the
+            # pipeline's, and the worse status (findings > error > incomplete).
+            MERGE='def rank: {"passed": 0, "incomplete": 1, "error": 2, "findings": 3}[.] // 0;
+              .[0] as $p | .[1] as $r
+              | $p + {
+                  status: (if ($r.status | rank) > ($p.status | rank) then $r.status else $p.status end),
+                  checks: ($p.checks + ($r.checks | map(.id = "deps-review/" + .id))),
+                  findings: ($p.findings + $r.findings),
+                  warnings: (($p.warnings // []) + ($r.warnings // [])),
+                  suppressed: (($p.suppressed // []) + ($r.suppressed // []))
+                }'
             FILTER_STATUS='.status'
             FILTER_FINDINGS='.findings | length'
             FILTER_INCOMPLETE='[.checks[] | select(.status != "passed")] | length'
             ;;
         esac
+        # The outputs and the report describe both commands, like the exit code.
+        if [ -f "$REPORT" ] && [ -f "$REVIEW_REPORT" ]; then
+          if command -v jq >/dev/null 2>&1 \
+            && jq -s "$MERGE" "$REPORT" "$REVIEW_REPORT" > "$REPORT.merged"; then
+            mv "$REPORT.merged" "$REPORT"
+          else
+            rm -f "$REPORT.merged"
+            echo "::warning::greengate action: could not merge the dependency review into $REPORT; see $REVIEW_REPORT"
+          fi
+        fi
+
+        echo "report-path=${REPORT}" >> "$GITHUB_OUTPUT"
         if [ -f "$REPORT" ] && command -v jq >/dev/null 2>&1; then
           echo "status=$(jq -r "$FILTER_STATUS" "$REPORT")" >> "$GITHUB_OUTPUT"
           echo "findings=$(jq -r "$FILTER_FINDINGS" "$REPORT")" >> "$GITHUB_OUTPUT"

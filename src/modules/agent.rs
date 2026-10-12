@@ -143,9 +143,169 @@ pub enum Detected {
     Unchecked { why: String, text: String },
 }
 
-const WRAPPERS: &[&str] = &[
-    "sudo", "env", "time", "command", "nohup", "exec", "nice", "doas",
+/// Commands that run another command, with the options of each that take a
+/// value (short letters, long names) and those that change directory.
+struct Wrapper {
+    name: &'static str,
+    short_values: &'static str,
+    long_values: &'static [&'static str],
+    chdir: &'static [&'static str],
+    /// Positional words before the command (`timeout DURATION cmd`).
+    positionals: usize,
+}
+
+const WRAPPERS: &[Wrapper] = &[
+    Wrapper {
+        name: "sudo",
+        short_values: "ugpCDrtTU",
+        long_values: &[
+            "user",
+            "group",
+            "prompt",
+            "close-from",
+            "chdir",
+            "role",
+            "type",
+            "command-timeout",
+            "other-user",
+            "host",
+        ],
+        chdir: &["-D", "--chdir"],
+        positionals: 0,
+    },
+    Wrapper {
+        name: "doas",
+        short_values: "uC",
+        long_values: &[],
+        chdir: &[],
+        positionals: 0,
+    },
+    Wrapper {
+        name: "env",
+        short_values: "uCS",
+        long_values: &["unset", "chdir", "split-string"],
+        chdir: &["-C", "--chdir"],
+        positionals: 0,
+    },
+    Wrapper {
+        name: "nice",
+        short_values: "n",
+        long_values: &["adjustment"],
+        chdir: &[],
+        positionals: 0,
+    },
+    Wrapper {
+        name: "time",
+        short_values: "fo",
+        long_values: &["format", "output"],
+        chdir: &[],
+        positionals: 0,
+    },
+    Wrapper {
+        name: "timeout",
+        short_values: "sk",
+        long_values: &["signal", "kill-after"],
+        chdir: &[],
+        positionals: 1,
+    },
+    Wrapper {
+        name: "exec",
+        short_values: "a",
+        long_values: &[],
+        chdir: &[],
+        positionals: 0,
+    },
+    Wrapper {
+        name: "nohup",
+        short_values: "",
+        long_values: &[],
+        chdir: &[],
+        positionals: 0,
+    },
+    Wrapper {
+        name: "command",
+        short_values: "",
+        long_values: &[],
+        chdir: &[],
+        positionals: 0,
+    },
 ];
+
+/// Strip one wrapper's options from `words` (which start after its name),
+/// following `--chdir`-style options into `dir`. `Err` when the wrapped
+/// command cannot be told apart from its options.
+fn strip_wrapper<'a>(
+    w: &Wrapper,
+    mut words: &'a [String],
+    dir: &mut PathBuf,
+) -> Result<&'a [String], String> {
+    while let Some(first) = words.first() {
+        let f = first.as_str();
+        if f == "--" {
+            words = &words[1..];
+            break;
+        }
+        if let Some(long) = f.strip_prefix("--") {
+            let (name, inline) = match long.split_once('=') {
+                Some((n, v)) => (n, Some(v)),
+                None => (long, None),
+            };
+            if name == "split-string" {
+                return Err(format!(
+                    "`{} --split-string` builds the command from a string",
+                    w.name
+                ));
+            }
+            let value = if w.long_values.contains(&name) {
+                match inline {
+                    Some(v) => Some(v.to_string()),
+                    None => {
+                        let v = words.get(1).ok_or_else(|| format!("`{f}` has no value"))?;
+                        words = &words[1..];
+                        Some(v.clone())
+                    }
+                }
+            } else {
+                None
+            };
+            if let Some(v) = value.filter(|_| w.chdir.contains(&format!("--{name}").as_str())) {
+                *dir = dir.join(v);
+            }
+            words = &words[1..];
+            continue;
+        }
+        if f.len() > 1 && f.starts_with('-') {
+            // A cluster of short options; one taking a value ends it.
+            for (i, c) in f.char_indices().skip(1) {
+                if !w.short_values.contains(c) {
+                    continue;
+                }
+                if c == 'S' && w.name == "env" {
+                    return Err("`env -S` builds the command from a string".into());
+                }
+                let rest = &f[i + c.len_utf8()..];
+                let v = if rest.is_empty() {
+                    let v = words.get(1).ok_or_else(|| format!("`{f}` has no value"))?;
+                    words = &words[1..];
+                    v.clone()
+                } else {
+                    rest.to_string()
+                };
+                if w.chdir.contains(&format!("-{c}").as_str()) {
+                    *dir = dir.join(v);
+                }
+                break;
+            }
+            words = &words[1..];
+            continue;
+        }
+        break;
+    }
+    if words.len() < w.positionals {
+        return Err(format!("`{}` has no command", w.name));
+    }
+    Ok(&words[w.positionals..])
+}
 
 fn is_assignment(w: &str) -> bool {
     w.split_once('=').is_some_and(|(k, _)| {
@@ -161,6 +321,229 @@ fn subcommand(rest: &[String]) -> Option<(&str, &[String])> {
     Some((rest[i].as_str(), &rest[i + 1..]))
 }
 
+/// A JavaScript package manager's options before its subcommand.
+struct Globals {
+    /// Options that take a value (without dashes; short ones as one letter).
+    values: &'static [&'static str],
+    /// Options that never take one.
+    flags: &'static [&'static str],
+    /// Options that run the command in another directory.
+    chdir: &'static [&'static str],
+}
+
+const NPM_GLOBALS: Globals = Globals {
+    values: &[
+        "prefix",
+        "C",
+        "workspace",
+        "w",
+        "userconfig",
+        "globalconfig",
+        "cache",
+        "registry",
+        "loglevel",
+        "location",
+        "tag",
+        "omit",
+        "include",
+        "install-strategy",
+        "before",
+        "script-shell",
+        "otp",
+        "scope",
+        "cpu",
+        "os",
+        "libc",
+    ],
+    flags: &[
+        "g",
+        "global",
+        "D",
+        "save-dev",
+        "S",
+        "save",
+        "E",
+        "save-exact",
+        "O",
+        "save-optional",
+        "P",
+        "save-prod",
+        "B",
+        "save-bundle",
+        "f",
+        "force",
+        "offline",
+        "prefer-offline",
+        "prefer-online",
+        "ignore-scripts",
+        "silent",
+        "s",
+        "q",
+        "quiet",
+        "d",
+        "dd",
+        "ddd",
+        "verbose",
+        "legacy-peer-deps",
+        "strict-peer-deps",
+        "dry-run",
+        "workspaces",
+        "ws",
+        "include-workspace-root",
+        "foreground-scripts",
+        "y",
+        "yes",
+        "audit",
+        "fund",
+        "production",
+        "package-lock-only",
+    ],
+    chdir: &["prefix", "C"],
+};
+
+const PNPM_GLOBALS: Globals = Globals {
+    values: &[
+        "dir",
+        "C",
+        "filter",
+        "F",
+        "workspace-dir",
+        "reporter",
+        "loglevel",
+        "registry",
+    ],
+    flags: &[
+        "r",
+        "recursive",
+        "w",
+        "workspace-root",
+        "s",
+        "silent",
+        "g",
+        "global",
+        "D",
+        "save-dev",
+        "P",
+        "save-prod",
+        "O",
+        "save-optional",
+        "E",
+        "save-exact",
+        "offline",
+        "prefer-offline",
+        "ignore-scripts",
+        "frozen-lockfile",
+        "stream",
+        "aggregate-output",
+    ],
+    chdir: &["dir", "C"],
+};
+
+const YARN_GLOBALS: Globals = Globals {
+    values: &[
+        "cwd",
+        "registry",
+        "modules-folder",
+        "cache-folder",
+        "network-timeout",
+    ],
+    flags: &[
+        "silent",
+        "s",
+        "offline",
+        "prefer-offline",
+        "ignore-scripts",
+        "frozen-lockfile",
+        "immutable",
+        "production",
+        "non-interactive",
+        "verbose",
+        "W",
+        "ignore-workspace-root-check",
+    ],
+    chdir: &["cwd"],
+};
+
+const BUN_GLOBALS: Globals = Globals {
+    values: &["cwd", "config", "c", "registry", "backend", "cache-dir"],
+    flags: &[
+        "g",
+        "global",
+        "d",
+        "D",
+        "dev",
+        "production",
+        "p",
+        "silent",
+        "verbose",
+        "frozen-lockfile",
+        "ignore-scripts",
+        "no-save",
+        "dry-run",
+        "f",
+        "force",
+        "exact",
+        "E",
+        "optional",
+    ],
+    chdir: &["cwd"],
+};
+
+/// Where a JavaScript package manager's subcommand is, past options that
+/// take values; options before it are moved after it (they hold anywhere),
+/// except those naming another directory, which go into `dir`.
+enum Sub<'a> {
+    /// The subcommand, then its arguments with the leading options appended.
+    Found(&'a str, Vec<String>),
+    /// No subcommand at all.
+    None,
+    /// An unknown option before a word that may be its value or the
+    /// subcommand.
+    Unclear(String),
+}
+
+fn js_subcommand<'a>(rest: &'a [String], g: &Globals, dir: &mut PathBuf) -> Sub<'a> {
+    let mut leading: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let w = rest[i].as_str();
+        let Some(opt) = w.strip_prefix('-') else {
+            let mut args = rest[i + 1..].to_vec();
+            args.extend(leading);
+            return Sub::Found(w, args);
+        };
+        let opt = opt.strip_prefix('-').unwrap_or(opt);
+        let (name, inline) = match opt.split_once('=') {
+            Some((n, v)) => (n, Some(v.to_string())),
+            None => (opt, None),
+        };
+        let value = if inline.is_some() {
+            inline
+        } else if g.values.contains(&name) {
+            i += 1;
+            rest.get(i).cloned()
+        } else if g.flags.contains(&name) || name.starts_with("no-") {
+            None
+        } else if rest.get(i + 1).is_some_and(|n| !n.starts_with('-')) {
+            return Sub::Unclear(w.to_string());
+        } else {
+            None
+        };
+        if g.chdir.contains(&name) {
+            if let Some(v) = value {
+                *dir = dir.join(v);
+            }
+        } else {
+            leading.push(w.to_string());
+            if let Some(v) = value.filter(|_| !w.contains('=')) {
+                leading.push(v);
+            }
+        }
+        i += 1;
+    }
+    Sub::None
+}
+
 fn with(sub: &str, rest: &[String]) -> Vec<String> {
     std::iter::once(sub.to_string())
         .chain(rest.iter().cloned())
@@ -172,20 +555,36 @@ pub fn detect(cmd: &str, cwd: &Path) -> Vec<Detected> {
     let mut dir = cwd.to_path_buf();
     for simple in simple_commands(cmd) {
         let mut words: &[String] = &simple.words;
+        // `sudo -u x env -C web FOO=1 npm …`: wrappers, their options and
+        // assignments, in any order. A wrapper's directory option holds for
+        // this command only.
+        let mut here = dir.clone();
+        let mut unclear: Option<String> = None;
         while let Some(first) = words.first() {
             let base = first.rsplit('/').next().unwrap_or(first);
-            if is_assignment(first)
-                || WRAPPERS.contains(&base)
-                || (first.starts_with('-') && !out.is_empty())
-            {
+            if is_assignment(first) {
                 words = &words[1..];
+            } else if let Some(w) = WRAPPERS.iter().find(|w| w.name == base) {
+                match strip_wrapper(w, &words[1..], &mut here) {
+                    Ok(rest) => words = rest,
+                    Err(why) => {
+                        unclear = Some(why);
+                        break;
+                    }
+                }
             } else {
                 break;
             }
         }
-        // `sudo -u x npm …`: drop wrapper flags too.
-        while words.first().is_some_and(|w| w.starts_with('-')) {
-            words = &words[1..];
+        if let Some(why) = unclear {
+            let text = simple.words.join(" ");
+            if INSTALLERS.iter().any(|i| text.contains(i)) {
+                out.push(Detected::Unchecked {
+                    why: format!("{why}, so what it runs is unknown"),
+                    text,
+                });
+            }
+            continue;
         }
         let Some((program, rest)) = words.split_first() else {
             continue;
@@ -202,10 +601,10 @@ pub fn detect(cmd: &str, cwd: &Path) -> Vec<Detected> {
             && let Some(i) = rest.iter().position(|w| w == "-c")
             && let Some(body) = rest.get(i + 1)
         {
-            out.extend(detect(body, &dir));
+            out.extend(detect(body, &here));
             continue;
         }
-        let found = recognise(program, rest, &dir, &text);
+        let found = recognise(program, rest, &here, &text);
         if let Some(d) = found {
             if simple.dynamic {
                 out.push(Detected::Unchecked {
@@ -220,7 +619,44 @@ pub fn detect(cmd: &str, cwd: &Path) -> Vec<Detected> {
     out
 }
 
+/// Package managers whose name in an unparseable command makes it worth a look.
+const INSTALLERS: &[&str] = &["npm", "pnpm", "yarn", "bun", "pip", "uv", "cargo", "poetry"];
+
 fn recognise(program: &str, rest: &[String], dir: &Path, text: &str) -> Option<Detected> {
+    let mut dir = dir.to_path_buf();
+    let globals = match program {
+        "npm" => Some(&NPM_GLOBALS),
+        "pnpm" => Some(&PNPM_GLOBALS),
+        "yarn" => Some(&YARN_GLOBALS),
+        "bun" => Some(&BUN_GLOBALS),
+        _ => None,
+    };
+    // For the JavaScript managers, `rest` becomes subcommand-first.
+    let js_rest: Vec<String>;
+    let rest: &[String] = match globals.map(|g| js_subcommand(rest, g, &mut dir)) {
+        None => rest,
+        Some(Sub::Found(sub, args)) => {
+            js_rest = std::iter::once(sub.to_string()).chain(args).collect();
+            &js_rest
+        }
+        Some(Sub::None) if program == "yarn" => &[],
+        Some(Sub::None) => return None,
+        Some(Sub::Unclear(opt)) => {
+            let installs = rest.iter().any(|w| {
+                matches!(
+                    w.as_str(),
+                    "install" | "i" | "add" | "ci" | "clean-install" | "a"
+                )
+            });
+            return installs.then(|| Detected::Unchecked {
+                why: format!(
+                    "a {program} command where `{opt}` may take a value, so its subcommand is unclear"
+                ),
+                text: text.to_string(),
+            });
+        }
+    };
+    let dir = dir.as_path();
     let plan = |manager: &'static str, pip: Option<String>, args: Vec<String>| Detected::Plan {
         dir: dir.to_path_buf(),
         manager,
@@ -681,6 +1117,66 @@ mod tests {
             .is_empty()
         );
         assert!(detect("echo npm install x", Path::new("/p")).is_empty());
+    }
+
+    #[test]
+    fn option_values_are_not_subcommands() {
+        assert_eq!(
+            plans("npm --prefix packages/app install review-fixture"),
+            [(
+                "/p/packages/app".into(),
+                "npm",
+                s(&["install", "review-fixture"])
+            )]
+        );
+        assert_eq!(
+            plans("sudo -u dummy npm install review-fixture"),
+            [("/p".into(), "npm", s(&["install", "review-fixture"]))]
+        );
+        assert_eq!(
+            plans("npm --registry https://r.example ci"),
+            [(
+                "/p".into(),
+                "npm",
+                s(&["ci", "--registry", "https://r.example"])
+            )]
+        );
+        assert_eq!(
+            plans("env -C web FOO=1 nice -n 5 timeout 60 pnpm --filter app add vite"),
+            [(
+                "/p/web".into(),
+                "pnpm",
+                s(&["add", "vite", "--filter", "app"])
+            )]
+        );
+        assert_eq!(
+            plans("sudo -D web --user=dummy yarn --cwd app add x"),
+            [("/p/web/app".into(), "yarn", s(&["add", "x"]))]
+        );
+        assert_eq!(
+            plans("bun --cwd=site i"),
+            [("/p/site".into(), "bun", s(&["install"]))]
+        );
+        // A wrapper's directory holds for its command only.
+        assert_eq!(
+            plans("env -C web npm ci && npm ci"),
+            [
+                ("/p/web".into(), "npm", s(&["ci"])),
+                ("/p".into(), "npm", s(&["ci"]))
+            ]
+        );
+    }
+
+    #[test]
+    fn unclear_install_forms_are_unchecked() {
+        let unchecked = |cmd: &str| {
+            detect(cmd, Path::new("/p"))
+                .iter()
+                .any(|d| matches!(d, Detected::Unchecked { .. }))
+        };
+        assert!(unchecked("npm --some-new-option value install x"));
+        assert!(unchecked("env -S 'npm install x'"));
+        assert!(detect("npm --some-new-option value test", Path::new("/p")).is_empty());
     }
 
     #[test]

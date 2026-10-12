@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use modules::scanner::{DiffMode, OutputFormat, ScanOpts};
+use modules::scanner::{OutputFormat, ScanOpts};
 use modules::tia::TiaFormat;
 use std::process::ExitCode;
 use utils::config::Profile;
@@ -307,8 +307,9 @@ enum Commands {
     /// Installs dependencies with no package code running before greengate
     /// has checked the complete tree: plan (resolve + policy), fetch with
     /// scripts off, inspect every install script, then run approved scripts
-    /// in a sandbox (bubblewrap: no network, writes confined, credentials
-    /// masked) and verify the result. npm, pnpm, yarn, bun, pip, uv and cargo.
+    /// in a sandbox (bubblewrap: no network, writes confined, private home,
+    /// project secrets masked) and verify the result. npm, pnpm, yarn, bun,
+    /// pip, uv and cargo.
     /// Example: greengate install npm ci
     ///          greengate install --plan npm install left-pad
     Install {
@@ -563,6 +564,7 @@ fn install_opts<'a>(
     no_fail: bool,
     pip: String,
     cfg: &'a utils::config::Config,
+    on_incomplete: report::OnIncomplete,
 ) -> modules::install::InstallOpts<'a> {
     modules::install::InstallOpts {
         manager: manager.to_string(),
@@ -570,6 +572,7 @@ fn install_opts<'a>(
         plan_only: false,
         isolate: modules::install::sandbox::IsolateMode::Auto,
         no_fail,
+        on_incomplete,
         pip,
         policy: &cfg.supply_chain,
         audit: &cfg.audit,
@@ -738,18 +741,12 @@ fn run() -> anyhow::Result<ExitCode> {
                     "--since is deprecated: use --changed-since (the same), or --new-since to count only new findings",
                 );
             }
-            let new_since = new_since
-                .map(|r| modules::new_since::resolve(Some(&r)))
-                .transpose()?;
-            let diff = if history {
-                Some(DiffMode::History)
-            } else if staged {
-                Some(DiffMode::Staged)
-            } else if let Some(d) = &new_since {
-                Some(DiffMode::Files(d.changed.clone()))
-            } else {
-                changed_since.or(since).map(DiffMode::Since)
-            };
+            let (diff, new_since) = modules::scanner::select_diff(
+                staged,
+                history,
+                changed_since.or(since),
+                new_since.as_deref(),
+            )?;
 
             let opts = ScanOpts {
                 format,
@@ -1150,8 +1147,14 @@ fn run() -> anyhow::Result<ExitCode> {
                     "pip-install",
                     Some(&format!("pip {}", routed.join(" "))),
                 );
-                let result =
-                    modules::install::run_install(install_opts("pip", routed, no_fail, pip, &cfg));
+                let result = modules::install::run_install(install_opts(
+                    "pip",
+                    routed,
+                    no_fail,
+                    pip,
+                    &cfg,
+                    exit.on_incomplete,
+                ));
                 return exit.finish("pip-install", result);
             }
             modules::install::deprecation("pip-install", None);
@@ -1183,6 +1186,7 @@ fn run() -> anyhow::Result<ExitCode> {
                     no_fail,
                     "pip".into(),
                     &cfg,
+                    exit.on_incomplete,
                 ));
                 return exit.finish("cargo-add", result);
             }
@@ -1225,6 +1229,7 @@ fn run() -> anyhow::Result<ExitCode> {
                 plan_only: plan,
                 isolate,
                 no_fail,
+                on_incomplete: exit.on_incomplete,
                 pip,
                 policy: &cfg.supply_chain,
                 audit: &cfg.audit,
@@ -1251,6 +1256,7 @@ fn run() -> anyhow::Result<ExitCode> {
                     no_fail || !cfg.supply_chain.block_phantom_scripts,
                     "pip".into(),
                     &cfg,
+                    exit.on_incomplete,
                 ));
                 return exit.finish("watch-install", result);
             }

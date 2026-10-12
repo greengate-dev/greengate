@@ -579,8 +579,10 @@ pub struct SupplyChainConfig {
     /// sandbox (e.g. ones that download a prebuilt binary).
     #[serde(default)]
     pub script_network: Vec<String>,
-    /// Credential-looking environment variables to pass to install scripts
-    /// anyway (all others matching `*_TOKEN`, `*_SECRET`, `AWS_*`, … are removed).
+    /// Extra environment variables for install scripts, by name or
+    /// `PREFIX_*`. Scripts otherwise see only an allowlist (`PATH`,
+    /// compilers, proxies, package-manager settings…) without anything that
+    /// looks like a credential.
     #[serde(default)]
     pub env_allow: Vec<String>,
 }

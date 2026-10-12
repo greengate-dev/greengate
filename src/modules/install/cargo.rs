@@ -3,7 +3,9 @@
 //! (`cargo add` / `update`), apply policy, `cargo fetch --locked`, and inspect
 //! every new crate's build script and proc-macro source before anyone builds.
 
-use super::{Backup, InstallOpts, Scratch, package_finding, plan_policy, print_install};
+use super::{
+    Backup, InstallOpts, Scratch, must_halt, package_finding, plan_policy, print_install,
+};
 use crate::deps::{self, Source};
 use crate::modules::cargo_audit::{
     self, CrateSource, extract_crate_names, find_build_script, locate_cargo_registry_src,
@@ -154,7 +156,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
         )),
         &opts,
     )?;
-    if !report.findings.is_empty() && !opts.no_fail {
+    if must_halt(&report, &opts) {
         backup.restore()?;
         eprintln!(
             "Install halted at the plan: Cargo.toml and Cargo.lock were restored; nothing was fetched."

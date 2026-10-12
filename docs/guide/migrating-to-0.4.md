@@ -70,9 +70,14 @@ they already run through [`greengate install`](/commands/install) in 0.4. That
 changes how install scripts run:
 
 - They run one package at a time, in bubblewrap where available: **no
-  network**, the system read-only, credentials masked.
-- Credential-like environment variables (`*_TOKEN`, `*_SECRET`, `AWS_*`, …)
-  are removed from install scripts.
+  network**, the system read-only, a private home directory and `/tmp`, and
+  the project's `.env*`, `.npmrc` and `.git/config` masked.
+- Install scripts see an **allowlisted environment** (`PATH`, compilers,
+  proxies, package-manager settings, …); everything else, `DATABASE_URL`
+  and credential-like variables included, is removed.
+- `--ignore-scripts` now also skips dependencies' scripts, and an unfinished
+  check (unreachable registry, no OSV snapshot) stops the install before any
+  package code runs.
 - Packages the install adds or changes are checked for known advisories and
   release risk before anything runs.
 
@@ -87,7 +92,8 @@ changes how install scripts run:
 
 A package whose install script legitimately needs the network (it downloads a
 prebuilt binary) needs `script_network = ["its-name"]` under `[supply_chain]`.
-Credentials an install script really needs go in `env_allow`. To see what an
+Variables an install script really needs go in `env_allow` (exact names or
+`PREFIX_*`). To see what an
 install would do without changing anything, use `greengate install --plan …`.
 
 ## 5. Advisory suppressions → exceptions

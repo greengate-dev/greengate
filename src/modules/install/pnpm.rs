@@ -32,6 +32,13 @@ pub fn parse_args(args: &[String]) -> Result<Sub> {
     if rest.iter().any(|a| a == "-g" || a == "--global") {
         bail!("greengate install does not handle global installs");
     }
+    if rest
+        .iter()
+        .any(|a| a == "-C" || a == "--dir" || a.starts_with("--dir="))
+    {
+        bail!("--dir is not supported by greengate install; run it from that directory instead");
+    }
+    super::reject_overrides("pnpm", rest, &["lockfile-only", "ignore-scripts"])?;
     match sub.as_str() {
         "install" | "i" => Ok(Sub::Install(rest.to_vec())),
         "add" => Ok(Sub::Add(rest.to_vec())),
@@ -86,19 +93,20 @@ fn run(cmd: &mut Command, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// greengate's flags come after the caller's: pnpm takes the last value.
 pub fn plan(work: &Path, sub: &Sub) -> Result<()> {
     let mut cmd = pnpm();
     cmd.current_dir(work);
     match sub {
         Sub::Install(args) => {
-            cmd.args(["install", "--lockfile-only", "--ignore-scripts"])
+            cmd.arg("install")
                 .args(args.iter().filter(|a| *a != "--frozen-lockfile"));
         }
         Sub::Add(args) => {
-            cmd.args(["add", "--lockfile-only", "--ignore-scripts"])
-                .args(args);
+            cmd.arg("add").args(args);
         }
     }
+    cmd.args(["--lockfile-only", "--ignore-scripts"]);
     run(&mut cmd, "`pnpm --lockfile-only`")
 }
 

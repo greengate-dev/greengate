@@ -1562,13 +1562,42 @@ pub fn migrate_baseline(opts: &ScanOpts<'_>) -> Result<Option<(usize, usize)>> {
     Ok(Some((kept, legacy.len())))
 }
 
-pub fn run_scan(opts: &ScanOpts<'_>, policy: suppress::Policy) -> Result<Report> {
+/// Which files a scan covers, from its flags — the same for `scan` and for a
+/// `run` step. With `--new-since`, also the base its findings are compared
+/// against (the merge base with the ref; `""` means the pull request's base).
+pub fn select_diff(
+    staged: bool,
+    history: bool,
+    changed_since: Option<String>,
+    new_since: Option<&str>,
+) -> Result<(Option<DiffMode>, Option<crate::modules::new_since::Diff>)> {
+    let new_since = new_since
+        .map(|r| crate::modules::new_since::resolve(Some(r)))
+        .transpose()?;
+    let diff = if history {
+        Some(DiffMode::History)
+    } else if staged {
+        Some(DiffMode::Staged)
+    } else if let Some(d) = &new_since {
+        Some(DiffMode::Files(d.changed.clone()))
+    } else {
+        changed_since.map(DiffMode::Since)
+    };
+    Ok((diff, new_since))
+}
+
+pub fn run_scan(
+    opts: &ScanOpts<'_>,
+    policy: suppress::Policy,
+    new_since: Option<&crate::modules::new_since::Diff>,
+) -> Result<Report> {
     let is_text = matches!(opts.format, OutputFormat::Text);
     if is_text {
         terminal::info("Starting secret and PII scan...");
     }
     let (findings, inline) = split_suppressed(collect_findings(opts)?);
-    let (findings, report, outcome) = apply_suppressions(findings, inline, opts, policy, None)?;
+    let base = new_since.map(|d| base_subjects(opts, d)).transpose()?;
+    let (findings, report, outcome) = apply_suppressions(findings, inline, opts, policy, base)?;
     emit_findings(&findings, opts.format)?;
     if is_text {
         suppress::print_summary(&outcome.notes, &report.suppressed);
