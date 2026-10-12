@@ -191,10 +191,10 @@ fn major_version() -> Option<u32> {
 /// pnpm's build settings, from `pnpm-workspace.yaml` and the `pnpm` field of
 /// `package.json`.
 pub fn build_policy(project: &Path) -> BuildPolicy {
-    let workspace: serde_yaml::Value =
+    let workspace: serde_norway::Value =
         std::fs::read_to_string(project.join("pnpm-workspace.yaml"))
             .ok()
-            .and_then(|y| serde_yaml::from_str(&y).ok())
+            .and_then(|y| serde_norway::from_str(&y).ok())
             .unwrap_or_default();
     let manifest: serde_json::Value = std::fs::read_to_string(project.join("package.json"))
         .ok()

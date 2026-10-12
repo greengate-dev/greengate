@@ -4,7 +4,7 @@
 use super::{Ecosystem, EdgeKind, Format, Lockfile, Package, Scope, Source};
 use anyhow::{Context, Result};
 use serde_json::Value;
-use serde_yaml::Value as Yaml;
+use serde_norway::Value as Yaml;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -450,7 +450,7 @@ fn add_package_json_member(
 }
 
 fn yarn_berry(path: &Path, content: &str) -> Result<Lockfile> {
-    let doc: Yaml = serde_yaml::from_str(content).context("invalid YAML")?;
+    let doc: Yaml = serde_norway::from_str(content).context("invalid YAML")?;
     let mut lock = Lockfile::new(path, Format::YarnBerry, Ecosystem::Npm);
     let Some(map) = doc.as_mapping() else {
         return Ok(lock);
@@ -564,7 +564,7 @@ fn pnpm_key(key: &str) -> Option<(String, String)> {
 }
 
 pub fn pnpm(path: &Path, content: &str) -> Result<Lockfile> {
-    let doc: Yaml = serde_yaml::from_str(content).context("invalid YAML")?;
+    let doc: Yaml = serde_norway::from_str(content).context("invalid YAML")?;
     let mut lock = Lockfile::new(path, Format::Pnpm, Ecosystem::Npm);
     // `lockfileVersion: 5.4` (number) or `'9.0'` (string).
     let v5 = match doc.get("lockfileVersion") {

@@ -12,7 +12,9 @@ rayon = "1.11.0"
 regex = "1.12.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+# serde_yaml is deprecated and its libyaml port (unsafe-libyaml) unmaintained
+# (RUSTSEC-2024-0449); serde_norway is the API-compatible maintained fork.
+serde_norway = "0.9"
 toml = "0.8"
 streaming-iterator = "0.1"
 tree-sitter = "0.24"

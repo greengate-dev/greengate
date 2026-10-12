@@ -250,11 +250,11 @@ fn check_line_patterns(path: &Path, content: &str) -> Vec<CiLintFinding> {
 
 /// Returns true if the YAML value tree contains `pull_request_target` anywhere
 /// in the `on:` trigger section.
-fn has_pull_request_target(on_value: &serde_yaml::Value) -> bool {
+fn has_pull_request_target(on_value: &serde_norway::Value) -> bool {
     match on_value {
-        serde_yaml::Value::String(s) => s == "pull_request_target",
-        serde_yaml::Value::Sequence(seq) => seq.iter().any(has_pull_request_target),
-        serde_yaml::Value::Mapping(map) => map
+        serde_norway::Value::String(s) => s == "pull_request_target",
+        serde_norway::Value::Sequence(seq) => seq.iter().any(has_pull_request_target),
+        serde_norway::Value::Mapping(map) => map
             .keys()
             .any(|k| k.as_str() == Some("pull_request_target")),
         _ => false,
@@ -263,7 +263,7 @@ fn has_pull_request_target(on_value: &serde_yaml::Value) -> bool {
 
 /// Returns true if a step's `with.ref` value contains a pull-request head ref
 /// expression — meaning the checkout will fetch untrusted PR code.
-fn step_checks_out_pr_code(step: &serde_yaml::Value) -> bool {
+fn step_checks_out_pr_code(step: &serde_norway::Value) -> bool {
     let uses = step
         .get("uses")
         .and_then(|v| v.as_str())
@@ -283,7 +283,7 @@ fn step_checks_out_pr_code(step: &serde_yaml::Value) -> bool {
 }
 
 fn check_prt_checkout(path: &Path, content: &str) -> Vec<CiLintFinding> {
-    let yaml: serde_yaml::Value = match serde_yaml::from_str(content) {
+    let yaml: serde_norway::Value = match serde_norway::from_str(content) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };

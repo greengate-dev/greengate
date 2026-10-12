@@ -1,7 +1,7 @@
 use crate::report::{Check, Finding, Report, Severity};
 use crate::utils::terminal;
 use anyhow::Result;
-use serde_yaml::Value;
+use serde_norway::Value;
 use std::path::Path;
 
 struct LintIssue {
@@ -35,7 +35,7 @@ pub fn run_lint(target_dir: &str) -> Result<Report> {
                 // A single file may contain multiple YAML documents separated by ---
                 let docs = split_yaml_docs(&content);
                 for doc_str in docs {
-                    match serde_yaml::from_str::<Value>(&doc_str) {
+                    match serde_norway::from_str::<Value>(&doc_str) {
                         Ok(doc) => all_issues.extend(check_manifest(path, &doc)),
                         // Un-rendered Helm/Kustomize templates are common in
                         // repos and are not manifests yet.
@@ -283,7 +283,7 @@ mod tests {
     use std::path::Path;
 
     fn parse(yaml: &str) -> Value {
-        serde_yaml::from_str(yaml).unwrap()
+        serde_norway::from_str(yaml).unwrap()
     }
 
     fn check(yaml: &str) -> Vec<LintIssue> {
