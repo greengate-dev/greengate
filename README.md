@@ -114,7 +114,7 @@ Commands are grouped by concern. Each runs standalone or as a step in `greengate
 
 | Command | What it does |
 |---|---|
-| `greengate ci-lint` | Lint GitHub Actions workflow files for security misconfigurations: unpinned action refs (`actions/checkout@v4` instead of a commit SHA), `pull_request_target` + PR checkout (script injection), expression injection in `run:` steps, and secrets leaked via environment variables. Emits SARIF for Code Scanning. |
+| `greengate ci-lint` | Lint GitHub Actions workflow files for security misconfigurations: unpinned action refs (`actions/checkout@v4` instead of a commit SHA), `pull_request_target` + PR checkout (script injection), and expression injection in `run:` steps. Emits SARIF for Code Scanning. |
 | `greengate image-scan <image>` | Scan a Docker/OCI image for secrets baked into its layers. Calls `docker save`, unpacks every layer tar, and runs the full regex + entropy scan on all text files — including `.env`, `/etc/environment`, `.ssh/`, `.pem`, and `docker-compose` files. Findings include layer digest and path inside the layer. |
 | `greengate lint` | Kubernetes manifest linting — validates resource limits, security contexts, `latest` image tags, and missing probes. |
 | `greengate docker-lint` | Dockerfile best-practice checks — `latest` base images, running as root, missing `HEALTHCHECK`, `ADD` instead of `COPY`, etc. |
@@ -124,7 +124,8 @@ Commands are grouped by concern. Each runs standalone or as a step in `greengate
 
 | Command | What it does |
 |---|---|
-| `greengate run` | Run all pipeline steps defined in `[pipeline]` of `.greengate.toml` in order. One command to run every gate. |
+| `greengate run` | Run every pipeline step defined in `[pipeline]` of `.greengate.toml` — all of them, unless `fail_fast` — with one merged report and the worst result as the exit code. |
+| `greengate hook claude-code` / `greengate check-command` | Check the dependency installs an AI agent is about to run: each is planned with `install --plan` (nothing installed, no package code run); blocking findings deny the command with the fix, uncertain results ask you. See [AI Agents](https://greengate-dev.github.io/greengate/guide/agents). |
 | `greengate init` | Interactive wizard that generates `.greengate.toml`. Pass `--ci github-actions` to also scaffold a ready-to-use workflow and `dependabot.yml`. |
 | `greengate install-hooks` | Install greengate as a git pre-commit hook (runs `scan --staged` on every commit). |
 | `greengate watch` | Re-run `scan` automatically whenever source files change (file-watcher mode for local development). |

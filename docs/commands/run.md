@@ -1,16 +1,21 @@
 ---
 title: 'run — Pipeline Executor'
-description: 'Run all quality gate steps defined in .greengate.toml in order. A failing step halts the pipeline immediately with a non-zero exit code.'
+description: 'Run every quality gate step defined in .greengate.toml and get one merged report and one exit code — the worst result among the steps.'
 ---
 
 # run — Pipeline Executor
 
-Runs all pipeline steps defined in `.greengate.toml` in order. A failing step stops the pipeline immediately with a non-zero exit code.
+Runs every pipeline step defined in `.greengate.toml`, in order, and merges
+their results into one report and one exit code: the worst result among the
+steps. A failing step does not stop the others, so one run shows everything
+that needs fixing. Set `fail_fast` to stop at the first failure instead.
 
 ## Usage
 
 ```bash
-greengate run
+greengate run                              # every step
+greengate run --fail-fast                  # stop at the first step that does not pass
+greengate run --report greengate.sarif     # the merged report, as SARIF or JSON
 ```
 
 ## Configuration
@@ -19,6 +24,8 @@ Define your pipeline steps in `.greengate.toml`:
 
 ```toml
 [pipeline]
+# Stop at the first step that does not pass (default: run every step).
+fail_fast = false
 steps = [
   "scan",
   "audit",
@@ -114,7 +121,12 @@ every step.
 
 ## Notes
 
-- Steps run sequentially; the first step that does not pass stops the pipeline
-- The exit code reflects the worst result among the steps that ran
+- Steps run sequentially, and all of them run unless `fail_fast` is set. With
+  `fail_fast`, the steps after a failure are listed as *incomplete* ("not
+  run"), never as passed
+- The exit code reflects the worst result: findings outrank errors, errors
+  outrank incomplete checks
+- The merged report (`--report`) prefixes each check with its step, e.g.
+  `audit/osv`, and ends with a per-step summary in the terminal
 - If no `[pipeline]` section is defined in `.greengate.toml`, the command exits with an error message instructing you to add one
 - Use `greengate init` to generate a starter config with a default pipeline

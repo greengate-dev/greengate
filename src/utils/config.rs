@@ -507,6 +507,11 @@ pub struct PipelineConfig {
     /// Each entry is a command string, e.g. "scan", "coverage --min 80".
     #[serde(default)]
     pub steps: Vec<String>,
+    /// Stop at the first step that does not pass. By default every step runs
+    /// and the run reports the worst result, so one failing gate does not
+    /// hide what the others would have found.
+    #[serde(default)]
+    pub fail_fast: bool,
 }
 
 // ── Supply chain config ───────────────────────────────────────────────────────

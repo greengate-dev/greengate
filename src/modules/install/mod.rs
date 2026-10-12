@@ -47,6 +47,10 @@ pub struct InstallOpts<'a> {
     pub isolate: IsolateMode,
     pub no_fail: bool,
     pub policy: &'a SupplyChainConfig,
+    /// Where advisories come from (`[audit] source`).
+    pub audit: &'a crate::utils::config::AuditConfig,
+    /// Which advisories block (`[dependency_review] fail_on_severity`).
+    pub review: &'a crate::utils::config::DependencyReviewConfig,
     pub now: u64,
     /// pip / pip3 binary for pip installs.
     pub pip: String,
@@ -187,8 +191,69 @@ fn plan_policy(
         slopsquat::print_reports(eco, &reports);
         slopsquat::record(eco, &reports, report);
     }
+    advisories(report, planned, current, opts);
     deps_check::print_report(report, checked);
     Ok(())
+}
+
+/// Known advisories in the packages the plan adds or changes. They block at
+/// or above `[dependency_review] fail_on_severity`, like a review of the
+/// same change would, and warn below it.
+fn advisories(
+    report: &mut Report,
+    planned: &Lockfile,
+    current: Option<&Lockfile>,
+    opts: &InstallOpts<'_>,
+) {
+    use crate::utils::config::ReviewFailOn;
+    let before = current
+        .map(deps_check::versions_by_name)
+        .unwrap_or_default();
+    let mut queries: Vec<(crate::deps::Ecosystem, String, String)> = planned
+        .dependencies()
+        // A local or git package of the same name is not the registry's.
+        .filter(|p| !p.version.is_empty() && p.source.is_registry())
+        .filter(|p| !before.get(&p.name).is_some_and(|v| v.contains(&p.version)))
+        .map(|p| (planned.ecosystem, p.name.clone(), p.version.clone()))
+        .collect();
+    queries.sort();
+    queries.dedup();
+    if queries.is_empty() {
+        return;
+    }
+    let answers = crate::modules::audit::advisories(&queries, opts.audit, &mut report.checks);
+    let dir = std::env::current_dir().unwrap_or_default();
+    let blocking = opts.review.fail_on.contains(&ReviewFailOn::NewAdvisory);
+    for ((eco, name, version), list) in queries.iter().zip(answers) {
+        // One version that clears every advisory, not each one's own fix.
+        let target = list
+            .iter()
+            .filter_map(|a| a.fixed_in.clone())
+            .reduce(|a, b| {
+                if crate::registry::requirements::less(*eco, &a, &b) == Some(true) {
+                    b
+                } else {
+                    a
+                }
+            });
+        for a in list {
+            let mut f = package_finding(
+                &format!("OSV/{}", a.id),
+                a.severity,
+                name,
+                version,
+                &dir,
+                a.summary.clone(),
+            );
+            f.remediation = target.as_ref().map(|v| format!("use {name} {v} or later"));
+            f.reference = a.reference.clone();
+            if blocking && opts.review.fail_on_severity.met_by(a.severity) {
+                report.findings.push(f);
+            } else {
+                report.warnings.push(f);
+            }
+        }
+    }
 }
 
 /// Whether `greengate install <manager> <args…>` can take over a legacy

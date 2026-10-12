@@ -202,11 +202,38 @@ enum Commands {
         #[arg(long, default_value = "2000")]
         interval: u64,
     },
-    /// Runs all pipeline steps defined in .greengate.toml in order
-    Run,
+    /// Runs all pipeline steps defined in .greengate.toml in order and exits
+    /// with the worst result; --report writes the merged report
+    Run {
+        /// Stop at the first step that does not pass (overrides [pipeline]
+        /// fail_fast)
+        #[arg(long)]
+        fail_fast: bool,
+    },
     /// Validates .greengate.toml and .greengate/exceptions.toml, and prints
     /// all resolved configuration values
     CheckConfig,
+    /// Check a shell command before running it: plans every dependency
+    /// install in it (`npm i x`, `uv add y`, `cd web && pnpm add z`…) with
+    /// `greengate install --plan` — nothing is installed — and prints a
+    /// greengate.report/v1 document. For agents and editors to wrap.
+    /// Example: greengate check-command -- "npm install left-pad"
+    CheckCommand {
+        /// Directory the command would run in (default: current directory)
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+        /// Give up after this many seconds; the result is then incomplete
+        #[arg(long, default_value = "120")]
+        budget_secs: u64,
+        /// The shell command (quote it, or pass it after `--`)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Agent hooks: check dependency installs before an AI agent runs them
+    Hook {
+        #[command(subcommand)]
+        agent: HookAgent,
+    },
     /// Manage the baseline of known findings (.greengate-baseline.json)
     Baseline {
         #[command(subcommand)]
@@ -472,6 +499,22 @@ enum DepsAction {
 }
 
 #[derive(Subcommand)]
+enum HookAgent {
+    /// Claude Code PreToolUse hook: reads the event on stdin. Blocking
+    /// findings deny the command, warnings or unfinished checks ask the
+    /// user, and a clean result prints nothing (normal permissions apply).
+    ClaudeCode {
+        /// Give up after this many seconds and ask the user
+        #[arg(long, default_value = "60")]
+        budget_secs: u64,
+        /// Approve dependency installs that pass, skipping the permission
+        /// prompt (Claude Code deny rules still apply)
+        #[arg(long)]
+        allow_on_pass: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum BaselineAction {
     /// Upgrade a version-1 baseline (exact lines) to version 2 (fingerprints
     /// that survive code moving). Re-scans, and keeps the findings the old
@@ -519,7 +562,7 @@ fn install_opts<'a>(
     args: Vec<String>,
     no_fail: bool,
     pip: String,
-    policy: &'a utils::config::SupplyChainConfig,
+    cfg: &'a utils::config::Config,
 ) -> modules::install::InstallOpts<'a> {
     modules::install::InstallOpts {
         manager: manager.to_string(),
@@ -528,7 +571,9 @@ fn install_opts<'a>(
         isolate: modules::install::sandbox::IsolateMode::Auto,
         no_fail,
         pip,
-        policy,
+        policy: &cfg.supply_chain,
+        audit: &cfg.audit,
+        review: &cfg.dependency_review,
         now: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs()),
@@ -615,6 +660,31 @@ impl Exit {
 fn run() -> anyhow::Result<ExitCode> {
     let t0 = std::time::Instant::now();
     let cli = Cli::parse();
+
+    // The agent hook runs before the config is loaded: a hook that exits 2
+    // blocks the agent's command, so a broken .greengate.toml must not turn
+    // into "block every shell command". Problems surface as an `ask`.
+    if let Commands::Hook {
+        agent:
+            HookAgent::ClaudeCode {
+                budget_secs,
+                allow_on_pass,
+            },
+    } = &cli.command
+    {
+        use std::io::Read;
+        let mut input = String::new();
+        if std::io::stdin().read_to_string(&mut input).is_ok()
+            && let Some(out) = modules::agent::claude_code_hook(
+                &input,
+                std::time::Duration::from_secs(*budget_secs),
+                *allow_on_pass,
+            )
+        {
+            println!("{out}");
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
 
     // Suppress the "Loaded config" info message when emitting structured output
     // so that JSON/SARIF/JUnit parsers don't see unexpected text on stderr.
@@ -968,13 +1038,38 @@ fn run() -> anyhow::Result<ExitCode> {
                 interval_ms: interval,
             })?;
         }
-        Commands::Run => {
-            let result = modules::pipeline::run_pipeline(&cfg, exit.on_incomplete);
+        Commands::Run { fail_fast } => {
+            let result = modules::pipeline::run_pipeline(
+                &cfg,
+                exit.on_incomplete,
+                fail_fast || cfg.pipeline.fail_fast,
+            );
             return exit.finish("run", result);
         }
         Commands::CheckConfig => {
             modules::check_config::run_check_config()?;
         }
+        Commands::CheckCommand {
+            cwd,
+            budget_secs,
+            command,
+        } => {
+            let cwd = match cwd {
+                Some(c) => c,
+                None => std::env::current_dir()?,
+            };
+            let outcome = modules::agent::check(
+                &command.join(" "),
+                &cwd,
+                std::time::Duration::from_secs(budget_secs),
+            );
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&outcome.report.to_json(t0.elapsed().as_millis()))?
+            );
+            return exit.finish("check-command", Ok(outcome.report));
+        }
+        Commands::Hook { .. } => unreachable!("handled before the config is loaded"),
         Commands::Baseline {
             action: BaselineAction::Migrate,
         } => {
@@ -1055,13 +1150,8 @@ fn run() -> anyhow::Result<ExitCode> {
                     "pip-install",
                     Some(&format!("pip {}", routed.join(" "))),
                 );
-                let result = modules::install::run_install(install_opts(
-                    "pip",
-                    routed,
-                    no_fail,
-                    pip,
-                    &cfg.supply_chain,
-                ));
+                let result =
+                    modules::install::run_install(install_opts("pip", routed, no_fail, pip, &cfg));
                 return exit.finish("pip-install", result);
             }
             modules::install::deprecation("pip-install", None);
@@ -1092,7 +1182,7 @@ fn run() -> anyhow::Result<ExitCode> {
                     routed,
                     no_fail,
                     "pip".into(),
-                    &cfg.supply_chain,
+                    &cfg,
                 ));
                 return exit.finish("cargo-add", result);
             }
@@ -1137,6 +1227,8 @@ fn run() -> anyhow::Result<ExitCode> {
                 no_fail,
                 pip,
                 policy: &cfg.supply_chain,
+                audit: &cfg.audit,
+                review: &cfg.dependency_review,
                 now: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_secs()),
@@ -1158,7 +1250,7 @@ fn run() -> anyhow::Result<ExitCode> {
                     args,
                     no_fail || !cfg.supply_chain.block_phantom_scripts,
                     "pip".into(),
-                    &cfg.supply_chain,
+                    &cfg,
                 ));
                 return exit.finish("watch-install", result);
             }

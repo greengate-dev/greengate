@@ -43,13 +43,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `[dependency_review]`: `fail_on_severity`, `fail_on`, `deny_licenses` / `allow_licenses` (SPDX `AND`/`OR` aware), `unknown_license`. Exceptions apply.
   - `--format text|json|markdown`; `--annotate` posts one PR comment, updated in place, and a check run annotating lockfile lines. GitHub Action input `dependency-review: true`.
 - GitHub API calls honour `GITHUB_API_URL` (GitHub Enterprise Server).
+- Checking what AI agents install:
+  - `greengate check-command -- "<shell command>"` finds the dependency installs in a command (`npm i`, `pnpm add`, `yarn`, `bun add`, `pip install`, `uv add`/`sync`, `cargo add`; through `&&`, `cd`, `sudo`, `bash -c`), plans each with `install --plan`, and prints a `greengate.report/v1` document. Installs it cannot plan (Poetry, `cargo install`, global installs, `$(…)` arguments) make it incomplete.
+  - `greengate hook claude-code`: a Claude Code `PreToolUse` hook. Blocking findings deny the command, with the version to use instead; warnings, unfinished checks and unplannable installs ask you; a clean result stays silent so your permissions still apply (`--allow-on-pass` to approve). It always exits `0`, so a broken config cannot block every command. About a second per install with warm caches; `--budget-secs` caps it, and running out asks.
+- `install` checks the packages it adds or changes for known advisories, blocking at or above `[dependency_review] fail_on_severity` and naming one version that clears them all.
+- `[pipeline] fail_fast` and `run --fail-fast`; the run ends with a per-step summary.
+- Docs: [AI Agents](docs/guide/agents.md) guide and a [report schema](docs/reference/report-schema.md) reference.
 
 ### Changed
 - **Breaking:** `audit` exits `3` when it could not check every dependency, instead of warning and exiting `0`. That covers an unreachable or short OSV response, a truncated advisory list, an unreadable lockfile, and `requirements.txt` entries that are not `==` pinned (ranges, `-r` includes, editable installs). Findings still exit `1`; set `on_incomplete = "warn"` to keep exiting `0`.
 - **Breaking:** exit codes are now `0` passed, `1` findings, `2` usage or config error, `3` incomplete, `4` error. Previously runtime errors and an invalid `.greengate.toml` exited `1`, the same as findings.
 - **Breaking:** these runs are now incomplete (exit `3`) instead of passing: `lint` with a manifest that did not parse (un-rendered templates are still skipped); `ci-lint` with a workflow that could not be read; `lighthouse` when PageSpeed Insights cannot be reached or returns an error (previously exit `1`); `sbom --verify` without an expected signer identity; install wrappers whose registry lookups failed; `cargo-add` when `cargo fetch` fails or a new crate's source cannot be found; `image-scan` when no layers are found or a layer cannot be extracted.
 - A wrapped package manager that fails is an error (exit `4`).
-- `run` reports the worst result among the steps that ran, and prints why a step could not run.
+- **Breaking:** `run` runs every step by default and reports the worst result, instead of stopping at the first failing step; set `[pipeline] fail_fast = true` for the old behaviour. Steps not run under `fail_fast` are reported as incomplete. It prints why a step could not run.
 - `watch-install` reports every post-install layer (scripts, phantom files, executable drops) together instead of stopping at the first, and no longer reports a pre-existing script threat twice.
 - GitHub Action: new `report` input and `status`, `incomplete` and `report-path` outputs; the existing `findings` output, which was never set, now is. Inputs reach the script through environment variables instead of `${{ }}` interpolation.
 - Telemetry records `greengate_command_*` metrics for every gate, not only `audit`, `coverage` and `ci-lint`.

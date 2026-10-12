@@ -1,7 +1,8 @@
 /// `greengate run` — pipeline runner.
 ///
 /// Reads `[pipeline] steps = [...]` from `.greengate.toml` and runs each step
-/// in order. A failing step stops the pipeline and exits non-zero.
+/// in order — all of them unless `[pipeline] fail_fast = true` — and exits
+/// with the worst result.
 ///
 /// Each step is either a bare command name ("scan") or a command with flags
 /// ("coverage --min 80"). The runner dispatches directly to the same module
@@ -15,12 +16,16 @@ use anyhow::Result;
 use std::fmt::Display;
 use std::str::FromStr;
 
-/// Run the pipeline defined in `.greengate.toml`.
 /// Run every configured step in order and merge their results into one
-/// report. Checks and findings keep their step as a prefix so the merged
-/// report says where each came from. Stops at the first step that does not
-/// pass under `on_incomplete`.
-pub fn run_pipeline(cfg: &config::Config, on_incomplete: OnIncomplete) -> Result<Report> {
+/// report and one exit code. Checks keep their step as a prefix so the merged
+/// report says where each came from. With `fail_fast`, stops at the first
+/// step that does not pass under `on_incomplete`; the steps not run are
+/// listed as incomplete, never as passed.
+pub fn run_pipeline(
+    cfg: &config::Config,
+    on_incomplete: OnIncomplete,
+    fail_fast: bool,
+) -> Result<Report> {
     let steps = &cfg.pipeline.steps;
 
     if steps.is_empty() {
@@ -32,6 +37,9 @@ pub fn run_pipeline(cfg: &config::Config, on_incomplete: OnIncomplete) -> Result
     terminal::info(&format!("Running pipeline: {} step(s)", steps.len()));
 
     let mut merged = Report::new("run");
+    // (step, status, findings, passed) for the summary.
+    let mut summary: Vec<(String, Option<Status>, usize, bool)> = Vec::new();
+    let mut stopped_at: Option<String> = None;
 
     for (i, step_str) in steps.iter().enumerate() {
         let step_num = i + 1;
@@ -40,6 +48,14 @@ pub fn run_pipeline(cfg: &config::Config, on_incomplete: OnIncomplete) -> Result
             Some(c) => *c,
             None => continue,
         };
+        if let Some(failed) = &stopped_at {
+            merged.checks.push(Check::incomplete(
+                command,
+                format!("not run: fail_fast stopped the pipeline after '{failed}'"),
+            ));
+            summary.push((step_str.clone(), None, 0, false));
+            continue;
+        }
 
         eprintln!();
         eprintln!(
@@ -60,17 +76,35 @@ pub fn run_pipeline(cfg: &config::Config, on_incomplete: OnIncomplete) -> Result
         };
         let status = step.status();
         let passed = step.exit_code(on_incomplete) == 0;
+        let findings = step.findings.len();
         merge_step(&mut merged, command, step);
+        summary.push((step_str.clone(), Some(status), findings, passed));
 
         if passed {
             terminal::success(&format!("Step '{}' {}.", command, status_word(status)));
         } else {
             eprintln!("✗ Step '{}' FAILED: {}.", command, status_word(status));
-            // Stop pipeline on first failure
-            break;
+            if fail_fast {
+                stopped_at = Some(command.to_string());
+            }
         }
     }
 
+    eprintln!();
+    eprintln!("Pipeline summary:");
+    for (step, status, findings, passed) in &summary {
+        let (mark, what) = match status {
+            None => ("-", "not run".to_string()),
+            Some(s) => (
+                if *passed { "✓" } else { "✗" },
+                match (s, findings) {
+                    (Status::Findings, n) => format!("{} ({n})", status_word(*s)),
+                    _ => status_word(*s).to_string(),
+                },
+            ),
+        };
+        eprintln!("  {mark} {step:<28} {what}");
+    }
     eprintln!();
     if merged.exit_code(on_incomplete) == 0 {
         terminal::success(&format!(
@@ -79,7 +113,12 @@ pub fn run_pipeline(cfg: &config::Config, on_incomplete: OnIncomplete) -> Result
             steps.len()
         ));
     } else {
-        eprintln!("Pipeline failed: {}.", status_word(merged.status()));
+        let failed = summary.iter().filter(|s| s.1.is_some() && !s.3).count();
+        eprintln!(
+            "Pipeline failed: {} — {failed} of {} step(s) did not pass.",
+            status_word(merged.status()),
+            steps.len()
+        );
     }
     Ok(merged)
 }

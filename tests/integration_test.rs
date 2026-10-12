@@ -1587,6 +1587,7 @@ fn pip_install_runs_the_install_subcommand() {
     for args in [&["requests"][..], &["install", "requests"][..]] {
         let status = Command::new(binary())
             .args(["pip-install", "--pip", pip.to_str().unwrap()])
+            .env("GREENGATE_OSV_URL", quiet_osv())
             .args(args)
             .current_dir(dir.path())
             .status()
@@ -1617,6 +1618,7 @@ fn pip_install_pip_failure_fails_the_gate() {
 
     let status = Command::new(binary())
         .args(["pip-install", "--no-fail", "--pip", pip.to_str().unwrap()])
+        .env("GREENGATE_OSV_URL", quiet_osv())
         .arg("requests")
         .current_dir(dir.path())
         .status()
@@ -1645,6 +1647,7 @@ fn cargo_add_failure_fails_the_gate() {
 
     let status = Command::new(binary())
         .args(["cargo-add", "serde"])
+        .env("GREENGATE_OSV_URL", quiet_osv())
         .env("PATH", path)
         .current_dir(dir.path())
         .status()
@@ -1760,6 +1763,43 @@ fn run_reports_the_worst_step_result() {
         Some(4),
         "a step that could not run is an error, not a finding"
     );
+}
+
+#[test]
+fn run_runs_every_step_unless_fail_fast() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM node:latest\n").unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"coverage --file missing.info\", \"docker-lint\"]\n",
+    )
+    .unwrap();
+    // Every step runs; findings outrank the error of the first.
+    let (code, report) = report_of(dir.path(), &["run"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert!(!report["findings"].as_array().unwrap().is_empty());
+    let check = |r: &serde_json::Value, id: &str| {
+        r["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .cloned()
+    };
+    assert_eq!(check(&report, "coverage").unwrap()["status"], "error");
+
+    // fail_fast: the second step is listed as not run, never as passed.
+    let (code, report) = report_of(dir.path(), &["run", "--fail-fast"]);
+    assert_eq!(code, Some(4), "{report}");
+    let skipped = check(&report, "docker-lint").unwrap();
+    assert_eq!(skipped["status"], "incomplete");
+    assert!(skipped["reason"].as_str().unwrap().contains("not run"));
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nfail_fast = true\nsteps = [\"coverage --file missing.info\", \"docker-lint\"]\n",
+    )
+    .unwrap();
+    assert_eq!(report_of(dir.path(), &["run"]).0, Some(4));
 }
 
 // ── --report ──────────────────────────────────────────────────────────────────
@@ -2673,9 +2713,30 @@ const TAMPER: &str =
 const BUILD: &str = r#"{"postinstall":"node -e \"require('fs').mkdirSync('build',{recursive:true});require('fs').writeFileSync('build/out','ok')\""}"#;
 const LEAK: &str = r#"{"postinstall":"node -e \"require('fs').writeFileSync('leak', String(process.env.NPM_TOKEN))\""}"#;
 
+/// An OSV server that knows no advisories, shared by every test that
+/// installs: install plans query OSV for the packages they add.
+fn quiet_osv() -> &'static str {
+    static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    URL.get_or_init(|| {
+        fake_http(|_, path, body| {
+            if path != "/v1/querybatch" {
+                return (404, "{}".into());
+            }
+            let n = serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|q| q["queries"].as_array().map(Vec::len))
+                .unwrap_or(0);
+            let results = vec![serde_json::json!({}); n];
+            (200, serde_json::json!({ "results": results }).to_string())
+        })
+        .0
+    })
+}
+
 fn install(dir: &std::path::Path, args: &[&str]) -> (Option<i32>, serde_json::Value, String) {
     let out = Command::new(binary())
         .args(["install", "--report", "r.json"])
+        .env("GREENGATE_OSV_URL", quiet_osv())
         .args(args)
         .env("NPM_TOKEN", "secret-token-value")
         .env("npm_config_cache", dir.join(".npm-cache"))
@@ -3122,6 +3183,7 @@ fn watch_install_routes_real_package_managers_into_install() {
     let dir = npm_project(&[("builder", BUILD)]);
     let out = Command::new(binary())
         .args(["watch-install", "npm", "install"])
+        .env("GREENGATE_OSV_URL", quiet_osv())
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -3934,4 +3996,103 @@ fn deps_review_annotate_updates_one_comment() {
         .find(|(m, p, b)| *m == "PATCH" && p.ends_with("/check-runs/5") && b.contains("completed"))
         .unwrap();
     assert!(done.2.contains("\"failure\""));
+}
+
+// ── check-command and the agent hook ─────────────────────────────────────────
+
+fn hook(dir: &std::path::Path, command: &str, extra: &[&str]) -> (Option<i32>, String) {
+    use std::io::Write;
+    let mut child = Command::new(binary())
+        .args(["hook", "claude-code"])
+        .args(extra)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let event = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": dir,
+    });
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(event.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn check_command_reports_on_dependency_installs_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_in(
+        dir.path(),
+        &["check-command", "--", "npm test && cargo build"],
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["schema"], "greengate.report/v1");
+    assert_eq!(report["status"], "passed");
+
+    // An install greengate cannot plan is not a pass.
+    let out = run_in(
+        dir.path(),
+        &["check-command", "--", "poetry", "add", "requests"],
+    );
+    assert_eq!(out.status.code(), Some(3));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["status"], "incomplete");
+    assert!(
+        report["checks"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Poetry")
+    );
+}
+
+#[test]
+fn hook_is_silent_for_other_commands_and_asks_when_unsure() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        hook(dir.path(), "git status && ls", &[]),
+        (Some(0), String::new())
+    );
+
+    let (code, out) = hook(dir.path(), "cargo install ripgrep", &[]);
+    assert_eq!(code, Some(0));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask");
+
+    // Out of time before the plan could run: ask, never allow.
+    let (code, out) = hook(
+        dir.path(),
+        "npm i left-pad",
+        &["--budget-secs", "0", "--allow-on-pass"],
+    );
+    assert_eq!(code, Some(0));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask");
+    assert!(
+        v["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("budget"),
+        "{v}"
+    );
+}
+
+#[test]
+fn hook_never_exits_2_on_a_broken_config() {
+    // Exit 2 would block every shell command the agent runs.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".greengate.toml"), "not = [valid").unwrap();
+    assert_eq!(hook(dir.path(), "ls", &[]), (Some(0), String::new()));
 }

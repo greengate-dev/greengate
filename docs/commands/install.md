@@ -45,7 +45,7 @@ suspicious ones block (`INSTALL/StartupCode`).
 
 | Phase | What happens | Package code runs? |
 |---|---|---|
-| **Plan** | npm resolves the full tree into a lockfile in a scratch copy of the project (`--package-lock-only --ignore-scripts`). greengate applies the [`deps check`](deps.md#deps-check-supply-chain-policy) policies to every package the install adds or changes — release cooldown, new install scripts, lost provenance, registry binding, sources — and the name guard to packages named on the command line. A violation stops here: nothing is downloaded. | No |
+| **Plan** | npm resolves the full tree into a lockfile in a scratch copy of the project (`--package-lock-only --ignore-scripts`). greengate applies the [`deps check`](deps.md#deps-check-supply-chain-policy) policies to every package the install adds or changes — release cooldown, new install scripts, lost provenance, registry binding, sources — checks those packages for known advisories (blocking at or above `[dependency_review] fail_on_severity`, `high` by default, with the version that clears them all), and applies the name guard to packages named on the command line. A violation stops here: nothing is downloaded. | No |
 | **Fetch** | `npm ci --ignore-scripts` downloads and extracts the planned tree. | No |
 | **Verify artifacts** | npm checks every tarball against the lockfile integrity; greengate checks nothing outside the plan was installed. | No |
 | **Inspect** | Every installed package — nested copies included — that runs code at install: lifecycle scripts, the helper files they call (`node install.js`), and `binding.gyp` builds. Suspicious patterns (network, `eval`, shell, `process.env`, `../`, an embedded encoded payload) are reported. | No |

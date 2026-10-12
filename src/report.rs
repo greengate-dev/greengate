@@ -8,7 +8,7 @@
 //! Commands build a [`Report`] instead of deciding exit codes themselves;
 //! `main` turns the report's [`Status`] into the process exit code.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -17,7 +17,7 @@ pub const SCHEMA: &str = "greengate.report/v1";
 
 /// Overall result of a gate, ordered by precedence: when a run produced
 /// several, the greatest one is reported.
-#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     /// Everything was checked and nothing violates policy.
@@ -54,7 +54,7 @@ pub enum OnIncomplete {
     Warn,
 }
 
-#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Unknown,
@@ -79,7 +79,7 @@ impl Severity {
 
 /// One unit of verification — a lockfile read, a database query — and
 /// whether it actually ran.
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Check {
     pub id: String,
     pub status: Status,
@@ -124,7 +124,7 @@ impl Check {
     }
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Location {
     File {
@@ -149,7 +149,7 @@ pub enum Location {
     },
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Finding {
     pub rule: String,
     pub severity: Severity,
@@ -170,7 +170,7 @@ pub struct Finding {
 }
 
 /// What suppressed a finding.
-#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SuppressionKind {
     /// A `greengate: ignore` comment in the source.
@@ -185,7 +185,7 @@ pub enum SuppressionKind {
     Triage,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Suppression {
     pub kind: SuppressionKind,
     /// The exception id, or the baseline entry's original location.
@@ -198,7 +198,7 @@ pub struct Suppression {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires: Option<String>,
     /// The exception has expired, so the finding counts again.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expired: bool,
 }
 
