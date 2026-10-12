@@ -45,8 +45,16 @@ fn source_from_resolved(resolved: &str) -> Source {
     if r.starts_with("http://") || r.starts_with("https://") {
         // Registry tarballs live under `/<name>/-/<file>.tgz`.
         if r.contains("/-/") {
+            // GREENGATE_NPM_REGISTRY names a mirror of the public registry
+            // (a proxy such as Artifactory or Verdaccio): its packages are the
+            // public ones, checked against it like registry.npmjs.org's.
+            let mirror = std::env::var("GREENGATE_NPM_REGISTRY")
+                .ok()
+                .map(|m| m.trim().trim_end_matches('/').to_string())
+                .filter(|m| !m.is_empty());
             let default = r.starts_with("https://registry.npmjs.org/")
-                || r.starts_with("https://registry.yarnpkg.com/");
+                || r.starts_with("https://registry.yarnpkg.com/")
+                || mirror.is_some_and(|m| r.starts_with(&format!("{m}/")));
             let base = r.split("/-/").next().unwrap_or(r);
             let registry = base
                 .strip_prefix("https://")

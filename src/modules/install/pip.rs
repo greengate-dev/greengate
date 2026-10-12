@@ -380,8 +380,8 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
             Kind::Wheel => {
                 for (pth, code) in wheel_pth(path).unwrap_or_default() {
                     startup_code.push(format!("{}=={} ({pth})", item.name, item.version));
-                    let signals = scan_python_signals(&code);
-                    if !signals.is_empty() || super::inspect::encoded_blob(&code).is_some() {
+                    let signals = super::inspect::pth_signals(&code);
+                    if !signals.is_empty() {
                         let f = package_finding(
                             "INSTALL/StartupCode",
                             if allowlisted {
@@ -525,7 +525,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
     for e in std::fs::read_dir(&built)?.flatten() {
         let p = e.path();
         for (pth, code) in wheel_pth(&p).unwrap_or_default() {
-            if !scan_python_signals(&code).is_empty() {
+            if !super::inspect::pth_signals(&code).is_empty() {
                 report.findings.push(package_finding(
                     "INSTALL/StartupCode",
                     Severity::High,

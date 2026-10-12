@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `greengate hook claude-code`: a Claude Code `PreToolUse` hook. Blocking findings deny the command, with the version to use instead; warnings, unfinished checks and unplannable installs ask you; a clean result stays silent so your permissions still apply (`--allow-on-pass` to approve). It always exits `0`, so a broken config cannot block every command. About a second per install with warm caches; `--budget-secs` caps it, and running out asks.
 - `install` checks the packages it adds or changes for known advisories, blocking at or above `[dependency_review] fail_on_severity` and naming one version that clears them all.
 - `[pipeline] fail_fast` and `run --fail-fast`; the run ends with a per-step summary.
+- `GREENGATE_NPM_REGISTRY` can name a mirror of the public npm registry (an Artifactory or Verdaccio proxy): packages resolved from it are checked like registry.npmjs.org's instead of being skipped as private.
+- `bench/install/gate.py`: `greengate install` driving real npm, pip and cargo against a local fixture registry, scored by whether each payload's effect happened. With bubblewrap, 24/24 attack trials had no effect and 21/21 benign installs worked, at a median 0.3 s over a plain install. Results in `bench/INSTALL_GATE_RESULTS.md`.
 - Docs: [AI Agents](docs/guide/agents.md) guide and a [report schema](docs/reference/report-schema.md) reference.
 
 ### Changed
@@ -78,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `reassure` panicked on component names with multi-byte characters near the 40-character column.
 - `requirements.txt` pins with extras (`pkg[extra]==1.0`), environment markers, `--hash` options, line continuations or `===` were mis-parsed into wrong names or versions.
 - `audit` suggested the first fixed version an advisory lists, which can belong to another release line (e.g. `minimist@0.0.8` → `1.2.6` instead of `0.2.4`); it now suggests the fix for the installed version's line.
+- `.pth` startup files: one that writes or deletes files now blocks the wheel (previously only network, subprocess, eval and similar did), and setuptools' `distutils-precedence.pth`, editable-install finders and namespace-package stubs are recognised as benign — installing setuptools itself was blocked.
 - `scan` read files inside `.git/`, so every repository reported the committer emails in `.git/config` and the reflogs as PII.
 - The `ci-lint` docs listed rule ids (`CILINT/…`), severities and a rule (`SecretsInEnv`) that do not exist, and a suppression setting that had no effect.
 

@@ -8,7 +8,7 @@ use super::{
     Backup, InstallOpts, Scratch, inspect, package_finding, plan_policy, print_install, rel,
 };
 use crate::deps;
-use crate::modules::pip_audit::{extract_package_names, scan_python_signals};
+use crate::modules::pip_audit::extract_package_names;
 use crate::report::{Check, Report, Severity};
 use crate::utils::terminal;
 use anyhow::{Context, Result, bail};
@@ -320,8 +320,8 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
             continue;
         }
         startup.push(name.clone());
-        let signals = scan_python_signals(&code);
-        if !signals.is_empty() || inspect::encoded_blob(&code).is_some() {
+        let signals = inspect::pth_signals(&code);
+        if !signals.is_empty() {
             // It has not run yet: no Python has started since the sync.
             let quarantined = path.with_extension("pth.greengate-blocked");
             std::fs::rename(&path, &quarantined)?;

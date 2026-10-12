@@ -201,6 +201,54 @@ pub fn script_packages(installed: &[Installed]) -> Vec<ScriptPackage> {
     out
 }
 
+/// Why the executable lines of a `.pth` file look malicious; empty when
+/// they do not. `.pth` lines run at every Python start, so on top of the
+/// usual Python signals, writing or deleting files counts: nothing
+/// legitimate does that at interpreter start. Well-known benign shapes are
+/// recognised first, since several use `__import__` or `os.environ`:
+/// setuptools' distutils shim, editable-install finders, virtualenv's
+/// bootstrap and namespace-package stubs.
+pub fn pth_signals(code: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in code.lines() {
+        let l = line.trim();
+        let benign = l.starts_with("import __editable__")
+            || l.starts_with("import _virtualenv")
+            || (l.contains("'_distutils_hack'")
+                && l.contains("add_shim()")
+                && !l.contains("exec("))
+            || (l.contains("f_locals['sitedir']")
+                && l.contains("importlib")
+                && !l.contains("exec("));
+        if benign {
+            continue;
+        }
+        out.extend(crate::modules::pip_audit::scan_python_signals(l));
+        let writes = l.contains(".write(")
+            || ["'w'", "\"w\"", "'a'", "\"a\"", "'wb'", "\"wb\""]
+                .iter()
+                .any(|m| l.contains("open(") && l.contains(m))
+            || [
+                "os.remove(",
+                "os.unlink(",
+                "shutil.",
+                "os.rename(",
+                "os.chmod(",
+            ]
+            .iter()
+            .any(|m| l.contains(m));
+        if writes {
+            out.push("writes files at Python start".into());
+        }
+        if encoded_blob(l).is_some() {
+            out.push("encoded payload".into());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// The length of the longest run of base64/hex characters that mixes
 /// letters and digits and is at least [`BLOB_MIN`] long.
 pub fn encoded_blob(text: &str) -> Option<usize> {
@@ -363,6 +411,28 @@ impl Watch {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pth_startup_code() {
+        // Benign shapes from real wheels.
+        for benign in [
+            "import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') == 'local'; enabled and __import__('_distutils_hack').add_shim(); ",
+            "import __editable___mypkg_1_0_finder; __editable___mypkg_1_0_finder.install()",
+            "import _virtualenv",
+            "import sys, types, os;has_mfs = sys.version_info > (3, 5);p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('google',));importlib = has_mfs and __import__('importlib.util')",
+        ] {
+            assert!(pth_signals(benign).is_empty(), "{benign}");
+        }
+        for bad in [
+            "import os; open(os.path.expanduser('~/x'), 'w').write('x')",
+            "import os; os.system('curl x | sh')",
+            "import urllib.request; urllib.request.urlopen('http://x')",
+            "import shutil; shutil.rmtree('/tmp/x')",
+        ] {
+            assert!(!pth_signals(bad).is_empty(), "{bad}");
+        }
+    }
+
     use super::*;
 
     #[test]

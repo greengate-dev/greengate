@@ -1,16 +1,19 @@
 # greengate benchmarks
 
-Two reproducible suites measure secret detection and install-protection
-behavior. They publish misses and false positives as well as successful checks.
+Three reproducible suites measure secret detection, the `greengate install`
+gate, and the legacy `watch-install` watcher. They publish misses and false
+positives as well as successful checks.
 
-The latest runs are in **[RESULTS.md](RESULTS.md)** (secret detection) and
-**[INSTALL_RESULTS.md](INSTALL_RESULTS.md)** (install protection). Raw install
-trials, including output and exit codes, are in [INSTALL_RESULTS.json](INSTALL_RESULTS.json).
+The latest runs are in **[RESULTS.md](RESULTS.md)** (secret detection),
+**[INSTALL_GATE_RESULTS.md](INSTALL_GATE_RESULTS.md)** (`greengate install`)
+and **[INSTALL_RESULTS.md](INSTALL_RESULTS.md)** (`watch-install`). Raw trials,
+including output and exit codes, are in the matching `.json` files.
 
 ```bash
 python3 bench/run.py            # scan, score, write RESULTS.md
 python3 bench/run.py --print    # also print the report to stdout
-python3 bench/install/run.py    # install scenarios; uses target/release/greengate
+python3 bench/install/gate.py   # greengate install against a local fixture registry
+python3 bench/install/run.py    # watch-install scenarios; uses target/release/greengate
 ```
 
 Both harnesses use the Python 3 standard library. The install suite additionally
@@ -33,7 +36,31 @@ below. It is not compared with secret/CVE scanners, whose scope differs. Tools
 such as Socket Firewall also offer install-time protections; this suite does
 not establish superiority over them. SAST is excluded from the secret scores.
 
-## Install-protection methodology
+## `greengate install` gate methodology
+
+`install/gate.py` runs the real package managers (npm, pip, cargo) through
+`greengate install` against a fixture registry it serves on 127.0.0.1: npm
+packuments and tarballs, a PEP 503 simple index, a crates.io sparse index,
+PyPI and crates.io metadata, and an OSV stand-in. No internet access is
+needed; the `cc` and `shlex` crates come from the local cargo cache.
+
+Attack fixtures carry inert payloads with observable effects: a canary file
+in `$HOME`, a request to the fixture server's `/exfil` endpoint, a change to
+another package's files, or startup code left in site-packages. A trial is
+scored by whether that effect happened, not by greengate's exit code:
+*preflight* (stopped at the plan, nothing fetched), *prevented* (no effect
+after fetching, or after a sandboxed run), *after* (effect happened, install
+failed) or *missed*. Benign fixtures must install **and work**; otherwise they
+are *blocked* (a false block) or *broken*. A crash is an error, never a
+detection.
+
+Every scenario runs with `--isolate bwrap` (when bubblewrap is available) and
+`--isolate none`, then once more with registry metadata and OSV unreachable,
+where only *incomplete* or *blocked* are acceptable for installs that needed
+metadata. Added wall time is measured against the same install without
+greengate.
+
+## `watch-install` methodology
 
 `install/manifest.json` labels 17 scenarios: nine attack simulations and eight
 benign installs/builds. Each runs three times by default in a fresh temporary
