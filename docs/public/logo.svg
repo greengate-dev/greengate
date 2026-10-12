@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="gg-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#123326"/>
+      <stop offset="1" stop-color="#08170f"/>
+    </linearGradient>
+    <linearGradient id="gg-gate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4ade80"/>
+      <stop offset="1" stop-color="#16a34a"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#gg-bg)"/>
+  <rect x="6" y="6" width="500" height="500" rx="110" fill="none" stroke="#2f6b4c" stroke-opacity=".45" stroke-width="4"/>
+  <path d="M128 404V244a128 128 0 0 1 256 0V404" fill="none" stroke="url(#gg-gate)" stroke-width="46" stroke-linecap="round"/>
+  <path d="M202 314l40 40 72-84" fill="none" stroke="#ecfdf3" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

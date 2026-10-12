@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="greengate — stop the supply-chain attacks your CVE scanner can't see" width="100%">
+</p>
+
 # greengate
 
 **Stop the supply-chain attacks your CVE scanner can't see — one static binary, no Docker.**
