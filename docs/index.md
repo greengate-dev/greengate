@@ -45,6 +45,4 @@ features:
     details: "Parses LCOV and Cobertura XML. Fails the build when line coverage drops below a configurable threshold. The review command goes further — it checks coverage only for newly added lines in a PR diff."
   - title: CI-Native Output
     details: "Five output formats: SARIF 2.1.0, JSON, JUnit XML, GitLab SAST, and plain text. GitHub Check Run annotations with per-line findings and rich PR summary comments. Plugs into Code Scanning, GitLab Security Dashboard, and SonarQube."
-  - title: Web Performance
-    details: "Lighthouse audits via the PageSpeed Insights API gate on performance, accessibility, best practices, and SEO scores. Fail the build when scores drop below configurable thresholds."
 ---

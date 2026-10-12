@@ -58,90 +58,7 @@ Neither replaces the other. A compromised package can be zero-day (not in OSV ye
 
 ---
 
-## 3. SaaS startup — post-deploy Lighthouse health check
-
-**Situation:** You ship helpdeck-landing to production on every merge to `main`. You want to know immediately if a deploy breaks your Lighthouse scores.
-
-**How it works:** Run Lighthouse _after_ deploy so it tests the new live code.
-
-```yaml
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: npm run build
-      - run: ./scripts/deploy.sh   # your deploy script
-
-  lighthouse:
-    needs: deploy                  # waits for deploy to finish
-    runs-on: ubuntu-latest
-    steps:
-      - name: Install greengate
-        run: |
-          curl -sL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-linux-amd64 \
-            -o /usr/local/bin/greengate && chmod +x /usr/local/bin/greengate
-
-      - name: Lighthouse post-deploy audit
-        env:
-          PAGESPEED_API_KEY: ${{ secrets.PAGESPEED_API_KEY }}
-        run: |
-          greengate lighthouse \
-            --url https://yourapp.com \
-            --min-performance 85 \
-            --min-accessibility 90
-```
-
-**What it catches:** Image regressions, unoptimized bundles, missing meta tags, accidental `noindex` — after every production deploy.
-
----
-
-## 4. SaaS startup — pre-merge gate with staging environment
-
-**Situation:** You have a staging server. You want to block merges if a PR degrades performance _before_ it hits production.
-
-**How it works:** Deploy to staging first, then run Lighthouse against the staging URL.
-
-```yaml
-jobs:
-  deploy-staging:
-    runs-on: ubuntu-latest
-    outputs:
-      url: ${{ steps.deploy.outputs.url }}
-    steps:
-      - uses: actions/checkout@v4
-      - run: npm run build
-      - name: Deploy to staging
-        id: deploy
-        run: |
-          ./scripts/deploy-staging.sh
-          echo "url=https://staging.yourapp.com" >> $GITHUB_OUTPUT
-
-  lighthouse-gate:
-    needs: deploy-staging
-    runs-on: ubuntu-latest
-    steps:
-      - name: Install greengate
-        run: |
-          curl -sL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-linux-amd64 \
-            -o /usr/local/bin/greengate && chmod +x /usr/local/bin/greengate
-
-      - name: Lighthouse pre-merge gate
-        env:
-          PAGESPEED_API_KEY: ${{ secrets.PAGESPEED_API_KEY }}
-        run: |
-          greengate lighthouse \
-            --url "${{ needs.deploy-staging.outputs.url }}" \
-            --strategy mobile \
-            --min-performance 80 \
-            --min-accessibility 90
-```
-
-**What it catches:** Regressions in the PR's code _before_ they merge to main.
-
----
-
-## 4. Preventing secrets from being committed
+## 2. Preventing secrets from being committed
 
 **Situation:** A developer accidentally hardcodes an API key and pushes it. You want to catch this before it ever reaches the remote.
 
@@ -164,7 +81,7 @@ This installs a pre-commit hook that scans staged files on every `git commit`. I
 
 ---
 
-## 5. Kubernetes team — manifest quality gate
+## 3. Kubernetes team — manifest quality gate
 
 **Situation:** Your team ships microservices with Kubernetes manifests. You want to block deployments that are missing resource limits, health probes, or use the `latest` image tag.
 
@@ -188,7 +105,7 @@ greengate lint   # reads config automatically
 
 ---
 
-## 6. Full security pipeline — Next.js / React app
+## 4. Full security pipeline — Next.js / React app
 
 **Situation:** You run a React frontend with a Node.js backend. You want secrets, SAST, dependency CVEs, and coverage all gated in one pipeline.
 
@@ -201,10 +118,6 @@ greengate lint   # reads config automatically
 
 - name: Coverage gate
   run: greengate coverage --file coverage/lcov.info --min 80
-
-- name: React perf regression gate
-  if: hashFiles('output/current.perf') != ''
-  run: greengate reassure
 ```
 
 **What it catches across the pipeline:**
@@ -214,11 +127,10 @@ greengate lint   # reads config automatically
 | `scan` | Hardcoded secrets, XSS, `eval()`, command injection in JS/TS |
 | `audit` | Known CVEs in npm/Cargo dependencies |
 | `coverage` | Test coverage silently dropping below threshold |
-| `reassure` | React component render time regressing between PRs |
 
 ---
 
-## 7. Solo developer — minimal setup
+## 5. Solo developer — minimal setup
 
 **Situation:** You're shipping solo, no staging environment. You want the basics without overhead.
 
@@ -257,7 +169,7 @@ greengate install-hooks   # catch secrets before they leave your machine
 
 ---
 
-## 8. Engineering team — PR review intelligence gate
+## 6. Engineering team — PR review intelligence gate
 
 **Situation:** PRs are going out with untested new code and no consistent estimate of review effort. You want instant feedback on every PR: exactly which newly added lines lack test coverage, and an estimated review time so reviewers can plan their load.
 
@@ -319,15 +231,3 @@ complexity_budget = 0         # 0 = warn only; >0 = fail when score exceeds budg
 | New code with no tests | Exact uncovered line numbers in the diff |
 | PR too large to review safely | Complexity Score > 100 → "Large PR — consider splitting" |
 | Reviewer overload | Estimated review time in the PR comment |
-
----
-
-## Key principle: Lighthouse needs a deployed URL
-
-Lighthouse tests whatever is **live at the URL you provide**. This means:
-
-- Run it **after** your deploy step — not before
-- For a merge gate, deploy to staging first, then test the staging URL
-- For a health check, deploy to production, then test the production URL
-
-The threshold you set (`--min-performance 80`) is your quality floor. If the deployed site scores below it, the pipeline fails.

@@ -57,20 +57,6 @@ min  = 85.0                    # default minimum threshold %
 [lint]
 target_dir = "./infrastructure/k8s"    # default Kubernetes manifest directory
 
-[lighthouse]
-url              = "https://yourapp.com"
-strategy         = "mobile"    # mobile or desktop
-min_performance  = 80
-min_accessibility = 90
-min_best_practices = 80
-min_seo          = 80
-# api_key = ""                 # prefer PAGESPEED_API_KEY env var
-
-[reassure]
-current   = "output/current.perf"
-baseline  = "output/baseline.perf"
-threshold = 15.0               # maximum regression % before failing
-
 [review]
 # Minimum coverage required for newly added lines in a PR diff (default 80.0)
 # Only enforced when --coverage-file is provided
@@ -270,7 +256,7 @@ greengate --profile ci scan --staged
 
 | Profile | Effect |
 |---|---|
-| `strict` | Coverage ≥ 90%, entropy threshold 3.5 (more sensitive), Lighthouse performance ≥ 90, accessibility ≥ 95, SAST enabled |
+| `strict` | Coverage ≥ 90%, entropy threshold 3.5 (more sensitive), SAST enabled |
 | `relaxed` | Coverage ≥ 70%, entropy threshold 5.0 (fewer false positives) |
 | `ci` | Coverage ≥ 80%, SAST enabled, code-smell rules (`SMELL/*`) disabled to reduce noise |
 

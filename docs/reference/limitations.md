@@ -1,6 +1,6 @@
 ---
 title: 'Known Limitations — GreenGate'
-description: 'Known boundaries of GreenGate: supported language coverage, taint tracking scope, what the zero-trust supply chain gate cannot detect, and Lighthouse API requirements.'
+description: 'Known boundaries of GreenGate: supported language coverage, taint tracking scope, and what the zero-trust supply chain gate cannot detect.'
 ---
 
 # Limitations

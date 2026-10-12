@@ -32,8 +32,6 @@ steps = [
   "coverage --min 80",
   "lint --dir ./k8s",
   "docker-lint",
-  "lighthouse",
-  "reassure",
   "review --base HEAD~1",
 ]
 ```
@@ -49,9 +47,12 @@ Each step is a string that maps to an `greengate` subcommand, optionally followe
 | `docker-lint` | `greengate docker-lint` |
 | `coverage` | `greengate coverage` |
 | `audit` | `greengate audit` |
-| `lighthouse` | `greengate lighthouse` |
-| `reassure` | `greengate reassure` |
 | `review` | `greengate review` |
+| `tia` | `greengate tia` |
+| `sbom` | `greengate sbom` |
+| `deps-check` | `greengate deps check` |
+| `deps-review` | `greengate deps review` |
+| `ci-lint` | `greengate ci-lint` |
 
 ## Step flags
 
@@ -63,13 +64,14 @@ steps = [
   "scan --staged",
   "coverage --min 90",
   "lint --dir ./manifests",
-  "lighthouse --url https://staging.myapp.com --min-performance 85",
+  "scan --new-since origin/main",
 ]
 ```
 
 `deps-review` reviews the change's dependency updates (it accepts `--base` and
 `--annotate`). `scan`, `audit` and `ci-lint` steps accept `--since-baseline`, and `scan` accepts
-`--changed-since <ref>`. Exceptions in `.greengate/exceptions.toml` apply to
+`--changed-since <ref>` or `--new-since [<ref>]`. A step given a flag it does
+not take fails rather than ignoring it. Exceptions in `.greengate/exceptions.toml` apply to
 every step.
 
 ## Example output

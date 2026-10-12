@@ -40,10 +40,6 @@ greengate init — generating .greengate.toml
 [ Docker Lint ]
   Dockerfile path (leave blank to skip) []:
 
-[ Lighthouse / PageSpeed ]
-  URL to audit (leave blank to skip) []:
-  ...
-
 [ Pipeline Runner ]
   Generate a default pipeline (greengate run)? [Y/n]:
 
@@ -65,25 +61,11 @@ min = 80
 [lint]
 target_dir = "./k8s"
 
-[lighthouse]
-url = "https://yourapp.com"
-strategy = "mobile"
-min_performance = 80
-min_accessibility = 90
-min_best_practices = 80
-min_seo = 80
-
-[reassure]
-current = "output/current.perf"
-baseline = "output/baseline.perf"
-threshold = 15
-
 [pipeline]
 steps = [
   "scan",
   "audit",
   "coverage",
-  "lighthouse",
 ]
 ```
 

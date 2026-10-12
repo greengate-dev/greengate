@@ -189,8 +189,6 @@ fn step_flags(
         "docker-lint" => (&[], &["--file"], &[]),
         "coverage" => (&[], &["--file", "--min"], &[]),
         "audit" => (&["--offline", "--since-baseline"], &[], &[]),
-        "lighthouse" => (&[], &["--url"], &[]),
-        "reassure" => (&[], &["--current", "--baseline"], &[]),
         "review" => (
             &["--staged", "--annotate"],
             &[
@@ -314,48 +312,10 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
             baseline_policy(args, cfg),
         ),
 
-        "lighthouse" => {
-            use crate::modules::perf_lighthouse::{LighthouseOpts, LighthouseThresholds};
-            let url = flag_value(args, "--url")
-                .map(str::to_string)
-                .or_else(|| cfg.lighthouse.url.clone())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "lighthouse step: no URL. Set [lighthouse] url in .greengate.toml or pass --url"
-                    )
-                })?;
-            crate::modules::perf_lighthouse::run_lighthouse(LighthouseOpts {
-                url: &url,
-                strategy: &cfg.lighthouse.strategy,
-                thresholds: LighthouseThresholds {
-                    performance: cfg.lighthouse.min_performance,
-                    accessibility: cfg.lighthouse.min_accessibility,
-                    best_practices: cfg.lighthouse.min_best_practices,
-                    seo: cfg.lighthouse.min_seo,
-                },
-                api_key: cfg.lighthouse.api_key.clone(),
-            })
-        }
-
-        "reassure" => {
-            use crate::modules::reassure::ReassureOpts;
-            let current = flag_value(args, "--current")
-                .unwrap_or(&cfg.reassure.current)
-                .to_string();
-            let baseline_path = flag_value(args, "--baseline")
-                .unwrap_or(&cfg.reassure.baseline)
-                .to_string();
-            let baseline_opt = if std::path::Path::new(&baseline_path).exists() {
-                Some(baseline_path.as_str())
-            } else {
-                None
-            };
-            crate::modules::reassure::run_reassure(ReassureOpts {
-                current: &current,
-                baseline: baseline_opt,
-                threshold: cfg.reassure.threshold,
-            })
-        }
+        "lighthouse" | "reassure" => anyhow::bail!(
+            "the '{command}' step was removed in greengate 0.4; take it out of [pipeline] steps \
+             (use Lighthouse CI or Reassure's own reporting instead)"
+        ),
 
         "review" => {
             let base = flag_value(args, "--base").unwrap_or("HEAD~1").to_string();
@@ -440,7 +400,7 @@ fn dispatch(command: &str, args: &[&str], cfg: &config::Config) -> Result<Report
 
         other => {
             anyhow::bail!(
-                "Unknown pipeline step '{}'. Valid steps: scan, lint, docker-lint, coverage, audit, deps-check, deps-review, lighthouse, reassure, review, tia, sbom, ci-lint",
+                "Unknown pipeline step '{}'. Valid steps: scan, lint, docker-lint, coverage, audit, deps-check, deps-review, review, tia, sbom, ci-lint",
                 other
             )
         }

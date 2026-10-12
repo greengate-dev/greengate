@@ -12,10 +12,12 @@ pub struct Config {
     pub lint: LintConfig,
     #[serde(default)]
     pub docker: DockerConfig,
-    #[serde(default)]
-    pub lighthouse: LighthouseConfig,
-    #[serde(default)]
-    pub reassure: ReassureConfig,
+    /// `[lighthouse]` and `[reassure]`: their gates were removed in 0.4.
+    /// Still accepted, so a 0.3 config loads; a warning says to drop them.
+    #[serde(default, rename = "lighthouse")]
+    removed_lighthouse: Option<toml::Value>,
+    #[serde(default, rename = "reassure")]
+    removed_reassure: Option<toml::Value>,
     #[serde(default)]
     pub sast: SastConfig,
     #[serde(default)]
@@ -340,70 +342,6 @@ impl Default for LintConfig {
     }
 }
 
-// ── Lighthouse config ─────────────────────────────────────────────────────────
-
-#[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct LighthouseConfig {
-    /// URL to audit (required for `greengate lighthouse` unless passed via CLI)
-    #[serde(default)]
-    pub url: Option<String>,
-    /// Device strategy: "mobile" (default) or "desktop"
-    #[serde(default = "default_lighthouse_strategy")]
-    pub strategy: String,
-    #[serde(default = "default_lighthouse_perf")]
-    pub min_performance: u8,
-    #[serde(default = "default_lighthouse_a11y")]
-    pub min_accessibility: u8,
-    #[serde(default = "default_lighthouse_bp")]
-    pub min_best_practices: u8,
-    #[serde(default = "default_lighthouse_seo")]
-    pub min_seo: u8,
-    /// Google PageSpeed Insights API key (optional; can also set PAGESPEED_API_KEY env var)
-    #[serde(default)]
-    pub api_key: Option<String>,
-}
-
-impl Default for LighthouseConfig {
-    fn default() -> Self {
-        Self {
-            url: None,
-            strategy: default_lighthouse_strategy(),
-            min_performance: default_lighthouse_perf(),
-            min_accessibility: default_lighthouse_a11y(),
-            min_best_practices: default_lighthouse_bp(),
-            min_seo: default_lighthouse_seo(),
-            api_key: None,
-        }
-    }
-}
-
-// ── Reassure config ───────────────────────────────────────────────────────────
-
-#[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct ReassureConfig {
-    /// Path to Reassure current.perf file
-    #[serde(default = "default_reassure_current")]
-    pub current: String,
-    /// Path to Reassure baseline.perf file (optional)
-    #[serde(default = "default_reassure_baseline")]
-    pub baseline: String,
-    /// Percentage mean-time increase allowed before flagging a regression
-    #[serde(default = "default_reassure_threshold")]
-    pub threshold: f64,
-}
-
-impl Default for ReassureConfig {
-    fn default() -> Self {
-        Self {
-            current: default_reassure_current(),
-            baseline: default_reassure_baseline(),
-            threshold: default_reassure_threshold(),
-        }
-    }
-}
-
 // ── Default value fns ─────────────────────────────────────────────────────────
 
 fn default_entropy_enabled() -> bool {
@@ -423,30 +361,6 @@ fn default_lcov_file() -> String {
 }
 fn default_target_dir() -> String {
     ".".to_string()
-}
-fn default_lighthouse_strategy() -> String {
-    "mobile".to_string()
-}
-fn default_lighthouse_perf() -> u8 {
-    80
-}
-fn default_lighthouse_a11y() -> u8 {
-    90
-}
-fn default_lighthouse_bp() -> u8 {
-    80
-}
-fn default_lighthouse_seo() -> u8 {
-    80
-}
-fn default_reassure_current() -> String {
-    "output/current.perf".to_string()
-}
-fn default_reassure_baseline() -> String {
-    "output/baseline.perf".to_string()
-}
-fn default_reassure_threshold() -> f64 {
-    15.0
 }
 
 // ── Docker config ─────────────────────────────────────────────────────────────
@@ -948,11 +862,21 @@ fn load_inner(verbose: bool) -> Result<Config> {
     // setting that is quietly off.
     let content = std::fs::read_to_string(path)
         .context("failed to read .greengate.toml (it exists but could not be opened)")?;
-    let cfg = toml::from_str(&content).context(
+    let cfg: Config = toml::from_str(&content).context(
         "failed to parse .greengate.toml — fix the file, or run `greengate check-config` for detail",
     )?;
     if verbose {
         eprintln!("ℹ️  Loaded config from .greengate.toml");
+        for (section, there) in [
+            ("lighthouse", cfg.removed_lighthouse.is_some()),
+            ("reassure", cfg.removed_reassure.is_some()),
+        ] {
+            if there {
+                crate::utils::terminal::warn(&format!(
+                    "[{section}] in .greengate.toml is ignored: the {section} gate was removed in greengate 0.4. Remove the section."
+                ));
+            }
+        }
     }
     Ok(cfg)
 }
@@ -1008,13 +932,6 @@ pub fn apply_profile(cfg: &mut Config, profile: Profile) {
             }
             // Ensure SAST is on
             cfg.sast.enabled = true;
-            // Stricter Lighthouse scores
-            if cfg.lighthouse.min_performance < 90 {
-                cfg.lighthouse.min_performance = 90;
-            }
-            if cfg.lighthouse.min_accessibility < 95 {
-                cfg.lighthouse.min_accessibility = 95;
-            }
         }
         Profile::Relaxed => {
             // Lower coverage threshold to 70 % if not already lower

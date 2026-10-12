@@ -33,7 +33,6 @@ In 0.4 it exits `3`. The same applies to:
 - `requirements.txt` entries that are not `==` pinned;
 - a Kubernetes manifest that did not parse;
 - an unreadable workflow file in `ci-lint`;
-- PageSpeed Insights being unreachable in `lighthouse`;
 - `sbom --verify` without an expected signer identity;
 - `image-scan` finding no layers;
 - install wrappers whose registry lookups failed.
@@ -141,6 +140,19 @@ git add .greengate-baseline.json
 - The GitHub Action takes `report` and `dependency-review` inputs and sets
   `status`, `findings`, `incomplete` and `report-path` outputs. Pin it to a
   release: `greengate-dev/greengate@v0.4.0`.
+
+## 9. `lighthouse` and `reassure` are removed
+
+greengate is a security and supply-chain gate; web performance scores and
+React render times are not part of it. The `lighthouse` and `reassure`
+commands and pipeline steps are gone. Use
+[Lighthouse CI](https://github.com/GoogleChrome/lighthouse-ci) and
+[Reassure](https://github.com/callstack/reassure)'s own CI reporting instead.
+
+A 0.3 `.greengate.toml` still loads: `[lighthouse]` and `[reassure]` sections
+are ignored with a warning, so remove them when convenient. A `"lighthouse"` or
+`"reassure"` entry in `[pipeline] steps` fails that step with a message saying
+it was removed — take it out of the list.
 
 ## New in 0.4, worth turning on
 

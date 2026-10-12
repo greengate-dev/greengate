@@ -72,12 +72,6 @@ greengate coverage --file coverage/lcov.info --min 80
 
 # Install as a git pre-commit hook
 greengate install-hooks
-
-# Gate on Lighthouse web performance scores
-greengate lighthouse --url https://yourapp.com
-
-# Gate on React component performance regressions
-greengate reassure
 ```
 
 ## What GreenGate solves
@@ -93,8 +87,6 @@ greengate reassure
 | Kubernetes manifests missing resource limits | `greengate lint` |
 | Test coverage silently dropping | `greengate coverage` |
 | Secrets committed before anyone notices | `greengate install-hooks` |
-| Lighthouse score regressing between deploys | `greengate lighthouse` |
-| React component render performance regressing | `greengate reassure` |
 
 ## Next steps
 

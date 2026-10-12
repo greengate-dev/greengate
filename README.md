@@ -111,7 +111,6 @@ Commands are grouped by concern. Each runs standalone or as a step in `greengate
 | `greengate review` | Analyse a PR diff: Complexity Score (cyclomatic + cognitive) and new-code coverage gaps. Posts a GitHub Check Run with per-line annotations. Fails if complexity exceeds `complexity_budget` or new code coverage falls below `min_new_code_coverage`. |
 | `greengate coverage` | Parse LCOV or Cobertura XML and fail if total coverage is below a configurable threshold. |
 | `greengate tia` | Test Impact Analysis — use AST import parsing to determine exactly which test files are affected by a diff. Pipe the output directly into pytest, jest, or go test to skip unaffected tests. |
-| `greengate reassure` | Parse a [Reassure](https://github.com/callstack/reassure) performance report and fail if any React component's mean render time regresses beyond a threshold. |
 | `greengate provenance` | Report the AI-authored vs human-authored split of a commit range (from commit trailers + author identity) and optionally fail when AI-generated code exceeds a share of new lines (`--max-ai-lines-pct`). Emits `--format text\|json\|sarif`. Differentiated governance for the AI-coding era. |
 
 ### Infrastructure & CI
@@ -122,7 +121,6 @@ Commands are grouped by concern. Each runs standalone or as a step in `greengate
 | `greengate image-scan <image>` | Scan a Docker/OCI image for secrets baked into its layers. Calls `docker save`, unpacks every layer tar, and runs the full regex + entropy scan on all text files — including `.env`, `/etc/environment`, `.ssh/`, `.pem`, and `docker-compose` files. Findings include layer digest and path inside the layer. |
 | `greengate lint` | Kubernetes manifest linting — validates resource limits, security contexts, `latest` image tags, and missing probes. |
 | `greengate docker-lint` | Dockerfile best-practice checks — `latest` base images, running as root, missing `HEALTHCHECK`, `ADD` instead of `COPY`, etc. |
-| `greengate lighthouse` | Gate on Google PageSpeed Insights scores (Performance, Accessibility, Best Practices, SEO). |
 
 ### Workflow
 

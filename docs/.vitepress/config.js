@@ -98,8 +98,6 @@ export default defineConfig({
           { text: 'coverage', link: '/commands/coverage' },
           { text: 'lint', link: '/commands/lint' },
           { text: 'docker-lint', link: '/commands/docker-lint' },
-          { text: 'lighthouse', link: '/commands/lighthouse' },
-          { text: 'reassure', link: '/commands/reassure' },
         ],
       },
       {

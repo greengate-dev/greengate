@@ -147,42 +147,6 @@ enum Commands {
         #[command(subcommand)]
         action: DbAction,
     },
-    /// Audits web performance via Google PageSpeed Insights (Lighthouse)
-    Lighthouse {
-        /// URL to audit (overrides config)
-        #[arg(long)]
-        url: Option<String>,
-        /// Device strategy: mobile (default) or desktop (overrides config)
-        #[arg(long)]
-        strategy: Option<String>,
-        /// Minimum Performance score 0–100 (overrides config)
-        #[arg(long)]
-        min_performance: Option<u8>,
-        /// Minimum Accessibility score 0–100 (overrides config)
-        #[arg(long)]
-        min_accessibility: Option<u8>,
-        /// Minimum Best Practices score 0–100 (overrides config)
-        #[arg(long)]
-        min_best_practices: Option<u8>,
-        /// Minimum SEO score 0–100 (overrides config)
-        #[arg(long)]
-        min_seo: Option<u8>,
-        /// Google PageSpeed Insights API key (overrides config and PAGESPEED_API_KEY env var)
-        #[arg(long)]
-        key: Option<String>,
-    },
-    /// Parses a Reassure performance report and gates on regressions
-    Reassure {
-        /// Path to current.perf file (overrides config)
-        #[arg(long)]
-        current: Option<String>,
-        /// Path to baseline.perf file (overrides config; absence triggers report-only mode)
-        #[arg(long)]
-        baseline: Option<String>,
-        /// Percentage mean-time increase allowed before failure (overrides config)
-        #[arg(long)]
-        threshold: Option<f64>,
-    },
     /// Interactive wizard that generates a .greengate.toml config file.
     /// Pass --ci github-actions to also scaffold a ready-to-use GitHub Actions workflow.
     Init {
@@ -970,61 +934,6 @@ fn run() -> anyhow::Result<ExitCode> {
                 );
             }
             return exit.finish("audit", result);
-        }
-        Commands::Lighthouse {
-            url,
-            strategy,
-            min_performance,
-            min_accessibility,
-            min_best_practices,
-            min_seo,
-            key,
-        } => {
-            use modules::perf_lighthouse::{LighthouseOpts, LighthouseThresholds};
-
-            let resolved_url = url.or_else(|| cfg.lighthouse.url.clone()).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "No URL specified. Pass --url <URL> or set [lighthouse] url in .greengate.toml"
-                )
-            })?;
-
-            let result = modules::perf_lighthouse::run_lighthouse(LighthouseOpts {
-                url: &resolved_url,
-                strategy: &strategy.unwrap_or(cfg.lighthouse.strategy),
-                thresholds: LighthouseThresholds {
-                    performance: min_performance.unwrap_or(cfg.lighthouse.min_performance),
-                    accessibility: min_accessibility.unwrap_or(cfg.lighthouse.min_accessibility),
-                    best_practices: min_best_practices
-                        .unwrap_or(cfg.lighthouse.min_best_practices),
-                    seo: min_seo.unwrap_or(cfg.lighthouse.min_seo),
-                },
-                api_key: key.or(cfg.lighthouse.api_key),
-            });
-            return exit.finish("lighthouse", result);
-        }
-        Commands::Reassure {
-            current,
-            baseline,
-            threshold,
-        } => {
-            use modules::reassure::ReassureOpts;
-
-            let current_path = current.unwrap_or(cfg.reassure.current);
-            let baseline_path = baseline.unwrap_or(cfg.reassure.baseline);
-            let resolved_threshold = threshold.unwrap_or(cfg.reassure.threshold);
-
-            let baseline_opt = if std::path::Path::new(&baseline_path).exists() {
-                Some(baseline_path.as_str())
-            } else {
-                None
-            };
-
-            let result = modules::reassure::run_reassure(ReassureOpts {
-                current: &current_path,
-                baseline: baseline_opt,
-                threshold: resolved_threshold,
-            });
-            return exit.finish("reassure", result);
         }
         Commands::Init { force, ci } => {
             modules::init::run_init(force, ci.as_deref())?;

@@ -3506,6 +3506,46 @@ fn pipeline_scan_step_honours_new_since() {
 }
 
 #[test]
+fn removed_lighthouse_and_reassure_config_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[lighthouse]\nurl = \"https://example.com\"\n\n[reassure]\nthreshold = 15\n\n\
+         [pipeline]\nsteps = [\"scan\", \"lighthouse\"]\n",
+    )
+    .unwrap();
+    // A 0.3 config still loads; the removed sections are only warned about.
+    let out = Command::new(binary())
+        .arg("scan")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("[lighthouse] in .greengate.toml is ignored"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("[reassure] in .greengate.toml is ignored"),
+        "{stderr}"
+    );
+
+    // The removed step says so instead of passing or being "unknown".
+    let out = Command::new(binary())
+        .arg("run")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("'lighthouse' step was removed in greengate 0.4"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn pipeline_step_with_unknown_flag_fails() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(

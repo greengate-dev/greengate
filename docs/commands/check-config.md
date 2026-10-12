@@ -65,19 +65,6 @@ Resolved configuration:
 [docker]
   dockerfile          = Dockerfile
 
-[lighthouse]
-  url                 = (not set)
-  strategy            = mobile
-  min_performance     = 80
-  min_accessibility   = 90
-  min_best_practices  = 80
-  min_seo             = 80
-
-[reassure]
-  current             = output/current.perf
-  baseline            = output/baseline.perf
-  threshold           = 15%
-
 [pipeline]
   steps               = 0 step(s)
 
@@ -96,6 +83,4 @@ Default values that will be used:
   [coverage] file=coverage/lcov.info, min=80%
   [lint]     target_dir=.
   [docker]   dockerfile=Dockerfile
-  [lighthouse] strategy=mobile, min_performance=80, min_accessibility=90
-  [reassure] threshold=15%
 ```

@@ -132,7 +132,7 @@ pub enum Location {
         #[serde(skip_serializing_if = "Option::is_none")]
         line: Option<usize>,
     },
-    /// A deployed page, e.g. a Lighthouse audit target.
+    /// A URL, e.g. a deployed page.
     Url { url: String },
     /// The change or repository as a whole (a complexity budget, an
     /// authorship ceiling) rather than any one file.

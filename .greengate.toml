@@ -58,29 +58,6 @@ min = 80.0
 [lint]
 target_dir = "."
 
-# ── Lighthouse (web performance) ──────────────────────────────────────────────
-# Uncomment and set url to enable `greengate lighthouse` quality gate.
-# The API key is optional; without it the unauthenticated quota applies.
-# Set PAGESPEED_API_KEY env var in CI to avoid hardcoding the key here.
-#
-# [lighthouse]
-# url = "https://example.com"
-# strategy = "mobile"          # mobile | desktop
-# min_performance   = 80
-# min_accessibility = 90
-# min_best_practices = 80
-# min_seo = 80
-# api_key = ""                 # or set PAGESPEED_API_KEY env var
-
-# ── Reassure (React component performance) ────────────────────────────────────
-# Uncomment to enable `greengate reassure` quality gate after running
-# `reassure measure` in your frontend CI pipeline.
-#
-# [reassure]
-# current   = "output/current.perf"
-# baseline  = "output/baseline.perf"
-# threshold = 15.0               # % mean-time regression allowed
-
 # ── Supply chain protection ───────────────────────────────────────────────────
 # Drives `greengate watch-install <pm> install`.
 # block_phantom_scripts — exit non-zero if a postinstall script creates and

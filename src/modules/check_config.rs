@@ -90,32 +90,6 @@ pub fn run_check_config() -> Result<()> {
     eprintln!("[docker]");
     eprintln!("  dockerfile          = {}", cfg.docker.dockerfile);
 
-    // ── Lighthouse ────────────────────────────────────────────────────────────
-    eprintln!();
-    eprintln!("[lighthouse]");
-    eprintln!(
-        "  url                 = {}",
-        cfg.lighthouse.url.as_deref().unwrap_or("(not set)")
-    );
-    eprintln!("  strategy            = {}", cfg.lighthouse.strategy);
-    eprintln!("  min_performance     = {}", cfg.lighthouse.min_performance);
-    eprintln!(
-        "  min_accessibility   = {}",
-        cfg.lighthouse.min_accessibility
-    );
-    eprintln!(
-        "  min_best_practices  = {}",
-        cfg.lighthouse.min_best_practices
-    );
-    eprintln!("  min_seo             = {}", cfg.lighthouse.min_seo);
-
-    // ── Reassure ──────────────────────────────────────────────────────────────
-    eprintln!();
-    eprintln!("[reassure]");
-    eprintln!("  current             = {}", cfg.reassure.current);
-    eprintln!("  baseline            = {}", cfg.reassure.baseline);
-    eprintln!("  threshold           = {}%", cfg.reassure.threshold);
-
     // ── Pipeline ──────────────────────────────────────────────────────────────
     eprintln!();
     eprintln!("[pipeline]");
@@ -183,6 +157,4 @@ fn print_defaults() {
     eprintln!("  [coverage] file=coverage/lcov.info, min=80%");
     eprintln!("  [lint]     target_dir=.");
     eprintln!("  [docker]   dockerfile=Dockerfile");
-    eprintln!("  [lighthouse] strategy=mobile, min_performance=80, min_accessibility=90");
-    eprintln!("  [reassure] threshold=15%");
 }
