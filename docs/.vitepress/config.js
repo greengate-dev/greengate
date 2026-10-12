@@ -70,6 +70,7 @@ export default defineConfig({
           { text: 'Use Cases & Scenarios', link: '/guide/use-cases' },
           { text: 'Baselines & Exceptions', link: '/guide/baselines-and-exceptions' },
           { text: 'AI Agents', link: '/guide/agents' },
+          { text: 'Migrating to 0.4', link: '/guide/migrating-to-0.4' },
           { text: 'Configuration File', link: '/reference/config' },
         ],
       },

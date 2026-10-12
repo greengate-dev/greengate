@@ -26,8 +26,12 @@ incomplete.
 When a run has several results, the exit code reports the most actionable:
 findings (`1`), then error (`4`), then incomplete (`3`).
 
-`--no-fail` (on `image-scan` and the install wrappers) waives findings only.
-An incomplete or failed run still exits `3` or `4`.
+`--no-fail` (on `image-scan`, `install` and the install wrappers) waives
+findings only. An incomplete or failed run still exits `3` or `4`.
+
+`run` exits with the worst result among its steps. `greengate hook
+claude-code` always exits `0` and answers through its JSON output: exit `2`
+would block the agent's command.
 
 ## In CI pipelines
 

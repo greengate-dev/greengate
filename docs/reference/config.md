@@ -304,3 +304,30 @@ ticket = "SEC-481"   # optional
 
 See [Baselines & Exceptions](/guide/baselines-and-exceptions#governed-exceptions)
 for the match forms and the expiry policy.
+
+## Pipeline
+
+```toml
+[pipeline]
+# Steps for `greengate run`, each a command with optional flags.
+steps = ["scan", "audit", "deps-review", "ci-lint", "coverage --min 80"]
+# Stop at the first step that does not pass (default: run every step and
+# report the worst result).
+fail_fast = false
+```
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `GREENGATE_CACHE_DIR` | Where greengate caches OSV answers, registry metadata and offline snapshots (default: the user cache directory) |
+| `GREENGATE_OSV_URL` | An OSV-compatible API to query instead of `https://api.osv.dev` |
+| `GREENGATE_OSV_DB_URL` | Where `greengate db update` downloads OSV snapshots from |
+| `GREENGATE_NPM_REGISTRY` | The npm registry to read release metadata from. Set it to a mirror of the public registry (Artifactory, Verdaccio): packages resolved from it are then checked like registry.npmjs.org's instead of being skipped as private |
+| `GREENGATE_PYPI_URL` | The PyPI JSON API to read release metadata from |
+| `GREENGATE_CRATES_URL` | The crates.io API to read release metadata from |
+| `GREENGATE_CRATES_INDEX` | The crates.io sparse index `deps review` reads requirements from |
+| `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_SHA` | Enable `--annotate` (check runs and the pull-request comment) |
+| `GITHUB_API_URL` | The GitHub API root (set by Actions; GitHub Enterprise Server) |
+| `GITHUB_BASE_REF` | In a pull request, the default base for `deps check`, `deps review` and `scan --new-since` |
+

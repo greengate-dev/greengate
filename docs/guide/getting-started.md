@@ -46,7 +46,7 @@ cargo install --git https://github.com/greengate-dev/greengate
 
 ```bash
 greengate --version
-# greengate 0.3.0
+# greengate 0.4.0
 ```
 
 ## Quick Start

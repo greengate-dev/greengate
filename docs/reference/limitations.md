@@ -92,14 +92,16 @@ For higher-fidelity type-aware analysis, Semgrep Pro or a dedicated type-aware l
 
 ---
 
-## Dependency audit — OSV API dependency
+## Dependency audit — data sources
 
-`greengate audit` queries the [OSV database](https://osv.dev). In environments without outbound internet access:
-
-- Audit results are cached locally for **24 hours** (offline-friendly for most CI scenarios).
-- If the cache is stale and the network is unavailable, `greengate audit` exits with a warning rather than a hard failure, so it does not break air-gapped builds.
-
-`ignore_advisories` in `.greengate.toml` suppresses specific GHSA/CVE IDs without disabling the audit entirely. See the [audit command docs](/commands/audit) for details.
+`greengate audit` queries the [OSV database](https://osv.dev), or an offline
+snapshot from `greengate db update` (`[audit] source`). Results are cached for
+24 hours. When neither can answer, the run is **incomplete** (exit `3`),
+never a pass; `[policy] on_incomplete = "warn"` makes that exit `0` while
+still reporting it. Advisory ids that are aliases of one another (a
+`RUSTSEC-…` and its `GHSA-…`) are merged in `deps review` but listed
+separately by `audit`. Waive accepted advisories with exceptions
+(`.greengate/exceptions.toml`); `[audit] ignore_advisories` is deprecated.
 
 ---
 
@@ -121,9 +123,38 @@ Raising `entropy_threshold` (e.g. to `5.0`) reduces false positives but may miss
 
 ---
 
+## `greengate install` boundaries
+
+- **Isolation is Linux-only.** Install scripts and sdist builds run in
+  bubblewrap when it is installed. On macOS and Windows, and on Linux without
+  bubblewrap, scripts run unisolated: suspicious ones are held back unless
+  allowlisted, and changes outside a package are detected afterwards rather
+  than refused. `require_isolation = true` refuses to run scripts at all
+  without a sandbox.
+- **pip and uv without isolation run sdist build backends unconfined while
+  planning**, because resolving an sdist runs its build code. greengate warns
+  (`INSTALL/SourceBuild`) but cannot stop it; the
+  [benchmark](https://github.com/greengate-dev/greengate/blob/main/bench/INSTALL_GATE_RESULTS.md)
+  records this as a miss. With bubblewrap the same payload has no effect.
+- **Release checks and advisories cover what an install adds or changes.**
+  `npm ci` of an unchanged lockfile looks nothing up; review lockfile changes
+  where they are made, with `greengate deps review`.
+- **Yarn Berry** builds every package in one step, so a suspicious build is
+  held back even with isolation.
+- **Cargo** installs run no crate code; build scripts and proc-macros of new
+  crates are inspected, and run later at `cargo build`.
+- The name guard needs the public registries' download statistics;
+  `npx`/`bunx`/`pnpm dlx` are not intercepted.
+- The [agent hook](/guide/agents) recognises common install commands; an
+  install hidden behind a script (`./setup.sh`), an alias or a Makefile target
+  is not seen.
+
+---
+
 ## Runtime analysis boundaries
 
-Code and secret scanning are static. `watch-install` additionally observes
+Code and secret scanning are static. `watch-install` (deprecated in favour
+of `greengate install`) additionally observes
 filesystem changes during the wrapped command, but does not isolate the
 process or inspect network traffic. Its 250 ms polling can miss files created
 and deleted between observations. Preflight checks inspect existing packages;
@@ -131,7 +162,7 @@ newly installed lifecycle scripts are checked after execution. The slopsquat
 guard checks explicitly supplied package names, not the full resolved tree
 (`npm ci` and `pip-install -r requirements.txt` do not supply names to it).
 
-The [install-protection benchmark](https://github.com/greengate-dev/greengate/blob/main/bench/INSTALL_RESULTS.md)
+The [watch-install benchmark](https://github.com/greengate-dev/greengate/blob/main/bench/INSTALL_RESULTS.md)
 reports detection timing, misses, and native-build false positives separately.
 
 GreenGate cannot:

@@ -11,7 +11,7 @@ branding:
 inputs:
   version:
     description: >-
-      greengate release tag to download, e.g. "v0.3.2".
+      greengate release tag to download, e.g. "v0.4.0".
       Use "latest" to always pull the newest release
       (pin to a specific version for reproducible CI).
     required: false

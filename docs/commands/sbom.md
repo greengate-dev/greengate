@@ -182,7 +182,7 @@ The output is a CycloneDX 1.5 JSON document:
   "version": 1,
   "metadata": {
     "timestamp": "2026-03-06T12:00:00Z",
-    "tools": [{ "vendor": "greengate-dev", "name": "greengate", "version": "0.3.2" }]
+    "tools": [{ "vendor": "greengate-dev", "name": "greengate", "version": "0.4.0" }]
   },
   "components": [
     {

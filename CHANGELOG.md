@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0] - Unreleased
 
+### Breaking
+
+See [Migrating to 0.4](docs/guide/migrating-to-0.4.md).
+
+- `audit` exits `3` when it could not check every dependency, instead of warning and exiting `0`. That covers an unreachable or short OSV response, a truncated advisory list, an unreadable lockfile, and `requirements.txt` entries that are not `==` pinned (ranges, `-r` includes, editable installs). Findings still exit `1`; set `on_incomplete = "warn"` to keep exiting `0`.
+- Exit codes are now `0` passed, `1` findings, `2` usage or config error, `3` incomplete, `4` error. Previously runtime errors and an invalid `.greengate.toml` exited `1`, the same as findings.
+- These runs are now incomplete (exit `3`) instead of passing: `lint` with a manifest that did not parse (un-rendered templates are still skipped); `ci-lint` with a workflow that could not be read; `lighthouse` when PageSpeed Insights cannot be reached or returns an error (previously exit `1`); `sbom --verify` without an expected signer identity; install wrappers whose registry lookups failed; `cargo-add` when `cargo fetch` fails or a new crate's source cannot be found; `image-scan` when no layers are found or a layer cannot be extracted.
+- `run` runs every step by default and reports the worst result, instead of stopping at the first failing step; set `[pipeline] fail_fast = true` for the old behaviour. Steps not run under `fail_fast` are reported as incomplete. It prints why a step could not run.
+- `watch-install`, `pip-install` and `cargo-add` are deprecated and run through `greengate install` when they wrap npm, pnpm, Yarn, Bun, pip ≥ 22.2 or a Cargo project — install scripts then run sandboxed without network; list packages that need it in `[supply_chain] script_network`. Other commands keep the old behaviour with a notice. All three are removed in 0.5.
+- `sbom` stops with an error when one directory holds two lockfiles for the same ecosystem, instead of using whichever it found first.
+- `[audit] ignore_advisories` is deprecated in favour of `.greengate/exceptions.toml` (`greengate exceptions migrate`); 0.3 baselines still work but only match exact lines (`greengate baseline migrate`); `scan --since` is renamed `--changed-since` (alias kept).
+
 ### Added
 - `greengate.report/v1` — one result model for every gate: `passed`, `findings`, `incomplete`, or `error`, with each check and its reason. `audit --format json` emits it.
 - `[policy] on_incomplete = "fail" | "warn"` and a global `--allow-incomplete` flag.
@@ -53,20 +65,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: [AI Agents](docs/guide/agents.md) guide and a [report schema](docs/reference/report-schema.md) reference.
 
 ### Changed
-- **Breaking:** `audit` exits `3` when it could not check every dependency, instead of warning and exiting `0`. That covers an unreachable or short OSV response, a truncated advisory list, an unreadable lockfile, and `requirements.txt` entries that are not `==` pinned (ranges, `-r` includes, editable installs). Findings still exit `1`; set `on_incomplete = "warn"` to keep exiting `0`.
-- **Breaking:** exit codes are now `0` passed, `1` findings, `2` usage or config error, `3` incomplete, `4` error. Previously runtime errors and an invalid `.greengate.toml` exited `1`, the same as findings.
-- **Breaking:** these runs are now incomplete (exit `3`) instead of passing: `lint` with a manifest that did not parse (un-rendered templates are still skipped); `ci-lint` with a workflow that could not be read; `lighthouse` when PageSpeed Insights cannot be reached or returns an error (previously exit `1`); `sbom --verify` without an expected signer identity; install wrappers whose registry lookups failed; `cargo-add` when `cargo fetch` fails or a new crate's source cannot be found; `image-scan` when no layers are found or a layer cannot be extracted.
 - A wrapped package manager that fails is an error (exit `4`).
-- **Breaking:** `run` runs every step by default and reports the worst result, instead of stopping at the first failing step; set `[pipeline] fail_fast = true` for the old behaviour. Steps not run under `fail_fast` are reported as incomplete. It prints why a step could not run.
 - `watch-install` reports every post-install layer (scripts, phantom files, executable drops) together instead of stopping at the first, and no longer reports a pre-existing script threat twice.
 - GitHub Action: new `report` input and `status`, `incomplete` and `report-path` outputs; the existing `findings` output, which was never set, now is. Inputs reach the script through environment variables instead of `${{ }}` interpolation.
 - Telemetry records `greengate_command_*` metrics for every gate, not only `audit`, `coverage` and `ci-lint`.
 - `audit` only reads files whose names it supports, rather than every file in the repository.
-- **Breaking:** `watch-install`, `pip-install` and `cargo-add` are deprecated and run through `greengate install` when they wrap npm, pnpm, Yarn, Bun, pip ≥ 22.2 or a Cargo project — install scripts then run sandboxed without network; list packages that need it in `[supply_chain] script_network`. Other commands keep the old behaviour with a notice. All three are removed in 0.5.
-- **Breaking:** `sbom` stops with an error when one directory holds two lockfiles for the same ecosystem, instead of using whichever it found first.
 - PyPI package names are normalized (PEP 503, lowercase) in audit queries and SBOM purls.
-- `scan --since` is renamed `--changed-since`; `--since` remains as a deprecated alias.
-- `[audit] ignore_advisories` is deprecated in favour of exceptions; `greengate exceptions migrate` converts it.
 - In JS, TS, Python, Go and Rust files, a `greengate: ignore` comment on its own line now also covers the line below, as it already did in other files and as documented.
 
 ### Fixed
@@ -131,5 +135,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README leads with the install-time supply-chain gate rather than breadth.
 - `scan --fix` de-emphasized in favour of suppression and baselines.
 
-[0.3.4]: https://github.com/greengate-dev/greengate/compare/v0.3.3...HEAD
+[0.4.0]: https://github.com/greengate-dev/greengate/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/greengate-dev/greengate/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/greengate-dev/greengate/releases/tag/v0.3.3
