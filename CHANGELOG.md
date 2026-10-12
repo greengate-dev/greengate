@@ -73,6 +73,9 @@ See [Migrating to 0.4](docs/guide/migrating-to-0.4.md).
 - PyPI package names are normalized (PEP 503, lowercase) in audit queries and SBOM purls.
 - In JS, TS, Python, Go and Rust files, a `greengate: ignore` comment on its own line now also covers the line below, as it already did in other files and as documented.
 
+### Security
+- Replaced the deprecated `serde_yaml` with its maintained, API-compatible fork `serde_norway`: `serde_yaml`'s libyaml port, `unsafe-libyaml`, is unmaintained (RUSTSEC-2024-0449) and failed `cargo audit --deny warnings`.
+
 ### Fixed
 - `audit` never checked scoped packages in pnpm lockfiles that quote their keys (`'@babel/core@7.29.0':`, as pnpm 9 writes them): the name was read as `'`. In one real lockfile that was 502 of 781 packages.
 - `audit` queried nested npm copies (`node_modules/a/node_modules/b`) under the name `a/node_modules/b`, so advisories for them never matched.
