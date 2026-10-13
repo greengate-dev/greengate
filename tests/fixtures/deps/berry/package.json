@@ -1,0 +1,13 @@
+{
+  "name": "fixture",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@sindresorhus/is": "4.6.0",
+    "debug": "2.6.9",
+    "ms": "2.1.3"
+  },
+  "devDependencies": {
+    "is-number": "7.0.0"
+  }
+}

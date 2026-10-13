@@ -46,6 +46,7 @@ dockerfile = "Dockerfile"   # default
 |---|---|
 | `0` | No issues found |
 | `1` | One or more lint violations found |
+| `4` | The Dockerfile could not be read |
 
 ## Examples
 

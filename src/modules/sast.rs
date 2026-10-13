@@ -1,6 +1,6 @@
 use crate::modules::scanner::{
-    Finding, check_entropy, collect_scanned, is_sast_file, make_finding, pattern_hits,
-    scan_one_file,
+    Finding, check_entropy, collect_scanned, covering_ignore, ignore_reason, is_sast_file,
+    make_finding, pattern_hits, scan_one_file,
 };
 use crate::modules::taint::{TaintCache, taint_for_sink};
 use crate::utils::{
@@ -16,33 +16,18 @@ use tree_sitter::{Language, Parser, Query, QueryCursor};
 
 // ── Inline suppression ────────────────────────────────────────────────────────
 
-/// Return `true` if the finding at `row` (0-based) is suppressed.
-///
-/// Checks the matched line itself AND the line immediately after it.
-/// Formatters (Prettier, ESLint) often move `// greengate: ignore` comments
-/// inside object literals to the next line, e.g.:
+/// The suppression covering a finding at `row` (0-based): a
+/// `greengate: ignore` on that line or a standalone one above it, as for every
+/// other file — or one on the line *after* it, because formatters (Prettier,
+/// ESLint) often move the comment inside an object literal:
 /// ```text
 ///   dangerouslySetInnerHTML={{          ← flagged line (row N)
 ///     // greengate: ignore               ← comment on row N+1
 ///     __html: sanitized,
 ///   }}
 /// ```
-fn is_suppressed(source: &[u8], row: usize) -> bool {
-    let mut lines = source.split(|&b| b == b'\n');
-    // Collect the target line and the one after it.
-    for (i, line) in lines.by_ref().enumerate() {
-        if (i == row || i == row + 1)
-            && std::str::from_utf8(line)
-                .map(|l| l.contains("greengate: ignore"))
-                .unwrap_or(false)
-        {
-            return true;
-        }
-        if i > row + 1 {
-            break;
-        }
-    }
-    false
+fn suppression(lines: &[&str], row: usize) -> Option<String> {
+    covering_ignore(lines, row).or_else(|| lines.get(row + 1).and_then(|l| ignore_reason(l)))
 }
 
 // ── Language dispatch ─────────────────────────────────────────────────────────
@@ -137,11 +122,6 @@ fn scan_string_literals(
                 Err(_) => continue,
             };
             let line_no = node.start_position().row + 1; // 1-based
-
-            // Inline suppression on the source line
-            if is_suppressed(source, node.start_position().row) {
-                continue;
-            }
 
             // Every secret/PII regex and the entropy check run against the
             // string literal value only.
@@ -669,10 +649,6 @@ fn scan_dangerous_patterns(
             if let Some(cap) = m.captures.iter().find(|c| c.index == match_idx) {
                 let line_no = cap.node.start_position().row + 1;
 
-                if is_suppressed(source, cap.node.start_position().row) {
-                    continue;
-                }
-
                 // ── Tier-1 taint + sanitizer-aware suppression ────────────────
                 //
                 // Two distinct taint-tracking strategies:
@@ -798,10 +774,6 @@ fn scan_dangerous_patterns(
             if let Some(cap) = m.captures.iter().find(|c| c.index == match_idx) {
                 let line_no = cap.node.start_position().row + 1;
 
-                if is_suppressed(source, cap.node.start_position().row) {
-                    continue;
-                }
-
                 findings.push(make_finding(path.to_path_buf(), id.clone(), line_no, None));
             }
         }
@@ -867,7 +839,6 @@ fn max_nesting_depth_in(node: tree_sitter::Node<'_>, current: usize) -> usize {
 fn scan_complexity(
     path: &Path,
     tree: &tree_sitter::Tree,
-    source: &[u8],
     sast_config: &SastConfig,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -878,55 +849,52 @@ fn scan_complexity(
         if FUNCTION_NODE_KINDS.contains(&node.kind()) {
             let line_no = node.start_position().row + 1;
 
-            // Inline suppression
-            if !is_suppressed(source, node.start_position().row) {
-                // SMELL/LongFunction
-                if !sast_config
-                    .disabled_rules
-                    .iter()
-                    .any(|d| d == "SMELL/LongFunction")
-                {
-                    let lines = count_function_lines(node);
-                    if lines > sast_config.max_function_lines {
-                        let rule_id = format!(
-                            "SMELL/LongFunction ({} lines, max {})",
-                            lines, sast_config.max_function_lines
-                        );
-                        findings.push(make_finding(path.to_path_buf(), rule_id, line_no, None));
-                    }
+            // SMELL/LongFunction
+            if !sast_config
+                .disabled_rules
+                .iter()
+                .any(|d| d == "SMELL/LongFunction")
+            {
+                let lines = count_function_lines(node);
+                if lines > sast_config.max_function_lines {
+                    let rule_id = format!(
+                        "SMELL/LongFunction ({} lines, max {})",
+                        lines, sast_config.max_function_lines
+                    );
+                    findings.push(make_finding(path.to_path_buf(), rule_id, line_no, None));
                 }
+            }
 
-                // SMELL/TooManyParameters
-                if !sast_config
-                    .disabled_rules
-                    .iter()
-                    .any(|d| d == "SMELL/TooManyParameters")
-                {
-                    let params = count_parameters(node);
-                    if params > sast_config.max_parameters {
-                        let rule_id = format!(
-                            "SMELL/TooManyParameters ({} params, max {})",
-                            params, sast_config.max_parameters
-                        );
-                        findings.push(make_finding(path.to_path_buf(), rule_id, line_no, None));
-                    }
+            // SMELL/TooManyParameters
+            if !sast_config
+                .disabled_rules
+                .iter()
+                .any(|d| d == "SMELL/TooManyParameters")
+            {
+                let params = count_parameters(node);
+                if params > sast_config.max_parameters {
+                    let rule_id = format!(
+                        "SMELL/TooManyParameters ({} params, max {})",
+                        params, sast_config.max_parameters
+                    );
+                    findings.push(make_finding(path.to_path_buf(), rule_id, line_no, None));
                 }
+            }
 
-                // SMELL/DeepNesting — measured within the function body only
-                if !sast_config
-                    .disabled_rules
-                    .iter()
-                    .any(|d| d == "SMELL/DeepNesting")
-                    && let Some(body) = node.child_by_field_name("body")
-                {
-                    let depth = max_nesting_depth_in(body, 0);
-                    if depth > sast_config.max_nesting_depth {
-                        let rule_id = format!(
-                            "SMELL/DeepNesting (depth {}, max {})",
-                            depth, sast_config.max_nesting_depth
-                        );
-                        findings.push(make_finding(path.to_path_buf(), rule_id, line_no, None));
-                    }
+            // SMELL/DeepNesting — measured within the function body only
+            if !sast_config
+                .disabled_rules
+                .iter()
+                .any(|d| d == "SMELL/DeepNesting")
+                && let Some(body) = node.child_by_field_name("body")
+            {
+                let depth = max_nesting_depth_in(body, 0);
+                if depth > sast_config.max_nesting_depth {
+                    let rule_id = format!(
+                        "SMELL/DeepNesting (depth {}, max {})",
+                        depth, sast_config.max_nesting_depth
+                    );
+                    findings.push(make_finding(path.to_path_buf(), rule_id, line_no, None));
                 }
             }
         }
@@ -1020,10 +988,62 @@ fn scan_source(
     // Code smell / complexity rules — JS/TS only (node kinds differ per language)
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if matches!(ext, "js" | "jsx" | "ts" | "tsx") {
-        findings.extend(scan_complexity(path, &tree, bytes, sast_config));
+        findings.extend(scan_complexity(path, &tree, sast_config));
     }
 
+    // Suppressed findings are kept, marked, so the report can list them.
+    let lines: Vec<&str> = source.lines().collect();
+    for f in &mut findings {
+        f.suppressed = suppression(&lines, f.line.saturating_sub(1));
+    }
     findings
+}
+
+/// Custom rules that are enabled and compile. Validated against the JS
+/// grammar as a quick syntax check; a broken rule is warned about and skipped.
+fn custom_rule_sources(sast_config: &SastConfig) -> Vec<(String, String)> {
+    sast_config
+        .custom_rules
+        .iter()
+        .filter(|r| !sast_config.disabled_rules.iter().any(|d| d == &r.id))
+        .filter_map(|r| {
+            let lang: Language = tree_sitter_javascript::LANGUAGE.into();
+            match Query::new(&lang, &r.query) {
+                Ok(_) => Some((r.id.clone(), r.query.clone())),
+                Err(e) => {
+                    eprintln!(
+                        "greengate: warning: custom SAST rule '{}' failed to compile: {}",
+                        r.id, e
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// SAST over in-memory sources, such as files as they were at a base revision.
+pub(crate) fn scan_sources(
+    sources: &[(PathBuf, String)],
+    sast_config: &SastConfig,
+    secret_patterns: &[(String, Regex)],
+    scan_config: &ScanConfig,
+) -> Vec<Finding> {
+    let rules = custom_rule_sources(sast_config);
+    sources
+        .par_iter()
+        .filter(|(path, _)| is_sast_file(path))
+        .flat_map_iter(|(path, source)| {
+            scan_source(
+                path,
+                source,
+                sast_config,
+                secret_patterns,
+                scan_config,
+                &rules,
+            )
+        })
+        .collect()
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -1055,26 +1075,7 @@ pub fn run_sast_scan(
         None
     };
 
-    // Compile custom rules once before the parallel scan.
-    // Validate against the JS grammar as a quick syntax check; warn and skip on error.
-    let custom_rule_srcs: Vec<(String, String)> = sast_config
-        .custom_rules
-        .iter()
-        .filter(|r| !sast_config.disabled_rules.iter().any(|d| d == &r.id))
-        .filter_map(|r| {
-            let lang: Language = tree_sitter_javascript::LANGUAGE.into();
-            match Query::new(&lang, &r.query) {
-                Ok(_) => Some((r.id.clone(), r.query.clone())),
-                Err(e) => {
-                    eprintln!(
-                        "greengate: warning: custom SAST rule '{}' failed to compile: {}",
-                        r.id, e
-                    );
-                    None
-                }
-            }
-        })
-        .collect();
+    let custom_rule_srcs = custom_rule_sources(sast_config);
 
     let results: Vec<Result<Vec<Finding>, String>> = js_ts
         .par_iter()
@@ -1209,9 +1210,10 @@ mod tests {
         );
         let findings = scan_file(f.path(), &sast, &patterns, &scan, &[]);
         assert!(
-            findings.is_empty(),
-            "suppressed line should produce no findings"
+            findings.iter().all(|f| f.suppressed.is_some()),
+            "suppressed line should produce no active findings"
         );
+        assert!(!findings.is_empty(), "suppressed findings are still listed");
     }
 
     // ── Dangerous patterns ────────────────────────────────────────────────────
@@ -1354,7 +1356,9 @@ mod tests {
         let f = write_tmp("js", "eval(x); // greengate: ignore\n");
         let findings = scan_file(f.path(), &sast, &[], &scan, &[]);
         assert!(
-            !findings.iter().any(|x| x.rule_id == "SAST/EvalUsage"),
+            !findings
+                .iter()
+                .any(|x| x.rule_id == "SAST/EvalUsage" && x.suppressed.is_none()),
             "suppressed eval() should not be reported"
         );
     }

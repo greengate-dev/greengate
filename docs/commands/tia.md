@@ -1,201 +1,76 @@
 ---
-title: 'tia — Test Impact Analysis'
-description: 'AST-based test selection for CI: determines which test files are affected by a diff and pipes results into pytest, jest, or go test. Cut CI runtime without skipping relevant tests.'
+title: 'tia: suggest tests from direct imports'
+description: 'Compare changed source paths with tests’ static imports. Understand selection limits before using the output to narrow a test run.'
 ---
 
-# tia — Test Impact Analysis
+# tia
 
-> **Run only the tests that matter for a given diff.**
-
-`greengate tia` analyses which source files changed between two commits, parses the import statements of every test file in the repository using tree-sitter, and outputs only the test files whose dependency graph overlaps with the changed set.
-
-The default output is newline-separated file paths — designed to be piped directly into your test runner.
-
----
+`greengate tia` suggests test files whose direct static imports match changed source paths. It parses supported imports with tree-sitter and compares normalized names and path suffixes. It does not build a complete transitive dependency graph or prove that omitted tests are unaffected.
 
 ## Usage
 
 ```bash
-greengate tia [OPTIONS]
+greengate tia --base origin/main --format json
+greengate tia --staged --format text
 ```
 
-```
-Options:
-      --base <REF>     Diff base: commit, branch, or tag [default: HEAD~1]
-      --staged         Diff staged changes instead of committed diff
-      --format <FMT>   Output format: newline (default) | text | json
-  -h, --help           Print help
-```
+| Flag | Default | Purpose |
+|---|---|---|
+| `--base <ref>` | `HEAD~1` | Compare the merge base with HEAD |
+| `--staged` | off | Use staged changes |
+| `--format` | `newline` | Print paths, text summary, or JSON |
 
----
+The JSON output includes changed source files, selected tests, total test-file count, and config/data changes when source changes are present. With no changed source files, the command exits successfully after a message and may emit no JSON document.
 
-## Pipe-friendly output (default)
+## Supported files
 
-```bash
-# Run only affected pytest tests
-pytest $(greengate tia --base main)
-
-# Run only affected Jest tests
-npx jest $(greengate tia --base main)
-
-# Run only affected Go tests
-go test $(greengate tia --base main --format newline)
-
-# Staged changes (before committing)
-pytest $(greengate tia --staged)
-```
-
-When no tests are affected the command exits 0 with empty output — the test runner receives no arguments and will typically exit cleanly or with a "no tests selected" message.
-
----
-
-## How it works
-
-1. **Diff** — Runs `git diff <base>...HEAD --name-only` to get the list of changed files.
-2. **Partition** — Splits changed files into *source files* (`.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.go`) and *config/data files* (everything else). Config changes produce a warning to consider running the full suite.
-3. **Walk** — Traverses the repository (respecting `.gitignore`) and collects all files matching the configured `test_patterns` globs.
-4. **Parse** — For each test file, uses tree-sitter to extract all `import`/`require`/`from … import` statements.
-5. **Match** — Resolves each import to an extension-free path and checks whether it overlaps with any changed source file (exact match, path-suffix match, or package-directory match for Go).
-6. **Output** — Prints the affected test file paths.
-
-### Supported languages
-
-| Language | Import syntax detected |
+| Language | Extensions and imports |
 |---|---|
-| TypeScript / TSX | `import … from '…'`, `export … from '…'`, `require('…')` |
-| JavaScript / JSX | `import … from '…'`, `export … from '…'`, `require('…')` |
-| Python | `import foo.bar`, `from foo.bar import …` |
-| Go | `import "pkg/path"` |
+| JavaScript / TypeScript | `.js`, `.jsx`, `.ts`, `.tsx`; supported `import`, re-export, and `require` syntax |
+| Python | `.py`; supported `import` and `from` syntax |
+| Go | `.go`; package import paths |
 
-### Path matching
+A source change produces extension-free path stems and suffixes. Test imports are matched against those stems, with package-directory matching for Go. Unreadable or unsupported test files do not contribute matches.
 
-Three overlap checks are applied (first match wins):
-
-| Check | Example |
-|---|---|
-| Exact | import `src/utils/helpers` ↔ changed `src/utils/helpers.ts` |
-| Suffix | import `utils/helpers` ↔ changed `src/utils/helpers.ts` |
-| Package dir (Go) | import `github.com/org/repo/pkg/utils` ↔ changed `pkg/utils/helpers.go` |
-
----
-
-## Text output
+## Use the suggestions
 
 ```bash
-greengate tia --base main --format text
+greengate tia --base origin/main
 ```
 
-```
-╔══ Test Impact Analysis ══════════════════════════════╗
-  Changed source files : 3
-  Total test files     : 48
-  Affected tests       : 7
-╚══════════════════════════════════════════════════════╝
+Review the list before passing it to pytest or Jest. Empty selections require an explicit decision: invoking a test runner with no filenames can run the full suite. Go test filenames are not package selectors; convert the selection to package directories before using `go test`.
 
-src/utils/__tests__/helpers.test.ts
-src/components/__tests__/Button.test.tsx
-src/api/__tests__/client.test.ts
-tests/test_helpers.py
-tests/test_client.py
-pkg/utils/helpers_test.go
-pkg/api/client_test.go
-
-✅ 7/48 tests selected.
-```
-
----
-
-## JSON output
+For a Python project, a policy that runs the full suite when no tests are selected can use:
 
 ```bash
-greengate tia --base main --format json
+mapfile -t tests < <(greengate tia --base origin/main)
+if [ "${#tests[@]}" -gt 0 ]; then
+  pytest "${tests[@]}"
+else
+  pytest
+fi
 ```
 
-```json
-{
-  "changed_source_files": [
-    "src/utils/helpers.ts",
-    "src/api/client.ts"
-  ],
-  "affected_tests": [
-    "src/utils/__tests__/helpers.test.ts",
-    "src/api/__tests__/client.test.ts"
-  ],
-  "total_test_files": 48,
-  "config_files_changed": []
-}
-```
-
----
+This Bash example handles only the empty-selection case. It does not make a nonempty selection complete. Run the full suite for config changes, indirect dependencies, or required assurance.
 
 ## Configuration
 
-Configure test file detection under `[tia]` in `.greengate.toml`:
+Configure test-file globs under `[tia]`:
 
 ```toml
 [tia]
-test_patterns = [
-  "**/*.test.ts",
-  "**/*.test.tsx",
-  "**/*.test.js",
-  "**/*.test.jsx",
-  "**/*.spec.ts",
-  "**/*.spec.tsx",
-  "**/*.spec.js",
-  "**/*.spec.jsx",
-  "**/test_*.py",
-  "**/*_test.py",
-  "tests/**/*.py",
-  "**/*_test.go",
-]
+test_patterns = ["**/*.test.ts", "**/test_*.py", "**/*_test.go"]
 ```
 
-All patterns use standard glob syntax with `**` for recursive matching. The defaults above cover the standard conventions for TypeScript/JavaScript, Python, and Go projects. Override to match your project layout.
-
----
-
-## CI usage
-
-Use `tia` to speed up PR pipelines without sacrificing correctness:
-
-```yaml
-- name: Run affected tests only
-  run: |
-    TESTS=$(greengate tia --base "${{ github.event.pull_request.base.sha }}")
-    if [ -n "$TESTS" ]; then
-      pytest $TESTS
-    else
-      echo "No affected tests — skipping"
-    fi
-```
-
-For Jest:
-
-```yaml
-- name: Run affected tests only
-  run: |
-    TESTS=$(greengate tia --base "${{ github.event.pull_request.base.sha }}")
-    if [ -n "$TESTS" ]; then
-      npx jest $TESTS
-    else
-      echo "No affected tests — skipping"
-    fi
-```
-
----
+This overrides the defaults. The defaults also include JavaScript/TypeScript spec files, JSX/TSX tests, Python `_test.py` files, and Python files under `tests/`.
 
 ## Limitations
 
-- **Static imports only** — dynamic `import()` calls with non-literal paths (e.g. `import(someVariable)`) cannot be statically resolved and are not detected.
-- **Re-exports** — if module A re-exports module B, and a test imports A, changes to B will not automatically surface that test. Direct imports only.
-- **Non-source changes** — changes to `package.json`, `Cargo.toml`, `.env`, YAML configs, or other non-source files are reported as warnings but do not drive test selection. If a config change could affect test outcomes, run the full suite manually.
-- **Monorepo package boundaries** — cross-package imports using workspace aliases (e.g. `@myorg/shared`) are matched on the alias string rather than resolved to a file path. Ensure your alias paths overlap with the actual file paths for best results.
-
----
+- Transitive imports and indirect re-exports do not select tests automatically
+- Dynamic module paths and workspace aliases may not resolve to source files
+- Config/data changes warn but do not drive selection
+- A changed test file is not necessarily selected solely because it changed
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| `0` | Command ran successfully (may output zero affected tests) |
-| `1` | Git diff failed, glob compilation error, or other runtime error |
+`0` means the analysis completed, possibly with no selected tests. `4` means a runtime failure. See [exit codes](/reference/exit-codes).

@@ -94,12 +94,16 @@ fn run_scan_once(staged: bool) -> Result<()> {
         None
     };
 
-    let result = scanner::run_scan(&ScanOpts {
-        format: OutputFormat::Text,
-        diff,
-        config: &cfg.scan,
-        sast_config: &cfg.sast,
-    });
+    let result = scanner::run_scan(
+        &ScanOpts {
+            format: OutputFormat::Text,
+            diff,
+            config: &cfg.scan,
+            sast_config: &cfg.sast,
+        },
+        crate::modules::suppress::Policy::new(Default::default(), &cfg),
+        None,
+    );
 
     // In watch mode, don't bail on findings — just report and keep watching
     if let Err(e) = result {

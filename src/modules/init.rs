@@ -74,20 +74,6 @@ pub fn run_init(force: bool, ci: Option<&str>) -> Result<()> {
     let docker_file = ask!("Dockerfile path (leave blank to skip)", "");
     eprintln!();
 
-    // ── Lighthouse ────────────────────────────────────────────────────────────
-    eprintln!("[ Lighthouse / PageSpeed ]");
-    let lighthouse_url = ask!("URL to audit (leave blank to skip)", "");
-    let lighthouse_min_perf = ask!("Minimum Performance score (0-100)", "80");
-    let lighthouse_strategy = ask!("Device strategy (mobile/desktop)", "mobile");
-    eprintln!();
-
-    // ── Reassure ──────────────────────────────────────────────────────────────
-    eprintln!("[ Reassure React Performance ]");
-    let reassure_current = ask!("Path to current.perf", "output/current.perf");
-    let reassure_baseline = ask!("Path to baseline.perf", "output/baseline.perf");
-    let reassure_threshold = ask!("Allowed regression % before failure", "15");
-    eprintln!();
-
     // ── Pipeline ──────────────────────────────────────────────────────────────
     eprintln!("[ Pipeline Runner ]");
     let run_pipeline = ask_bool!("Generate a default pipeline (greengate run)?", true);
@@ -125,34 +111,10 @@ pub fn run_init(force: bool, ci: Option<&str>) -> Result<()> {
         ));
     }
 
-    if !lighthouse_url.is_empty() {
-        toml.push_str(&format!(
-            "[lighthouse]\n\
-             url = \"{}\"\n\
-             strategy = \"{}\"\n\
-             min_performance = {}\n\
-             min_accessibility = 90\n\
-             min_best_practices = 80\n\
-             min_seo = 80\n\n",
-            lighthouse_url, lighthouse_strategy, lighthouse_min_perf
-        ));
-    }
-
-    toml.push_str(&format!(
-        "[reassure]\n\
-         current = \"{}\"\n\
-         baseline = \"{}\"\n\
-         threshold = {}\n\n",
-        reassure_current, reassure_baseline, reassure_threshold
-    ));
-
     if run_pipeline {
         let mut steps: Vec<&str> = vec!["scan", "audit", "coverage"];
         if !docker_file.is_empty() {
             steps.push("docker-lint");
-        }
-        if !lighthouse_url.is_empty() {
-            steps.push("lighthouse");
         }
 
         toml.push_str("[pipeline]\nsteps = [\n");

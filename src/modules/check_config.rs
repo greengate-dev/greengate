@@ -11,6 +11,7 @@ pub fn run_check_config() -> Result<()> {
     if !path.exists() {
         terminal::warn("No .greengate.toml found — all commands will use built-in defaults.");
         terminal::info("Run `greengate init` to generate a config file.");
+        check_exceptions(&Config::default())?;
         print_defaults();
         return Ok(());
     }
@@ -26,6 +27,7 @@ pub fn run_check_config() -> Result<()> {
     })?;
 
     terminal::success(".greengate.toml is valid.");
+    check_exceptions(&cfg)?;
     eprintln!();
     eprintln!("Resolved configuration:");
     eprintln!();
@@ -88,32 +90,6 @@ pub fn run_check_config() -> Result<()> {
     eprintln!("[docker]");
     eprintln!("  dockerfile          = {}", cfg.docker.dockerfile);
 
-    // ── Lighthouse ────────────────────────────────────────────────────────────
-    eprintln!();
-    eprintln!("[lighthouse]");
-    eprintln!(
-        "  url                 = {}",
-        cfg.lighthouse.url.as_deref().unwrap_or("(not set)")
-    );
-    eprintln!("  strategy            = {}", cfg.lighthouse.strategy);
-    eprintln!("  min_performance     = {}", cfg.lighthouse.min_performance);
-    eprintln!(
-        "  min_accessibility   = {}",
-        cfg.lighthouse.min_accessibility
-    );
-    eprintln!(
-        "  min_best_practices  = {}",
-        cfg.lighthouse.min_best_practices
-    );
-    eprintln!("  min_seo             = {}", cfg.lighthouse.min_seo);
-
-    // ── Reassure ──────────────────────────────────────────────────────────────
-    eprintln!();
-    eprintln!("[reassure]");
-    eprintln!("  current             = {}", cfg.reassure.current);
-    eprintln!("  baseline            = {}", cfg.reassure.baseline);
-    eprintln!("  threshold           = {}%", cfg.reassure.threshold);
-
     // ── Pipeline ──────────────────────────────────────────────────────────────
     eprintln!();
     eprintln!("[pipeline]");
@@ -130,6 +106,47 @@ pub fn run_check_config() -> Result<()> {
     Ok(())
 }
 
+/// Validate `.greengate/exceptions.toml`, if there is one, and say how many
+/// exceptions have expired or are about to.
+fn check_exceptions(cfg: &Config) -> Result<()> {
+    use crate::modules::exceptions::{self, EXCEPTIONS_FILE, WARN_DAYS};
+    let today = crate::utils::dates::today();
+    let Some(ex) = exceptions::load(
+        std::path::Path::new("."),
+        cfg.policy.max_exception_days,
+        today,
+    )?
+    else {
+        return Ok(());
+    };
+    let expired = ex.rules.iter().filter(|r| r.expired(today)).count();
+    let soon = ex
+        .rules
+        .iter()
+        .filter(|r| !r.expired(today) && r.expires - today < WARN_DAYS)
+        .count();
+    terminal::success(&format!(
+        "{EXCEPTIONS_FILE} is valid: {} exception(s).",
+        ex.rules.len()
+    ));
+    if expired > 0 {
+        terminal::warn(&format!(
+            "{expired} exception(s) have expired; their findings count again."
+        ));
+    }
+    if soon > 0 {
+        terminal::warn(&format!(
+            "{soon} exception(s) expire within {WARN_DAYS} days."
+        ));
+    }
+    if !cfg.audit.ignore_advisories.is_empty() {
+        terminal::warn(
+            "[audit] ignore_advisories is deprecated: run `greengate exceptions migrate`.",
+        );
+    }
+    Ok(())
+}
+
 fn print_defaults() {
     eprintln!();
     eprintln!("Default values that will be used:");
@@ -140,6 +157,4 @@ fn print_defaults() {
     eprintln!("  [coverage] file=coverage/lcov.info, min=80%");
     eprintln!("  [lint]     target_dir=.");
     eprintln!("  [docker]   dockerfile=Dockerfile");
-    eprintln!("  [lighthouse] strategy=mobile, min_performance=80, min_accessibility=90");
-    eprintln!("  [reassure] threshold=15%");
 }
