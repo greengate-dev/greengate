@@ -134,6 +134,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
         inner: Vec::new(),
         network: true,
         env_allow: &opts.policy.env_allow,
+        project_copy: None,
     };
     let run_uv = |args: Vec<String>, writable_venv: bool| -> Result<(bool, String)> {
         let out = sandbox(writable_venv)

@@ -70,10 +70,12 @@ changes how install scripts run:
 
 - They run one package at a time, in bubblewrap where available: **no
   network**, the system read-only, a private home directory and `/tmp`, and
-  the project's `.env*`, `.npmrc` and `.git/config` masked.
+  the project's `.env*`, `.npmrc` and `.git/config` masked (workspace
+  packages' too).
 - Install scripts see an **allowlisted environment** (`PATH`, compilers,
   proxies, package-manager settings, …); everything else, `DATABASE_URL`
-  and credential-like variables included, is removed.
+  and credential-like variables included, is removed, and credentials inside
+  kept URLs (`PIP_INDEX_URL`, proxies) are stripped.
 - `--ignore-scripts` now also skips dependencies' scripts, and an unfinished
   check (unreachable registry, no OSV snapshot) stops the install before any
   package code runs.

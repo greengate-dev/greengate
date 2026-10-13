@@ -227,6 +227,7 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
         .filter(|p| !p.source.is_registry())
         .map(|p| p.name.as_str())
         .collect();
+    let mut unplanned: HashSet<PathBuf> = HashSet::new();
     for pkg in &installed {
         if !planned_ids.contains(&(pkg.name.clone(), pkg.version.clone()))
             && !planned_by_name.contains(pkg.name.as_str())
@@ -237,14 +238,20 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
                 &pkg.name,
                 &pkg.version,
                 &pkg.dir,
-                "installed, but not in the planned lockfile".into(),
+                "installed, but not in the planned lockfile; its install scripts are not run"
+                    .into(),
             ));
+            unplanned.insert(pkg.dir.clone());
         }
     }
     report.checks.push(Check::passed("install:verify-artifacts").with_source(format!(
         "the package manager verified every tarball against the lockfile integrity; {} installed package(s) checked against the plan",
         installed.len()
     )));
+    if !opts.plan_only && must_halt(&report, &opts) {
+        print_install(&report, "Install halted before running any install script.");
+        return Ok(report);
+    }
 
     // ── 4. Inspect ───────────────────────────────────────────────────────────
     let isolation = sandbox::detect(opts.isolate)?;
@@ -252,6 +259,10 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
     let bun_untrusted = (js == Js::Bun).then(|| bun::untrusted(&target));
     let mut approved: Vec<ScriptPackage> = Vec::new();
     for sp in inspect::script_packages(&installed) {
+        // Reported above; under `--no-fail` the install goes on without it.
+        if unplanned.contains(&sp.pkg.dir) {
+            continue;
+        }
         if let Some(policy) = &pnpm_policy
             && !policy.allows(&sp.pkg.name)
         {
@@ -451,6 +462,7 @@ pub fn run(js: Js, opts: InstallOpts<'_>) -> Result<Report> {
             inner: own.clone(),
             network,
             env_allow: &opts.policy.env_allow,
+            project_copy: None,
         };
         let skip: &[&str] = if isolation == Isolation::None {
             &[".git"]
@@ -617,11 +629,12 @@ fn run_berry_builds(
     if order.is_empty() {
         return;
     }
-    if report
-        .findings
-        .iter()
-        .any(|f| f.rule == "INSTALL/SuspiciousScript")
-    {
+    if report.findings.iter().any(|f| {
+        matches!(
+            f.rule.as_str(),
+            "INSTALL/SuspiciousScript" | "INSTALL/UnplannedPackage"
+        )
+    }) {
         report.checks.push(Check::incomplete(
             "install:execute",
             "a held-back script blocks the Yarn build step, which would also build it; no builds ran — builds stay pending, and a plain `yarn install` would run them all",
@@ -644,6 +657,7 @@ fn run_berry_builds(
         inner: order.iter().map(|s| s.pkg.dir.clone()).collect(),
         network,
         env_allow: &opts.policy.env_allow,
+        project_copy: None,
     };
     let skip: &[&str] = &[".git", ".yarn", "node_modules"];
     let before = inspect::snapshot(target, skip);

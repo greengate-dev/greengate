@@ -144,7 +144,8 @@ require_isolation = false
 script_network = [
   # "puppeteer",
 ]
-# Credential-looking environment variables still passed to install scripts.
+# Environment variables passed to install scripts as they are, even when they
+# look like credentials or hold a URL with credentials in it.
 env_allow = [
   # "NODE_EXTRA_CA_CERTS",
 ]

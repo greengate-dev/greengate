@@ -33,7 +33,7 @@ be removed in 0.5.
 | **Yarn 1** | an `--ignore-scripts` install in a scratch copy (Yarn 1 has no lockfile-only mode) | `yarn install --frozen-lockfile --ignore-scripts` | like npm: each package via `npm rebuild <name>@<version>`, sandboxed |
 | **Yarn Berry** | `yarn install --mode=update-lockfile` in a scratch copy | `yarn install --immutable --mode=skip-build`, which unplugs the packages that need building | Berry builds every package in one step, so isolation keeps builds from the rest of the system but not from each other. A suspicious-looking build is therefore held back even when isolated — allowlist it, or set `dependenciesMeta.<name>.built: false` so Yarn never builds it — and then no builds run, since Berry would build it too. |
 | **Bun** | `bun install/add --lockfile-only` in a scratch copy | `bun install --frozen-lockfile --ignore-scripts` | only packages Bun trusts (`trustedDependencies` and its built-in list; `bun pm untrusted` names the rest), each via `npm rebuild`, sandboxed |
-| **pip** | `pip install --dry-run --report` — **in the sandbox**, because resolving an sdist runs its build backend | greengate downloads every artifact itself and checks its sha256 against the index | sdists are built into wheels in the sandbox (with network, for build requirements; writes confined to a scratch directory); then only wheels are installed, which runs no package code |
+| **pip** | `pip install --dry-run --report` — **in the sandbox**, because resolving an sdist runs its build backend (a local setuptools project, which writes into its own tree, is resolved over a throwaway copy of the project) | greengate downloads every artifact itself and checks its sha256 against the index | sdists, local directories (from a copy, without secret files) and VCS requirements (checked out by greengate at the planned commit) are built into wheels in the sandbox (with network, for build requirements; writes confined to a scratch directory); then only wheels are installed, which runs no package code |
 | **uv** | `uv lock` / `uv add --no-sync` — **in the sandbox**, because locking runs sdist build backends; manifests are backed up | `uv sync --frozen --no-install-project` in the sandbox (uv checks every hash; sdist builds run there) | new `.pth` startup files are checked before any Python starts and suspicious ones quarantined; then the project itself is installed |
 | **Cargo** | `cargo add` / `update` (manifests are backed up) | `cargo fetch --locked` (cargo checks every checksum) | nothing: build scripts and proc-macros run at `cargo build`, after the gate. New crates' build scripts and proc-macro sources are inspected; networking, shell invocations or encoded payloads block (`allow_cargo_crates` to allowlist). A blocked plan restores `Cargo.toml` and `Cargo.lock`. |
 
@@ -77,8 +77,9 @@ package's scripts run in a sandbox where:
   toolchains a build needs (`PATH` entries, `~/.nvm`, `~/.cargo`, `~/.rustup`,
   `~/.local/share/uv`, node-gyp headers, …), which stay read-only; credential
   files inside those (`~/.cargo/credentials`, …) stay masked,
-- the project's secret files are masked: `.env` and `.env.*`, `.npmrc`,
-  `.yarnrc.yml`, `.pypirc`, `.netrc`, `.git-credentials`, `.git/config`,
+- the project's secret files are masked, in workspace packages too: `.env`
+  and `.env.*`, `.npmrc`, `.yarnrc.yml`, `.pypirc`, `.netrc`,
+  `.git-credentials`, `.git/config`,
 - there is no network (unless the package is listed in
   `[supply_chain] script_network`), and the script has its own namespaces
   and terminal session.
@@ -104,10 +105,13 @@ toolchain locations and package-manager settings (`npm_config_*`, `PIP_*`,
 `UV_*`, `YARN_*`, `CARGO_*`, `NODE_*`, …). Everything else is removed —
 `DATABASE_URL`, `REDIS_URL` and the like included — and so is anything that
 looks like a credential (`*_TOKEN`, `*_KEY`, `*_SECRET`, `*PASSWORD*`,
-`*_AUTH*`, `AWS_*`, `SSH_AUTH_SOCK`, …) even with an allowed prefix. Pass
-others with `[supply_chain] env_allow`: exact names, or `PREFIX_*`.
+`*_AUTH*`, `AWS_*`, `SSH_AUTH_SOCK`, …) even with an allowed prefix. A kept
+variable holding a URL with credentials (`PIP_INDEX_URL=https://user:pass@…`,
+an authenticated proxy) is passed without them. Pass others with
+`[supply_chain] env_allow`: exact names, or `PREFIX_*`; those are passed as
+they are.
 
-`--ignore-scripts` means no install scripts at all: dependencies' are not run
+`--ignore-scripts` (also `=true` or `=1`) means no install scripts at all: dependencies' are not run
 either (they are still inspected and reported).
 
 The project's own `preinstall`/`install`/`postinstall`/`prepare` scripts run
@@ -121,10 +125,10 @@ afterwards as usual — they are the project's code.
 | `INSTALL/BlockedWrite` | A script tried to write outside its package; the sandbox refused. |
 | `INSTALL/ForeignWrite` | Unisolated, a script created, modified or deleted files outside its package. |
 | `INSTALL/PhantomFile` | Unisolated, a script created and deleted files outside its package. |
-| `INSTALL/UnplannedPackage` | A package was installed that the plan did not contain. |
+| `INSTALL/UnplannedPackage` | A package was installed that the plan did not contain. The install stops before any script runs; its own scripts never run, even under `--no-fail`. |
 | `INSTALL/BuildNotAllowed` | pnpm will not run this package's install scripts (not in `onlyBuiltDependencies`), so greengate does not either. |
 | `INSTALL/SuspiciousBuildScript` | A new crate's build script or proc-macro uses networking, shells out, or embeds an encoded payload. |
-| `INSTALL/StartupCode` | A wheel adds a `.pth` file whose code runs at every Python start and looks suspicious. |
+| `INSTALL/StartupCode` | A wheel, downloaded or built from source, adds a `.pth` file whose code runs at every Python start and looks suspicious. |
 | `INSTALL/HashMismatch` | A downloaded pip artifact does not match the sha256 the index published. |
 
 Plus every `deps check` rule from the plan phase.

@@ -3,14 +3,17 @@
 //! With bubblewrap (Linux), a script runs in a sandbox where the system is
 //! read-only, the home directory, `/tmp` and `/run` are private and empty
 //! (except the toolchains a build needs, read-only), the project's secret
-//! files (`.env*`, `.npmrc`, `.git/config`…) are masked, writes are confined
-//! to its own package directory, and — unless the package is allowed network
-//! — there is no network at all. It gets its own namespaces and terminal
-//! session, so it cannot signal or type into anything outside.
+//! files (`.env*`, `.npmrc`, `.git/config`…, workspace packages' too) are
+//! masked, writes are confined to its own package directory, and — unless
+//! the package is allowed network — there is no network at all. It gets its
+//! own namespaces and terminal session, so it cannot signal or type into
+//! anything outside.
 //!
 //! In both modes, the environment is reduced to an allowlist: what builds
 //! need (`PATH`, compilers, proxies, package-manager settings), never what
-//! looks like a credential. Without isolation, the caller also verifies the
+//! looks like a credential, and with credentials inside URLs (an index or
+//! proxy URL's `user:password@`) removed; `env_allow` keeps a variable
+//! exactly as it is. Without isolation, the caller also verifies the
 //! filesystem afterwards.
 
 use anyhow::{Result, bail};
@@ -103,8 +106,8 @@ const SECRET_FILES: &[&str] = &[
     ".cargo/credentials.toml",
 ];
 
-/// Project files that may hold credentials (also matched as `<name>.*`
-/// for `.env`).
+/// Project files that may hold credentials, by name, in the root and in
+/// workspace packages (`.env` and `.env.*` too).
 const PROJECT_SECRETS: &[&str] = &[
     ".npmrc",
     ".yarnrc.yml",
@@ -112,7 +115,27 @@ const PROJECT_SECRETS: &[&str] = &[
     ".pypirc",
     ".netrc",
     ".git-credentials",
-    ".git/config",
+];
+
+/// Whether a project file named `name` may hold credentials: `.env`,
+/// `.env.*` and the [`PROJECT_SECRETS`].
+pub fn is_secret_file(name: &str) -> bool {
+    name == ".env" || name.starts_with(".env.") || PROJECT_SECRETS.contains(&name)
+}
+
+/// Directories not searched for [`PROJECT_SECRETS`]: dependency and build
+/// trees (virtualenvs are recognised by their `pyvenv.cfg`).
+const SECRET_SEARCH_SKIP: &[&str] = &[
+    ".git",
+    "node_modules",
+    ".pnpm-store",
+    ".yarn",
+    "bower_components",
+    ".venv",
+    "__pycache__",
+    ".tox",
+    ".nox",
+    "target",
 ];
 
 /// Toolchains that live in the home directory, re-exposed read-only.
@@ -246,13 +269,63 @@ fn allowed(name: &str, env_allow: &[String]) -> bool {
 }
 
 /// Whether an install script sees `name`: `env_allow` entries always; others
-/// only when a build may need them and they do not look like credentials.
+/// only when a build may need them and they do not look like credentials
+/// (and then without credentials inside URLs: [`without_url_credentials`]).
 pub fn keep_var(name: &str, env_allow: &[String]) -> bool {
     allowed(name, env_allow)
         || (!is_secret_var(name)
             && (ENV_KEEP.contains(&name)
                 || TOOLCHAIN_VARS.contains(&name)
                 || ENV_KEEP_PREFIX.iter().any(|p| name.starts_with(p))))
+}
+
+/// `value` with the user information (`user:password@`, `token@`) removed
+/// from every URL in it, or `None` when no URL in it carries any. Kept
+/// settings such as `PIP_INDEX_URL` or `HTTPS_PROXY` often embed a
+/// credential; the URL itself stays, so a private index is not swapped for
+/// a public one, it only refuses the unauthenticated request.
+pub fn without_url_credentials(value: &str) -> Option<String> {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    let mut changed = false;
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i + 3);
+        out.push_str(head);
+        let end = tail
+            .find(|c: char| matches!(c, '/' | '?' | '#' | ',' | ';') || c.is_whitespace())
+            .unwrap_or(tail.len());
+        let authority = &tail[..end];
+        match authority.rfind('@') {
+            Some(at) => {
+                out.push_str(&authority[at + 1..]);
+                changed = true;
+            }
+            None => out.push_str(authority),
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    changed.then_some(out)
+}
+
+/// Reduce what `cmd` inherits of `vars` (the environment) to what an
+/// install script may see: [`keep_var`], then [`without_url_credentials`]
+/// on all but `env_allow` entries.
+fn scrub_env(
+    cmd: &mut Command,
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    env_allow: &[String],
+) {
+    for (k, v) in vars {
+        let name = k.to_string_lossy();
+        if !keep_var(&name, env_allow) {
+            cmd.env_remove(&k);
+        } else if !allowed(&name, env_allow)
+            && let Some(clean) = v.to_str().and_then(without_url_credentials)
+        {
+            cmd.env(&k, clean);
+        }
+    }
 }
 
 /// What a sandboxed command may touch.
@@ -273,6 +346,12 @@ pub struct Sandbox<'a> {
     pub network: bool,
     /// Variables kept even if they look like credentials.
     pub env_allow: &'a [String],
+    /// A copy of the project (without secret files) mounted writable in its
+    /// place, for a command that must write into its tree — pip resolving a
+    /// local setuptools project writes its metadata there — without the
+    /// project changing. Toolchains inside the project (a virtualenv) stay
+    /// visible over it, read-only.
+    pub project_copy: Option<&'a Path>,
 }
 
 impl Sandbox<'_> {
@@ -309,6 +388,13 @@ impl Sandbox<'_> {
                     c.arg("--ro-bind").arg(&d).arg(&d);
                 }
                 c.arg("--ro-bind").arg(self.project).arg(self.project);
+                if let Some(copy) = self.project_copy {
+                    c.arg("--bind").arg(copy).arg(self.project);
+                    let project = [self.project.to_path_buf()];
+                    for d in reexposed(home, &project, Path::new(program)) {
+                        c.arg("--ro-bind").arg(&d).arg(&d);
+                    }
+                }
                 if let Some(home) = home {
                     for d in SECRET_DIRS
                         .iter()
@@ -327,19 +413,24 @@ impl Sandbox<'_> {
                 }
                 c.arg("--bind").arg(self.tmp).arg(self.tmp);
                 // Later mounts override earlier ones: writable, then read-only
-                // carve-outs, then the project's secrets, then the writable
-                // directories inside those.
+                // carve-outs, then the writable directories inside those,
+                // then the project's secrets — last, so that no writable
+                // directory (a workspace package is one) shows them again.
                 for w in &self.writable {
                     c.arg("--bind").arg(w).arg(w);
                 }
                 for r in self.read_only.iter().filter(|r| r.exists()) {
                     c.arg("--ro-bind").arg(r).arg(r);
                 }
-                for f in project_secrets(self.project) {
-                    c.arg("--ro-bind").arg("/dev/null").arg(f);
-                }
                 for w in &self.inner {
                     c.arg("--bind").arg(w).arg(w);
+                }
+                // A copy is made without them.
+                for f in project_secrets(self.project)
+                    .into_iter()
+                    .filter(|_| self.project_copy.is_none())
+                {
+                    c.arg("--ro-bind").arg("/dev/null").arg(f);
                 }
                 c.arg("--chdir")
                     .arg(self.project)
@@ -350,11 +441,7 @@ impl Sandbox<'_> {
             }
         };
         cmd.current_dir(self.project);
-        for (k, _) in std::env::vars_os() {
-            if !keep_var(&k.to_string_lossy(), self.env_allow) {
-                cmd.env_remove(&k);
-            }
-        }
+        scrub_env(&mut cmd, std::env::vars_os(), self.env_allow);
         cmd.env("TMPDIR", self.tmp);
         // npm writes its cache and logs; keep them in the private temp dir.
         cmd.env("npm_config_cache", self.tmp.join("npm-cache"));
@@ -363,22 +450,40 @@ impl Sandbox<'_> {
     }
 }
 
-/// Files in the project root that may hold credentials: every `.env*` and
-/// the [`PROJECT_SECRETS`] that exist.
+/// Files in the project that may hold credentials: every `.env*` and
+/// [`PROJECT_SECRETS`] file in the root and in workspace packages, at any
+/// depth outside [`SECRET_SEARCH_SKIP`], and `.git/config`. Searched once
+/// per project and run, not once per package.
 fn project_secrets(project: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = std::fs::read_dir(project)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| {
+    static FOUND: std::sync::Mutex<Vec<(PathBuf, Vec<PathBuf>)>> =
+        std::sync::Mutex::new(Vec::new());
+    let mut found = FOUND.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, files)) = found.iter().find(|(p, _)| p == project) {
+        return files.clone();
+    }
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut stack = vec![project.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let n = e.file_name();
             let n = n.to_string_lossy();
-            n == ".env" || n.starts_with(".env.")
-        })
-        .map(|e| e.path())
-        .collect();
-    out.extend(PROJECT_SECRETS.iter().map(|f| project.join(f)));
+            let path = e.path();
+            // Directory symlinks are not followed (no loops, nothing
+            // outside the project); file symlinks are masked like files.
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                if !SECRET_SEARCH_SKIP.contains(&n.as_ref()) && !path.join("pyvenv.cfg").is_file()
+                {
+                    stack.push(path);
+                }
+            } else if is_secret_file(&n) && path.is_file() {
+                out.push(path);
+            }
+        }
+    }
+    out.push(project.join(".git/config"));
     out.retain(|p| p.is_file());
+    out.sort();
+    found.push((project.to_path_buf(), out.clone()));
     out
 }
 
@@ -489,6 +594,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn credentials_inside_urls_are_removed() {
+        assert_eq!(
+            without_url_credentials("https://user:s3cret@pypi.corp/simple").as_deref(),
+            Some("https://pypi.corp/simple")
+        );
+        assert_eq!(
+            without_url_credentials("https://tok@a.example/x http://u:p@b.example:8080")
+                .as_deref(),
+            Some("https://a.example/x http://b.example:8080")
+        );
+        // An `@` in the path is not user information.
+        assert_eq!(
+            without_url_credentials("https://registry.example/@scope/pkg"),
+            None
+        );
+        assert_eq!(without_url_credentials("https://pypi.org/simple"), None);
+        assert_eq!(without_url_credentials("localhost,.corp"), None);
+    }
+
+    #[test]
+    fn kept_variables_lose_url_credentials_unless_allowed() {
+        let vars = [
+            ("PIP_INDEX_URL", "https://u:p@pypi.corp/simple"),
+            ("PIP_EXTRA_INDEX_URL", "https://u:p@pypi.corp/extra"),
+            ("HTTPS_PROXY", "http://proxy.corp:3128"),
+            ("DATABASE_URL", "postgres://u:p@db/app"),
+        ]
+        .map(|(k, v)| (k.into(), v.into()));
+        let mut cmd = Command::new("true");
+        scrub_env(
+            &mut cmd,
+            vars.into_iter(),
+            &["PIP_EXTRA_INDEX_URL".to_string()],
+        );
+        let env: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(env.contains(&(
+            "PIP_INDEX_URL".into(),
+            Some("https://pypi.corp/simple".into())
+        )));
+        assert!(env.contains(&("DATABASE_URL".into(), None)), "removed");
+        // Allowed or clean: inherited as they are.
+        assert!(
+            !env.iter()
+                .any(|(k, _)| k == "PIP_EXTRA_INDEX_URL" || k == "HTTPS_PROXY")
+        );
+    }
+
     /// The command line as strings, for checking what is mounted.
     fn argv(c: &Command) -> Vec<String> {
         c.get_args()
@@ -505,6 +666,14 @@ mod tests {
         std::fs::write(project.path().join(".env.d"), "").unwrap();
         std::fs::create_dir(project.path().join(".git")).unwrap();
         std::fs::write(project.path().join(".git/config"), "[remote]").unwrap();
+        // Workspace packages' secrets too, but not dependencies' files.
+        let app = project.path().join("packages/app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join(".env"), "DATABASE_URL=x").unwrap();
+        std::fs::write(app.join(".npmrc"), "//r/:_authToken=x").unwrap();
+        let dep = project.path().join("node_modules/dep");
+        std::fs::create_dir_all(&dep).unwrap();
+        std::fs::write(dep.join(".env"), "").unwrap();
         let tmp = project.path().join("tmp");
         std::fs::create_dir(&tmp).unwrap();
         let sb = Sandbox {
@@ -513,9 +682,10 @@ mod tests {
             tmp: &tmp,
             writable: Vec::new(),
             read_only: vec![project.path().join(".git")],
-            inner: Vec::new(),
+            inner: vec![app.clone()],
             network: false,
             env_allow: &[],
+            project_copy: None,
         };
         let a = argv(&sb.command_with_home("true", &[], Some(home.path())));
         let at = |flag: &str, path: &Path| {
@@ -535,10 +705,58 @@ mod tests {
                     && w[2] == project.path().join(f).to_string_lossy()
             })
         };
-        for f in [".env", ".env.local", ".env.d", ".git/config"] {
+        for f in [
+            ".env",
+            ".env.local",
+            ".env.d",
+            ".git/config",
+            "packages/app/.env",
+            "packages/app/.npmrc",
+        ] {
             assert!(masked(f).is_some(), "{f} masked: {a:?}");
         }
+        assert!(masked("node_modules/dep/.env").is_none());
         assert!(masked(".git/config") > at("--ro-bind", &project.path().join(".git")));
+        // After the writable package directory, which would show it again.
+        assert!(masked("packages/app/.env") > at("--bind", &app));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_project_copy_takes_the_writes() {
+        if !bwrap_works() {
+            eprintln!("bubblewrap unavailable here; skipped");
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        let copy = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("setup.py"), "original").unwrap();
+        std::fs::write(copy.path().join("setup.py"), "copy").unwrap();
+        let sb = Sandbox {
+            isolation: Isolation::Bwrap,
+            project: project.path(),
+            tmp: tmp.path(),
+            writable: Vec::new(),
+            read_only: Vec::new(),
+            inner: Vec::new(),
+            network: false,
+            env_allow: &[],
+            project_copy: Some(copy.path()),
+        };
+        let script = "cat setup.py && mkdir x.egg-info".to_string();
+        let out = sb
+            .command_with_home("sh", &["-c".into(), script], None)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "copy",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(copy.path().join("x.egg-info").is_dir());
+        assert!(!project.path().join("x.egg-info").exists());
     }
 
     #[test]
@@ -569,6 +787,9 @@ mod tests {
         std::fs::write(project.path().join(".env"), "DATABASE_URL=x").unwrap();
         std::fs::write(project.path().join("package.json"), "{}").unwrap();
         std::fs::write(home.path().join("notes.txt"), "private").unwrap();
+        let app = project.path().join("packages/app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join(".env"), "DATABASE_URL=x").unwrap();
         let tmp = project.path().join("tmp");
         std::fs::create_dir(&tmp).unwrap();
         let sb = Sandbox {
@@ -577,12 +798,13 @@ mod tests {
             tmp: &tmp,
             writable: Vec::new(),
             read_only: Vec::new(),
-            inner: Vec::new(),
+            inner: vec![app],
             network: false,
             env_allow: &[],
+            project_copy: None,
         };
         let script = format!(
-            "test -s package.json && test ! -s .env && test ! -e '{}' && echo ok",
+            "test -s package.json && test ! -s .env && test ! -s packages/app/.env && test ! -e '{}' && echo ok",
             home.path().join("notes.txt").display()
         );
         let out = sb

@@ -213,7 +213,7 @@ fn reject_overrides(manager: &str, args: &[String], owned: &[&str]) -> Result<()
             let next = args.get(i + 1).map(String::as_str);
             let affirmative = match (o_value, value) {
                 (None, None) => !matches!(next, Some("false" | "0")),
-                (None, Some(v)) => matches!(v, "true" | "1"),
+                (None, Some(v)) => affirms(v),
                 (Some(want), Some(v)) => want == v,
                 (Some(want), None) => next == Some(want),
             };
@@ -227,10 +227,19 @@ fn reject_overrides(manager: &str, args: &[String], owned: &[&str]) -> Result<()
     Ok(())
 }
 
-/// Whether the caller asked that no install scripts run at all.
+/// Whether a boolean flag's value turns it on, as npm, pnpm, Yarn and Bun
+/// read it (`--flag=1` is `--flag=true`). [`reject_overrides`] and
+/// [`ignore_scripts`] share it, so a value one accepts the other honours.
+fn affirms(value: &str) -> bool {
+    matches!(value, "true" | "1")
+}
+
+/// Whether the caller asked that no install scripts run at all. Negated
+/// forms never get here: [`reject_overrides`] refuses them first.
 fn ignore_scripts(args: &[String]) -> bool {
-    args.iter()
-        .any(|a| matches!(a.as_str(), "--ignore-scripts" | "--ignore-scripts=true"))
+    args.iter().any(|a| {
+        a == "--ignore-scripts" || a.strip_prefix("--ignore-scripts=").is_some_and(affirms)
+    })
 }
 
 /// Phase 1 policy: `deps check` on everything the planned lockfile adds or
@@ -543,7 +552,15 @@ mod tests {
         ] {
             assert!(reject_overrides("x", &a(bad), owned).is_err(), "{bad:?}");
         }
-        assert!(ignore_scripts(&a(&["ci", "--ignore-scripts=true"])));
+        // Every form the validator lets through as affirmative is honoured.
+        for on in [
+            "--ignore-scripts",
+            "--ignore-scripts=true",
+            "--ignore-scripts=1",
+        ] {
+            assert!(reject_overrides("x", &a(&[on]), owned).is_ok(), "{on}");
+            assert!(ignore_scripts(&a(&["ci", on])), "{on}");
+        }
         assert!(!ignore_scripts(&a(&["ci"])));
     }
 }

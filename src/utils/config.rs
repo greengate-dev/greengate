@@ -494,9 +494,10 @@ pub struct SupplyChainConfig {
     #[serde(default)]
     pub script_network: Vec<String>,
     /// Extra environment variables for install scripts, by name or
-    /// `PREFIX_*`. Scripts otherwise see only an allowlist (`PATH`,
-    /// compilers, proxies, package-manager settings…) without anything that
-    /// looks like a credential.
+    /// `PREFIX_*`, passed as they are. Scripts otherwise see only an
+    /// allowlist (`PATH`, compilers, proxies, package-manager settings…)
+    /// without anything that looks like a credential, and kept URLs without
+    /// their `user:password@`.
     #[serde(default)]
     pub env_allow: Vec<String>,
 }

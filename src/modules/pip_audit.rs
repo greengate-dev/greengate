@@ -429,7 +429,6 @@ struct PipThreat {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Extract plain package names from pip args (skip flags and version specs).
 /// The arguments to pass after `pip install`. The command takes them without
 /// the subcommand (`greengate pip-install requests`), but a leading `install`
 /// is tolerated so it is neither sent twice nor checked as a package name.
@@ -440,6 +439,95 @@ fn install_args(args: &[String]) -> &[String] {
     }
 }
 
+/// Options of `pip install` and `uv add` that take a separate value, which
+/// is never a package name.
+const OPTIONS_WITH_VALUE: &[&str] = &[
+    // pip install
+    "-r",
+    "--requirement",
+    "-c",
+    "--constraint",
+    "-e",
+    "--editable",
+    "-t",
+    "--target",
+    "-d",
+    "--dest",
+    "-i",
+    "--index-url",
+    "--extra-index-url",
+    "-f",
+    "--find-links",
+    "--trusted-host",
+    "--platform",
+    "--python-version",
+    "--implementation",
+    "--abi",
+    "--root",
+    "--prefix",
+    "--src",
+    "--upgrade-strategy",
+    "-C",
+    "--config-settings",
+    "--global-option",
+    "--no-binary",
+    "--only-binary",
+    "--progress-bar",
+    "--log",
+    "--proxy",
+    "--retries",
+    "--timeout",
+    "--exists-action",
+    "--cert",
+    "--client-cert",
+    "--cache-dir",
+    "--report",
+    "--python",
+    "--keyring-provider",
+    "--root-user-action",
+    "--use-feature",
+    "--use-deprecated",
+    "--group",
+    // uv add
+    "--index",
+    "--default-index",
+    "--optional",
+    "--extra",
+    "--rev",
+    "--tag",
+    "--branch",
+    "--package",
+    "--project",
+    "--directory",
+    "--marker",
+    "-m",
+    "-p",
+    "-P",
+    "--upgrade-package",
+    "--reinstall-package",
+    "--refresh-package",
+    "--no-build-isolation-package",
+    "--script",
+];
+
+/// Whether a requirement argument names its source instead of a registry
+/// package: a URL or direct reference (`name @ https://…`), a VCS URL, a
+/// local path or archive.
+fn is_direct_source(arg: &str) -> bool {
+    arg.contains("://")
+        || ["git+", "hg+", "svn+", "bzr+"]
+            .iter()
+            .any(|p| arg.starts_with(p))
+        || arg.starts_with(['.', '/', '~'])
+        || arg.contains(['/', '\\'])
+        || [".whl", ".tar.gz", ".zip", ".tar.bz2", ".tgz"]
+            .iter()
+            .any(|e| arg.ends_with(e))
+}
+
+/// Package names given on a pip / uv command line, for the name guard:
+/// options and their values, URLs, paths and archives skipped, version
+/// specifiers and extras stripped.
 pub(crate) fn extract_package_names(args: &[String]) -> Vec<String> {
     let mut names = Vec::new();
     let mut skip_next = false;
@@ -448,30 +536,16 @@ pub(crate) fn extract_package_names(args: &[String]) -> Vec<String> {
             skip_next = false;
             continue;
         }
-        // Skip flags that take a value
-        if matches!(
-            arg.as_str(),
-            "-r" | "--requirement"
-                | "-t"
-                | "--target"
-                | "-d"
-                | "--dest"
-                | "--index-url"
-                | "-i"
-                | "--extra-index-url"
-                | "--trusted-host"
-                | "--constraint"
-                | "-c"
-        ) {
+        if OPTIONS_WITH_VALUE.contains(&arg.as_str()) {
             skip_next = true;
             continue;
         }
-        if arg.starts_with('-') {
+        if arg.starts_with('-') || is_direct_source(arg) {
             continue;
         }
         // Strip version specifiers: requests>=2.0 → requests
         let name = arg
-            .split(&['>', '<', '=', '!', '[', ';', '@'][..])
+            .split(&['>', '<', '=', '!', '~', '[', ';', '@'][..])
             .next()
             .unwrap_or(arg)
             .trim()
@@ -744,6 +818,29 @@ mod tests {
             .collect();
         let names = extract_package_names(&args);
         assert_eq!(names, vec!["flask"]);
+    }
+
+    #[test]
+    fn extract_names_skips_sources_and_option_values() {
+        let args: Vec<String> = [
+            "--find-links",
+            "wh",
+            "-f",
+            "other",
+            "git+https://git.example/x",
+            "mine @ git+https://git.example/mine",
+            "./local",
+            "dist/pkg-1.0-py3-none-any.whl",
+            "/abs/pkg",
+            "--index",
+            "corp",
+            "requests~=2.31",
+            "Flask[async]",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(extract_package_names(&args), ["requests", "flask"]);
     }
 
     #[test]

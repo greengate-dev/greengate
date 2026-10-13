@@ -1,11 +1,13 @@
 //! pip: plan with `pip install --dry-run --report`, then greengate fetches
-//! and verifies every artifact itself, inspects them, builds sdists into
-//! wheels in the sandbox, and installs wheels only.
+//! and verifies every artifact itself, inspects them, builds sdists and
+//! source requirements (local directories, VCS checkouts) into wheels in
+//! the sandbox, and installs wheels only.
 //!
-//! Two places run package code: resolving an sdist runs its build backend
-//! (to read its metadata), and so does building it. Both run in the sandbox
-//! when one is available. Installing a wheel runs no code — but a `.pth`
-//! file in it runs at every Python start, so those are inspected.
+//! Two places run package code: resolving an sdist or source tree runs its
+//! build backend (to read its metadata), and so does building it. Both run
+//! in the sandbox when one is available. Installing a wheel runs no code —
+//! but a `.pth` file in it runs at every Python start, so those are
+//! inspected, in built wheels too.
 
 use super::sandbox::{self, Isolation, Sandbox};
 use super::{
@@ -31,6 +33,10 @@ struct Item {
     url: String,
     sha256: Option<String>,
     kind: Kind,
+    /// For a VCS requirement: the VCS (`git`, `hg`…) and planned commit.
+    vcs: Option<(String, String)>,
+    /// The project's directory inside the source tree, if not its root.
+    subdirectory: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -56,6 +62,10 @@ fn parse_report(report: &serde_json::Value) -> Vec<Item> {
             } else {
                 Kind::Sdist
             };
+            let vcs = di["vcs_info"]["vcs"]
+                .as_str()
+                .zip(di["vcs_info"]["commit_id"].as_str())
+                .map(|(v, c)| (v.to_string(), c.to_string()));
             Some(Item {
                 name: deps::normalize_python(i["metadata"]["name"].as_str()?),
                 version: i["metadata"]["version"].as_str()?.to_string(),
@@ -64,6 +74,8 @@ fn parse_report(report: &serde_json::Value) -> Vec<Item> {
                     .map(str::to_string),
                 url,
                 kind,
+                vcs,
+                subdirectory: di["subdirectory"].as_str().map(str::to_string),
             })
         })
         .collect()
@@ -170,6 +182,149 @@ fn sdist_setup_py(path: &Path) -> Option<String> {
     None
 }
 
+/// A `file://` URL's path, percent-decoded.
+fn file_url_path(url: &str) -> Option<PathBuf> {
+    let raw = url.strip_prefix("file://")?.as_bytes();
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let hex = raw
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (raw[i], hex) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    Some(PathBuf::from(String::from_utf8(out).ok()?))
+}
+
+/// Directories a source tree is copied without: dependency trees, caches
+/// and virtualenvs (recognised by their `pyvenv.cfg`).
+const COPY_SKIP: &[&str] = &[
+    "node_modules",
+    ".venv",
+    "__pycache__",
+    ".tox",
+    ".nox",
+    ".mypy_cache",
+    ".pytest_cache",
+];
+
+/// Copy the source tree `from` to `to` for building: a build writes into
+/// its tree (setuptools' `build/`, `*.egg-info`), so it builds a copy and
+/// the original stays untouched. Secret files and `.git/config` (remote
+/// URLs with credentials) are left out; the rest of `.git` stays, for
+/// version plugins such as setuptools-scm. Directory symlinks are skipped.
+fn copy_source(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)?.flatten() {
+        let name = e.file_name();
+        let n = name.to_string_lossy();
+        let path = e.path();
+        let dest = to.join(&name);
+        if e.file_type()?.is_dir() {
+            if !COPY_SKIP.contains(&n.as_ref()) && !path.join("pyvenv.cfg").is_file() {
+                copy_source(&path, &dest)?;
+            }
+        } else if path.is_file()
+            && !sandbox::is_secret_file(&n)
+            && !(n == "config" && from.file_name().is_some_and(|d| d == ".git"))
+        {
+            std::fs::copy(&path, &dest).with_context(|| format!("copying {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Check out a git requirement at its planned commit into `dest`, with
+/// greengate's own git (no package code runs; the user's git credentials
+/// work as they do for pip), then drop the checkout's `config` files, which
+/// may hold credentials in remote URLs.
+fn git_checkout(url: &str, commit: &str, dest: &Path) -> Result<()> {
+    let git = |args: &[&str]| -> Result<()> {
+        let status = std::process::Command::new("git") // greengate: ignore — fetching a VCS requirement, no package code
+            .args(args)
+            .status()
+            .context("could not run git")?;
+        if !status.success() {
+            bail!("`git {}` failed ({status})", args.join(" "));
+        }
+        Ok(())
+    };
+    let d = dest.display().to_string();
+    git(&["clone", "--quiet", "--no-checkout", url, &d])?;
+    git(&[
+        "-C",
+        &d,
+        "-c",
+        "advice.detachedHead=false",
+        "checkout",
+        "--quiet",
+        commit,
+    ])?;
+    git(&[
+        "-C",
+        &d,
+        "submodule",
+        "update",
+        "--quiet",
+        "--init",
+        "--recursive",
+    ])?;
+    let mut stack = vec![dest.join(".git")];
+    while let Some(dir) = stack.pop() {
+        let _ = std::fs::remove_file(dir.join("config"));
+        stack.extend(
+            std::fs::read_dir(dir.join("modules"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path()),
+        );
+    }
+    Ok(())
+}
+
+/// Where pip builds a source requirement from (local directories and git
+/// checkouts are prepared under `dest`; other VCS requirements are cloned
+/// by pip itself, pinned to the planned commit), and its `setup.py`, when
+/// it can be read before building.
+fn prepare_source(item: &Item, dest: &Path) -> Result<(String, Option<String>)> {
+    let tree = match (&item.vcs, file_url_path(&item.url)) {
+        (None, Some(dir)) => {
+            copy_source(&dir, dest)?;
+            dest.to_path_buf()
+        }
+        (Some((vcs, commit)), _) if vcs == "git" => {
+            git_checkout(&item.url, commit, dest)?;
+            dest.to_path_buf()
+        }
+        (Some((vcs, commit)), _) => {
+            let sub = item
+                .subdirectory
+                .as_ref()
+                .map(|s| format!("#subdirectory={s}"))
+                .unwrap_or_default();
+            return Ok((format!("{vcs}+{}@{commit}{sub}", item.url), None));
+        }
+        (None, None) => bail!("{}: unsupported source requirement {}", item.name, item.url),
+    };
+    let root = match &item.subdirectory {
+        Some(s) => tree.join(s),
+        None => tree,
+    };
+    let setup = std::fs::read_to_string(root.join("setup.py")).ok();
+    Ok((root.display().to_string(), setup))
+}
+
 fn sha256_file(path: &Path) -> Result<String> {
     let mut f = std::fs::File::open(path)?;
     let mut h = Sha256::new();
@@ -234,29 +389,46 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
         plan_path.display().to_string(),
     ];
     args.extend(rest.iter().cloned());
-    let planner = Sandbox {
-        isolation,
-        project: &project,
-        tmp: &tmp,
-        writable: vec![scratch.0.clone()],
-        read_only: Vec::new(),
-        inner: Vec::new(),
-        network: true,
-        env_allow: &opts.policy.env_allow,
+    let plan_in = |project_copy: Option<&Path>| -> Result<(std::process::Output, String)> {
+        let planner = Sandbox {
+            isolation,
+            project: &project,
+            tmp: &tmp,
+            writable: vec![scratch.0.clone()],
+            read_only: Vec::new(),
+            inner: Vec::new(),
+            network: true,
+            env_allow: &opts.policy.env_allow,
+            project_copy,
+        };
+        let out = planner
+            .command(pip, &args)
+            .env("PIP_CACHE_DIR", tmp.join("pip-cache"))
+            .output()
+            .context("could not run pip")?;
+        let log = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Ok((out, log))
     };
-    let out = planner
-        .command(pip, &args)
-        .env("PIP_CACHE_DIR", tmp.join("pip-cache"))
-        .output()
-        .context("could not run pip")?;
-    let log = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let read_only = |log: &str| log.contains("Read-only file system") || log.contains("EROFS");
+    let (mut out, mut log) = plan_in(None)?;
+    if !out.status.success() && read_only(&log) && isolation == Isolation::Bwrap {
+        // A local setuptools project writes its metadata into its own tree
+        // while pip resolves it: resolve again over a throwaway copy of the
+        // project, so that works and the project still does not change.
+        terminal::info(
+            "Plan: a build wrote into the project; resolving again over a copy of it...",
+        );
+        let copy = scratch.0.join("project");
+        copy_source(&project, &copy)?;
+        (out, log) = plan_in(Some(&copy))?;
+    }
     if !out.status.success() {
         eprint!("{log}");
-        if log.contains("Read-only file system") || log.contains("EROFS") {
+        if read_only(&log) {
             report.findings.push(package_finding(
                 "INSTALL/BlockedWrite",
                 Severity::High,
@@ -369,11 +541,25 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
         }
         files.push((item, dest));
     }
+    // Source requirements: local directories copied, git checkouts made at
+    // the planned commit — built from there, never in place.
+    let mut sources: Vec<(&Item, String, Option<String>)> = Vec::new();
+    for (n, item) in todo.iter().filter(|i| i.kind == Kind::Source).enumerate() {
+        let dest = scratch.0.join("src").join(format!("{n}-{}", item.name));
+        let (spec, setup) = prepare_source(item, &dest)
+            .with_context(|| format!("preparing {} from {}", item.name, item.url))?;
+        sources.push((item, spec, setup));
+    }
     report
         .checks
         .push(Check::passed("install:fetch").with_source(format!(
-            "{} artifact(s) downloaded by greengate and checked against the index's sha256",
-            files.len()
+            "{} artifact(s) downloaded by greengate and checked against the index's sha256{}",
+            files.len(),
+            if sources.is_empty() {
+                String::new()
+            } else {
+                format!("; {} source requirement(s) prepared", sources.len())
+            }
         )));
     if !report.findings.is_empty() && !opts.no_fail {
         print_install(
@@ -384,15 +570,56 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
     }
 
     // ── 4. Inspect ───────────────────────────────────────────────────────────
-    let mut startup_code: Vec<String> = Vec::new();
-    let mut to_build: Vec<&(&Item, PathBuf)> = Vec::new();
-    for entry in &files {
-        let (item, path) = entry;
-        let allowlisted = opts
-            .policy
+    let allowlisted = |item: &Item| {
+        opts.policy
             .allow_pip_packages
             .iter()
-            .any(|a| deps::normalize_python(a) == item.name);
+            .any(|a| deps::normalize_python(a) == item.name)
+    };
+    // Whether a source build may go ahead, judged by its `setup.py`: a
+    // suspicious one builds only isolated or allowlisted.
+    let may_build = |report: &mut Report, item: &Item, setup: &str, path: &Path| {
+        let signals = scan_python_signals(setup);
+        let suspicious = !signals.is_empty() || super::inspect::encoded_blob(setup).is_some();
+        if suspicious && isolation == Isolation::None && !allowlisted(item) {
+            report.findings.push(package_finding(
+                "INSTALL/SuspiciousScript",
+                Severity::High,
+                &item.name,
+                &item.version,
+                path,
+                format!(
+                    "setup.py: {} — not built (no isolation available; allowlist it to build it)",
+                    signals.join(", ")
+                ),
+            ));
+            return false;
+        }
+        if suspicious {
+            report.warnings.push(package_finding(
+                "INSTALL/SuspiciousScript",
+                Severity::Medium,
+                &item.name,
+                &item.version,
+                path,
+                format!(
+                    "setup.py: {} — built {}",
+                    signals.join(", "),
+                    if allowlisted(item) {
+                        "because it is allowlisted"
+                    } else {
+                        "isolated"
+                    }
+                ),
+            ));
+        }
+        true
+    };
+    let mut startup_code: Vec<String> = Vec::new();
+    // What pip builds into wheels: sdist archives and source trees.
+    let mut to_build: Vec<(&Item, String)> = Vec::new();
+    for (item, path) in &files {
+        let allowlisted = allowlisted(item);
         match item.kind {
             Kind::Wheel => {
                 for (pth, code) in wheel_pth(path).unwrap_or_default() {
@@ -421,47 +648,32 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
             }
             Kind::Sdist => {
                 let setup = sdist_setup_py(path).unwrap_or_default();
-                let signals = scan_python_signals(&setup);
-                let suspicious =
-                    !signals.is_empty() || super::inspect::encoded_blob(&setup).is_some();
-                if suspicious && isolation == Isolation::None && !allowlisted {
-                    report.findings.push(package_finding(
-                        "INSTALL/SuspiciousScript",
-                        Severity::High,
-                        &item.name,
-                        &item.version,
-                        path,
-                        format!("setup.py: {} — not built (no isolation available; allowlist it to build it)", signals.join(", ")),
-                    ));
-                    continue;
+                if may_build(&mut report, item, &setup, path) {
+                    to_build.push((item, path.display().to_string()));
                 }
-                if suspicious {
-                    report.warnings.push(package_finding(
-                        "INSTALL/SuspiciousScript",
-                        Severity::Medium,
-                        &item.name,
-                        &item.version,
-                        path,
-                        format!(
-                            "setup.py: {} — built {}",
-                            signals.join(", "),
-                            if allowlisted {
-                                "because it is allowlisted"
-                            } else {
-                                "isolated"
-                            }
-                        ),
-                    ));
-                }
-                to_build.push(entry);
             }
             Kind::Source => {}
+        }
+    }
+    for (item, spec, setup) in &sources {
+        if isolation == Isolation::None {
+            report.warnings.push(package_finding(
+                "INSTALL/SourceBuild",
+                Severity::Medium,
+                &item.name,
+                &item.version,
+                &project,
+                format!("built from {} without isolation", item.url),
+            ));
+        }
+        if may_build(&mut report, item, setup.as_deref().unwrap_or(""), &project) {
+            to_build.push((item, spec.clone()));
         }
     }
     report
         .checks
         .push(Check::passed("install:inspect").with_source(format!(
-            "{} sdist(s) to build; {} package(s) with startup (.pth) code{}",
+            "{} sdist(s) and source tree(s) to build; {} package(s) with startup (.pth) code{}",
             to_build.len(),
             startup_code.len(),
             if startup_code.is_empty() {
@@ -485,10 +697,10 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
         return Ok(report);
     }
 
-    // ── 5. Build sdists (sandboxed) and install wheels ───────────────────────
+    // ── 5. Build sdists and source trees (sandboxed), install wheels ─────────
     let built = scratch.0.join("built");
     std::fs::create_dir_all(&built)?;
-    for (item, path) in &to_build {
+    for (item, spec) in &to_build {
         terminal::info(&format!(
             "Building {}=={} from source...",
             item.name, item.version
@@ -504,6 +716,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
             inner: Vec::new(),
             network: true,
             env_allow: &opts.policy.env_allow,
+            project_copy: None,
         };
         let out = builder
             .command(
@@ -515,7 +728,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
                     "--disable-pip-version-check".into(),
                     "-w".into(),
                     built.display().to_string(),
-                    path.display().to_string(),
+                    spec.clone(),
                 ],
             )
             .env("PIP_CACHE_DIR", tmp.join("pip-cache"))
@@ -524,7 +737,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
             report.checks.push(Check::error(
                 format!("install:build:{}", item.name),
                 format!(
-                    "building the sdist failed ({}): {}",
+                    "building it from source failed ({}): {}",
                     out.status,
                     String::from_utf8_lossy(&out.stderr)
                         .lines()
@@ -542,7 +755,8 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
     for e in std::fs::read_dir(&built)?.flatten() {
         let p = e.path();
         for (pth, code) in wheel_pth(&p).unwrap_or_default() {
-            if !super::inspect::pth_signals(&code).is_empty() {
+            let signals = super::inspect::pth_signals(&code);
+            if !signals.is_empty() {
                 report.findings.push(package_finding(
                     "INSTALL/StartupCode",
                     Severity::High,
@@ -552,7 +766,8 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
                     "",
                     &p,
                     format!(
-                        "the wheel built from source adds {pth}, which runs at every Python start"
+                        "the wheel built from source adds {pth}, which runs at every Python start: {}",
+                        signals.join(", ")
                     ),
                 ));
             }
@@ -581,38 +796,10 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
             bail!("`pip install` of the verified wheels failed ({status})");
         }
     }
-    // VCS and local-directory requirements: pip builds them from source.
-    for item in todo.iter().filter(|i| i.kind == Kind::Source) {
-        report.warnings.push(package_finding(
-            "INSTALL/SourceBuild",
-            Severity::Medium,
-            &item.name,
-            &item.version,
-            &project,
-            format!(
-                "installed from {} by pip, built without isolation",
-                item.url
-            ),
-        ));
-        let status = std::process::Command::new(pip) // greengate: ignore — installing a source requirement
-            .args([
-                "install",
-                "--no-deps",
-                "--disable-pip-version-check",
-                &item.url,
-            ])
-            .status()?;
-        if !status.success() {
-            report.checks.push(Check::error(
-                format!("install:source:{}", item.name),
-                format!("pip failed ({status})"),
-            ));
-        }
-    }
     report
         .checks
         .push(Check::passed("install:execute").with_source(format!(
-            "{} wheel(s) installed; {} sdist(s) built — {}",
+            "{} wheel(s) installed; {} built from source — {}",
             wheels.len(),
             to_build.len(),
             isolation.describe(true)
@@ -634,17 +821,106 @@ mod tests {
             {"metadata": {"name": "sdpkg", "version": "1.0"},
              "download_info": {"url": "https://files/sdpkg-1.0.tar.gz", "archive_info": {}}},
             {"metadata": {"name": "mine", "version": "0.1"},
-             "download_info": {"url": "file:///src/mine", "dir_info": {}}}
+             "download_info": {"url": "file:///src/mine", "dir_info": {}}},
+            {"metadata": {"name": "remote", "version": "2.0"},
+             "download_info": {"url": "https://git.example/remote", "subdirectory": "py",
+                               "vcs_info": {"vcs": "git", "commit_id": "c0ffee"}}}
         ]});
         let items = parse_report(&r);
         assert_eq!(
             items.iter().map(|i| &i.kind).collect::<Vec<_>>(),
-            [&Kind::Wheel, &Kind::Sdist, &Kind::Source]
+            [&Kind::Wheel, &Kind::Sdist, &Kind::Source, &Kind::Source]
         );
+        assert_eq!(items[2].vcs, None);
+        assert_eq!(items[3].vcs, Some(("git".into(), "c0ffee".into())));
+        assert_eq!(items[3].subdirectory.as_deref(), Some("py"));
         assert_eq!(items[0].name, "requests");
         let lock = planned_lockfile(Path::new("x/requirements.txt"), &items);
         assert_eq!(lock.packages[0].integrity.as_deref(), Some("sha256:abc"));
         assert!(matches!(lock.packages[2].source, Source::Path { .. }));
+    }
+
+    #[test]
+    fn file_urls_are_decoded() {
+        assert_eq!(
+            file_url_path("file:///home/a%20b/pkg"),
+            Some(PathBuf::from("/home/a b/pkg"))
+        );
+        assert_eq!(file_url_path("https://x"), None);
+    }
+
+    fn item(url: &str, vcs: Option<(&str, &str)>) -> Item {
+        Item {
+            name: "mine".into(),
+            version: "0.1".into(),
+            url: url.into(),
+            sha256: None,
+            kind: Kind::Source,
+            vcs: vcs.map(|(v, c)| (v.into(), c.into())),
+            subdirectory: None,
+        }
+    }
+
+    #[test]
+    fn local_sources_are_built_from_a_copy_without_secrets() {
+        let src = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let s = src.path();
+        std::fs::write(s.join("setup.py"), "from setuptools import setup; setup()").unwrap();
+        std::fs::write(s.join(".env"), "DATABASE_URL=x").unwrap();
+        std::fs::create_dir_all(s.join("pkg")).unwrap();
+        std::fs::write(s.join("pkg/__init__.py"), "").unwrap();
+        std::fs::write(s.join("pkg/.npmrc"), "//r/:_authToken=x").unwrap();
+        std::fs::create_dir_all(s.join(".git")).unwrap();
+        std::fs::write(s.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+        std::fs::write(s.join(".git/config"), "[remote]").unwrap();
+        std::fs::create_dir_all(s.join("env/bin")).unwrap();
+        std::fs::write(s.join("env/pyvenv.cfg"), "").unwrap();
+        let url = format!("file://{}", s.display());
+        let dest = out.path().join("copy");
+        let (spec, setup) = prepare_source(&item(&url, None), &dest).unwrap();
+        assert_eq!(spec, dest.display().to_string());
+        assert!(setup.unwrap().contains("setup()"));
+        assert!(dest.join("pkg/__init__.py").is_file());
+        assert!(dest.join(".git/HEAD").is_file());
+        for gone in [".env", "pkg/.npmrc", ".git/config", "env"] {
+            assert!(!dest.join(gone).exists(), "{gone} left out");
+        }
+    }
+
+    #[test]
+    fn git_sources_are_checked_out_at_the_planned_commit() {
+        let repo = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let r = repo.path();
+        let git = |args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .args(["-c", "user.email=t@t", "-c", "user.name=t", "-C"])
+                .arg(r)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        std::fs::write(r.join("setup.py"), "v1").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "1"]);
+        let planned = git(&["rev-parse", "HEAD"]);
+        std::fs::write(r.join("setup.py"), "v2").unwrap();
+        git(&["commit", "-qam", "2"]);
+        let dest = out.path().join("co");
+        let url = format!("file://{}", r.display());
+        let (spec, setup) = prepare_source(&item(&url, Some(("git", &planned))), &dest).unwrap();
+        assert_eq!(spec, dest.display().to_string());
+        assert_eq!(setup.as_deref(), Some("v1"));
+        assert!(!dest.join(".git/config").exists());
+        // Other VCS: pip clones it, pinned.
+        let (spec, setup) =
+            prepare_source(&item("https://hg.example/x", Some(("hg", "abc"))), &dest).unwrap();
+        assert_eq!(spec, "hg+https://hg.example/x@abc");
+        assert_eq!(setup, None);
     }
 
     #[test]
