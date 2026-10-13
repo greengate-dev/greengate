@@ -16,7 +16,7 @@ Audits project dependencies for known vulnerabilities by querying the [OSV datab
 | Rust | `Cargo.lock` |
 | Go | `go.mod` (Go 1.17+, with `replace` directives), else `go.sum` |
 
-Every package in the lockfile is audited, including nested copies
+Every eligible registry package in the lockfile is audited, including nested copies
 (`node_modules/a/node_modules/b`) and transitive dependencies. Git, URL and
 local-path dependencies have no registry version for OSV to match and are
 listed but not audited. Maven (`pom.xml`), .NET/NuGet, Ruby (`Gemfile.lock`),
@@ -43,12 +43,11 @@ dependencies locally:
 
 Offline matching follows the OSV schema's version rules: SemVer ordering for
 npm, crates.io and Go, PEP 440 for PyPI. A version it cannot order is reported
-as incomplete, never as unaffected. On real lockfiles it returns the same
-findings as the API.
+as incomplete, never as unaffected. The offline matcher has been compared with API results on a fixture corpus; version-format and snapshot coverage still limit matching.
 
 ## What "incomplete" means
 
-`audit` only passes when every dependency it found was actually checked. When
+`audit` passes when the supported registry dependencies were checked without blocking findings or tracked gaps. Non-registry packages are excluded from advisory matching. When
 something could not be checked, the run is **incomplete** and exits `3` — it
 is never reported as a pass. Causes:
 

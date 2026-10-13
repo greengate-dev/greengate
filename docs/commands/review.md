@@ -1,6 +1,6 @@
 ---
 title: 'review — PR Complexity & Coverage Gate'
-description: 'Analyze a pull request diff for a Complexity Score (estimated review time) and new-code coverage gaps. Fail CI when newly added lines are untested. Post GitHub Check Run annotations.'
+description: 'Analyze a pull request diff for a Complexity Score (estimated review time) and new-code coverage gaps. Gate measurable new-code coverage and configured complexity budgets. Post GitHub Check Run annotations.'
 ---
 
 # review — PR Diff Analyzer
@@ -10,7 +10,7 @@ Analyzes a pull request diff and outputs two things:
 1. **Complexity Score** — a weighted composite that estimates how long the PR will take to review, derived from lines changed, files touched, and cyclomatic complexity of new code (detected via tree-sitter AST queries on JS/TS/Python/Go).
 2. **New-code coverage gaps** — which newly added lines are NOT covered by the provided LCOV or Cobertura report, with a pass/fail gate against a configurable floor.
 
-Both outputs are available on every commit, not just in CI — making this practical as a local pre-push check or a `greengate run` pipeline step.
+Both outputs can be computed locally when the required inputs are available — making this practical as a local pre-push check or a `greengate run` pipeline step.
 
 ## Usage
 
@@ -30,7 +30,7 @@ Options:
 
 ## Complexity Score
 
-The score is computed on the **added lines only** (not deleted or context lines):
+AST branch counts use added code. The overall score also includes changed-file count and added and removed line counts; its review-time estimate is a heuristic:
 
 ```
 raw = (lines_added × 0.3)
@@ -213,7 +213,7 @@ permissions:
 
 | Code | Meaning |
 |---|---|
-| `0` | All gates passed (or no coverage file specified) |
+| `0` | Configured gates passed; without a coverage file, only the complexity budget applies |
 | `1` | Coverage below threshold or complexity budget exceeded |
 | `4` | Runtime error (e.g. the diff or coverage file could not be read) |
 
@@ -221,5 +221,5 @@ permissions:
 
 - Coverage gaps are computed only for **measurable** lines — lines not present in the coverage report at all (e.g. blank lines, comments, or untested new files) are treated as **unmeasured** and excluded from the percentage calculation rather than counted as failures
 - The complexity scoring runs tree-sitter on **added lines only** (not the full file). This means the score reflects only the new code being introduced, not background complexity in the file
-- For non-git directories or when the diff is empty, the command exits 0 with a brief message
+- An empty diff passes; missing Git history or a non-Git directory can fail the diff step
 - SARIF output from `review` uses rule ID `GG/NewCodeUncovered` and severity `warning`; it can be uploaded to GitHub Advanced Security alongside the `scan` SARIF output

@@ -10,7 +10,7 @@ Interactive wizard that generates a `.greengate.toml` configuration file for you
 ## Usage
 
 ```bash
-greengate init [--force]
+greengate init [--force] [--ci github-actions]
 ```
 
 ## Options
@@ -18,6 +18,7 @@ greengate init [--force]
 | Flag | Description |
 |---|---|
 | `--force` | Overwrite an existing `.greengate.toml` without prompting |
+| `--ci github-actions` | Also scaffold a GitHub Actions workflow and Dependabot configuration |
 
 ## What it does
 

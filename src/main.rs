@@ -14,7 +14,7 @@ mod utils;
 #[derive(Parser)]
 #[command(name = "greengate")]
 #[command(version)]
-#[command(about = "A high-performance DevOps CLI tool in Rust", long_about = None)]
+#[command(about = "Dependency checks and install protection for developers, CI, and coding agents", long_about = None)]
 struct Cli {
     /// Apply a preset quality profile
     #[arg(long, global = true)]
@@ -268,17 +268,15 @@ enum Commands {
         #[arg(long)]
         no_fail: bool,
     },
-    /// Installs dependencies with no package code running before greengate
-    /// has checked the complete tree: plan (resolve + policy), fetch with
-    /// scripts off, inspect every install script, then run approved scripts
-    /// in a sandbox (bubblewrap: no network, writes confined, private home,
-    /// project secrets masked) and verify the result. npm, pnpm, yarn, bun,
-    /// pip, uv and cargo.
+    /// Plan and inspect dependency installs, then restrict supported script
+    /// phases with Linux bubblewrap when available. npm, pnpm, yarn, bun,
+    /// pip, uv and cargo. Python metadata resolution can run build code
+    /// during planning; require isolation when needed.
     /// Example: greengate install npm ci
     ///          greengate install --plan npm install left-pad
     Install {
-        /// Stop after inspection: resolve, fetch and inspect in a scratch
-        /// copy, change nothing in the project, run no package code
+        /// Inspect the plan without applying the install. Python metadata
+        /// resolution may execute build code; manager caches can change
         #[arg(long)]
         plan: bool,
         /// How install scripts are isolated
@@ -320,7 +318,7 @@ enum Commands {
         no_fail: bool,
     },
     /// Scan a Docker/OCI container image for secrets and credentials baked into
-    /// image layers. Requires Docker to be running. Pulls the image if not cached locally.
+    /// image layers. Requires Docker, tar, and an image already present locally.
     /// Example: greengate image-scan nginx:latest
     ImageScan {
         /// Image reference to scan (e.g. nginx:latest, ghcr.io/org/app:sha-abc123)

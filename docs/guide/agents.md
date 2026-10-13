@@ -1,6 +1,6 @@
 ---
 title: 'AI Agents — Check Dependency Installs Before They Run'
-description: 'Stop coding agents (Claude Code, Cursor, Codex, Gemini CLI) from installing vulnerable or risky packages: greengate plans every dependency install an agent is about to run, without running package code, and denies, asks or stays out of the way.'
+description: 'Stop coding agents (Claude Code, Cursor, Codex, Gemini CLI) from installing vulnerable or risky packages: greengate plans every dependency install an agent is about to run, before execution, with deny, ask, or pass-through decisions for supported installs.'
 ---
 
 # AI Agents
@@ -8,7 +8,7 @@ description: 'Stop coding agents (Claude Code, Cursor, Codex, Gemini CLI) from i
 A coding agent that runs `npm install some-package` runs that package's
 install scripts with your credentials, and it picks packages from memory,
 which can be outdated, vulnerable or [hallucinated](../commands/install.md).
-greengate can check every dependency install before the agent runs it.
+greengate can check recognized dependency-install commands before the agent runs them.
 
 It finds the installs in the shell command (`npm i x`, `pnpm add y`,
 `uv add z`, `pip install …`, `cargo add …`, including `cd web && …` and
@@ -16,7 +16,9 @@ It finds the installs in the shell command (`npm i x`, `pnpm add y`,
 [`greengate install --plan`](../commands/install.md). The plan resolves the
 full tree in a scratch copy, checks every package the install adds or
 changes for known advisories and release risk, and inspects install scripts.
-It installs nothing and runs no package code.
+It does not apply the install. Python metadata resolution can execute source-build code during planning; set `[supply_chain] require_isolation = true` when that code must not run without Linux isolation. uv plans stop before dependency sync and startup-file inspection.
+
+The hook checks a command; it does not rewrite or sandbox the original command once allowed. Have the agent use `greengate install` when the actual installation needs greengate's execution controls.
 
 ## Claude Code
 
@@ -72,30 +74,16 @@ usual exit codes (`0` passed, `1` blocking findings, `3` could not check
 everything):
 
 ```bash
-$ greengate check-command -- "npm i lodash@4.17.20"
-{
-  "schema": "greengate.report/v1",
-  "command": "check-command",
-  "status": "findings",
-  "findings": [
-    {
-      "rule": "OSV/GHSA-35jh-r3h4-6jhm",
-      "severity": "high",
-      "location": { "kind": "package", "name": "lodash", "version": "4.17.20", … },
-      "message": "Command Injection in lodash",
-      "remediation": "use lodash 4.18.0 or later"
-    }
-  ],
-  …
-}
+greengate check-command -- "npm install some-package"
 ```
 
-Any tool that can run a command before a shell call can use it. Common
+The output is a report whose findings and remediation depend on the project and available registry data. Use `status`, `checks`, and `findings` rather than matching terminal text.
+
+A tool that can run a command before a shell call can use it. Treat error and invalid-configuration exits (`4` and `2`) as unchecked results too; do not approve a command solely because its exit code is not `1`. Common
 setups:
 
 - **Cursor, Gemini CLI, Codex and others with command hooks:** run
-  `greengate check-command --cwd "$DIR" -- "$COMMAND"` and block when the exit
-  code is `1`. Ask the user on `3`.
+  `greengate check-command --cwd "$DIR" -- "$COMMAND"` and block on `1` and ask for review on `2`, `3`, or `4`.
 - **Your own agent loop:** call it before executing a shell tool call, and
   feed `findings[].message` and `remediation` back to the model.
 

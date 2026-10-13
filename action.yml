@@ -1,8 +1,7 @@
 name: greengate
 description: >-
-  Zero-trust DevOps security gate — scans for secrets, SAST issues,
-  vulnerable dependencies, coverage gaps, CI misconfigurations, and more
-  in one fast Rust binary. No Docker required.
+  Dependency and repository gates for CI, with vulnerability audits,
+  static scanning, dependency review, and shared reports from one Rust CLI.
 author: greengate-dev
 branding:
   icon: shield

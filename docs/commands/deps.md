@@ -179,7 +179,7 @@ unreadable at the base).
   `GITHUB_TOKEN`, `GITHUB_REPOSITORY` and `GITHUB_SHA`, and the permissions
   `pull-requests: write` and `checks: write`.
 
-With the GitHub Action, set `dependency-review: true`:
+Set `dependency-review: true` and pin both the action and binary versions; see [CI integration](/guide/ci-integration):
 
 ```yaml
 permissions:
@@ -193,6 +193,7 @@ steps:
       fetch-depth: 0   # the merge base must be in the history
   - uses: greengate-dev/greengate@v0.4.0
     with:
+      version: v0.4.0
       dependency-review: true
 ```
 

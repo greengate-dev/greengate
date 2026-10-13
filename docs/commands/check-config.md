@@ -1,11 +1,11 @@
 ---
 title: 'check-config — Validate Configuration'
-description: 'Validate .greengate.toml and print all resolved configuration values, including profile overrides. Useful for debugging config issues in CI.'
+description: 'Validate .greengate.toml and print all resolved configuration values, with file values and built-in defaults. Useful for debugging config issues in CI.'
 ---
 
 # check-config — Validate Configuration
 
-Reads `.greengate.toml`, validates it, and prints all resolved configuration values. Useful for verifying that overrides are applied correctly and that the file has no syntax errors. Also validates `.greengate/exceptions.toml` when there is one.
+Reads `.greengate.toml`, validates it, and prints selected resolved configuration values. Useful for verifying that overrides are applied correctly and that the file has no syntax errors. Also validates `.greengate/exceptions.toml` when there is one.
 
 ## Usage
 
@@ -15,7 +15,7 @@ greengate check-config
 
 ## Behaviour
 
-- If `.greengate.toml` exists and is valid, prints every resolved value and exits 0.
+- If `.greengate.toml` exists and is valid, prints the displayed resolved sections and exits 0.
 - If the file contains a TOML syntax or type error, prints a descriptive error and exits 2.
 - If no config file is found, prints the built-in defaults that will be used and exits 0.
 - If `.greengate/exceptions.toml` is invalid (a missing field, a bad date, an expiry beyond `[policy] max_exception_days`), lists every problem and exits 2. Expired exceptions, and ones expiring within 14 days, are reported as warnings.
@@ -26,9 +26,11 @@ greengate check-config
 # Verify your config file before running the pipeline
 greengate check-config
 
-# Combine with a profile to preview merged values
-greengate --profile strict check-config
+# Apply a profile when running a gate
+greengate --profile strict scan
 ```
+
+`check-config` reloads the file for its display, so `--profile` does not preview profile-adjusted values here. Its output is not a complete dump of every configuration section.
 
 ## Sample output (valid config)
 

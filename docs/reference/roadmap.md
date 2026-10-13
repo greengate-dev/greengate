@@ -1,55 +1,31 @@
 ---
-title: 'Roadmap — GreenGate'
-description: 'What shipped in GreenGate 0.4 (greengate install with sandboxed scripts, deps review, baselines and exceptions, agent hook) and what is planned: container isolation for macOS and Windows, SBOM verification, Python/Go taint tracking.'
+title: 'Roadmap: current scope and planned work'
+description: 'Current greengate capabilities and directions for future development.'
 ---
 
 # Roadmap
 
-This page tracks planned features and the reasoning behind their prioritisation.
+This page distinguishes current capabilities from planned work. Roadmap entries are not release commitments.
 
----
+## Available in 0.4.0
 
-## Shipped in 0.4
+- [`install`](/commands/install): dependency policy and script inspection, with Linux bubblewrap isolation for supported phases
+- [`deps review`](/commands/deps): dependency changes, licenses, advisories, release signals, and available fix guidance
+- [Baselines and exceptions](/guide/baselines-and-exceptions): change-aware gates and expiring risk waivers
+- [Offline audits](/commands/db): OSV snapshots and freshness-aware fallback
+- [Agent hooks](/guide/agents): checks for recognized dependency-install commands
+- [Shared reports](/reference/report-schema): JSON and SARIF outputs with explicit incomplete and error states
 
-- **[`greengate install`](/commands/install)** replaces the planned
-  `sandbox-install`: no package code runs before the complete tree is
-  checked, and install scripts run one package at a time in bubblewrap with
-  no network, the system read-only, a private home and an allowlisted
-  environment — without Docker
-  or an async runtime. `watch-install`, `pip-install` and `cargo-add` route
-  through it and are removed in 0.5.
-- **[`deps review`](/commands/deps#deps-review-what-a-change-does-to-the-dependency-tree)**
-  with fix guidance, **[baselines and exceptions](/guide/baselines-and-exceptions)**,
-  offline OSV snapshots, and the **[agent hook](/guide/agents)**.
+The older `sandbox-install` proposal is implemented through `install`. Python planning may execute build code; isolation availability and package-manager differences remain [documented limitations](/reference/limitations).
 
-## Planned
+## Planned directions
 
-### Feature: container isolation for macOS and Windows
+- Container-based isolation for macOS and Windows, where bubblewrap is unavailable
+- Additional verification of installed dependency inventories against declared artifacts
+- Deeper Python, Go, and Rust data-flow analysis beyond their current AST rules
 
-Bubblewrap isolation is Linux-only. Running install scripts in a Podman or
-Docker container would extend the same guarantees to macOS and Windows
-runners, for teams that have a container runtime.
+These features are not available in 0.4.0. Test selection currently uses direct import matching rather than a complete dependency graph.
 
----
+## Product scope
 
-### Feature: SBOM-based install verification
-
-Cross-reference the post-install `node_modules/` tree against the project's CycloneDX SBOM (`greengate sbom`) to detect packages that installed without appearing in the declared dependency graph.
-
----
-
-### Feature: `scan` improvements
-
-- **Python taint tracking** — extend the existing JS/TS taint engine to Python (Flask/Django request sources → SQL/command injection sinks)
-- **Go taint tracking** — similar, targeting `net/http` request sources
-- **Rust taint tracking** — existing AST rules already flag `unsafe`, `Command::new`, `.unwrap()`, and `.expect()`; future analysis would track untrusted input into command arguments
-
----
-
-## Not planned
-
-| Feature | Reason |
-|---|---|
-| Native Windows exec-drop detection (beyond extension heuristics) | Requires PE parsing or Windows API calls — out of scope for a CLI tool |
-| GitLab Component and other CI plugins | Tracked separately from the core binary (the GitHub Action ships with it) |
-| Web UI / dashboard | Out of scope — GreenGate is intentionally a CLI/CI tool |
+greengate focuses on dependency, security, and repository gates for developers and CI. Web performance commands (`lighthouse` and `reassure`) were removed in 0.4.0. A hosted dashboard and dynamic application testing are outside the current scope.

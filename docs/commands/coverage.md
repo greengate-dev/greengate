@@ -11,8 +11,8 @@ Two formats are supported and auto-detected:
 
 | Format | Extension | Used by |
 |---|---|---|
-| **LCOV** | `.info` or no extension | Rust (cargo-llvm-cov), Jest, pytest-cov, Go |
-| **Cobertura XML** | `.xml` | Python (coverage.py), Java (JaCoCo), .NET |
+| **LCOV** | `.info` or no extension | Rust (cargo-llvm-cov), Jest, pytest-cov, or converted reports |
+| **Cobertura XML** | `.xml` | Python coverage.py and tools exporting Cobertura XML |
 
 ## Usage
 
@@ -28,10 +28,10 @@ Options:
 ## Examples
 
 ```bash
-# LCOV (Rust, Jest, pytest, Go)
+# LCOV (Rust, Jest, pytest, or converted reports)
 greengate coverage --file coverage/lcov.info --min 80
 
-# Cobertura XML (Python coverage.py, JaCoCo)
+# Cobertura XML (Python coverage.py)
 greengate coverage --file coverage.xml --min 80
 
 # Stricter 90% gate
@@ -54,9 +54,11 @@ jest --coverage --coverageReporters=lcov
 pytest --cov=. --cov-report=lcov:coverage/lcov.info
 pytest --cov=. --cov-report=xml:coverage.xml
 
-# Go
-go test ./... -coverprofile=coverage/lcov.info
+# Go writes its native format; convert it to LCOV before using greengate
+go test ./... -coverprofile=coverage/go.out
 ```
+
+Go coverprofiles and native JaCoCo XML are not LCOV or Cobertura. Changing their filename extension does not convert them.
 
 ## Sample output
 

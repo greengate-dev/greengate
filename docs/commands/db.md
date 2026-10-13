@@ -33,12 +33,7 @@ Go). Pass `--ecosystem` (repeatable) or `--all` to choose explicitly.
 Re-running `db update` revalidates each snapshot with the server's ETag, so an
 unchanged snapshot is not downloaded again; it is only marked as checked.
 
-| Ecosystem | Download (Oct 2026) | Index on disk |
-|---|---|---|
-| npm | ~220 MB | ~41 MB |
-| PyPI | ~36 MB | ~21 MB |
-| Go | ~12 MB | ~5 MB |
-| crates.io | ~4 MB | ~2 MB |
+Snapshot sizes vary by ecosystem and change as advisories are added. `db status` reports the installed data.
 
 The npm archive is large mostly because it lists malicious packages (`MAL-`
 advisories), which `audit` reports like any other advisory.

@@ -46,8 +46,10 @@ print it on stdout. The JSON Schema is published at
 | `incomplete` | some checks could not run, and nothing that ran found a problem | `3` (`0` with `--allow-incomplete` or `[policy] on_incomplete = "warn"`) |
 | `error` | the gate, or a tool it wraps, failed | `4` |
 
-Usage and configuration errors exit `2` before any report is produced. See
+Argument-parsing and configuration errors can exit `2` before a report is produced. Other early failures may also occur before report writing; a successful write requires a writable destination. See
 [exit codes](exit-codes.md).
+
+`--no-fail` can make a report with findings exit `0`; `--allow-incomplete` changes only the exit policy for incomplete runs. Report status is retained.
 
 ## Fields
 

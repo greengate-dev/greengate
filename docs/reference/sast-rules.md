@@ -1,6 +1,6 @@
 ---
-title: 'SAST Rules Reference — GreenGate'
-description: 'All built-in GreenGate SAST rules for JavaScript, TypeScript, Python, and Go: eval injection, XSS sinks, SQL injection, command injection, dangerous deserialization, and taint-tracked flows.'
+title: 'SAST Rules Reference — greengate'
+description: 'All built-in greengate SAST rules for JavaScript, TypeScript, Python, Go, and Rust: eval injection, XSS sinks, SQL injection, command injection, dangerous deserialization, and taint-tracked flows.'
 ---
 
 # SAST Rules Reference
@@ -15,10 +15,11 @@ SAST runs automatically when `greengate scan` encounters a supported source file
 | TypeScript | `.ts`, `.tsx` | String-literal scoping, dangerous patterns, code smells, taint tracking |
 | Python | `.py` | String-literal scoping, dangerous patterns |
 | Go | `.go` | String-literal scoping, dangerous patterns |
+| Rust | `.rs` | String-literal scoping and review signals for unsafe code, process construction, and panic-prone calls |
 
 ## Tier-1 intra-procedural taint tracking
 
-GreenGate performs **intra-procedural taint tracking** for JS/TS to reduce both false positives and false negatives. For every XSS and command-injection sink, the engine resolves where the value came from within the enclosing function body.
+greengate performs **intra-procedural taint tracking** for JS/TS to reduce both false positives and false negatives. For every XSS and command-injection sink, the engine resolves where the value came from within the enclosing function body.
 
 ### How it works
 
@@ -42,8 +43,8 @@ GreenGate performs **intra-procedural taint tracking** for JS/TS to reduce both 
 
 | Sink value | Result |
 |---|---|
-| Variable in **tainted** set | Rule ID gains a `[tainted]` label — e.g. `SAST/InnerHTMLAssignment [tainted]` — indicating high-confidence confirmed injection |
-| Variable in **safe** set | Finding is **suppressed** — value is provably sanitised or static |
+| Variable in **tainted** set | Rule ID gains a `[tainted]` label — e.g. `SAST/InnerHTMLAssignment [tainted]` — indicating a recognized taint flow that needs review |
+| Variable in **safe** set | Finding is **suppressed** — value is classified as a recognized sanitizer result or static value |
 | Unknown variable | Finding emitted at normal confidence (unchanged behaviour) |
 | Static string literal (inline) | Finding is **suppressed** |
 | Call to known sanitizer (inline) | Finding is **suppressed** |
@@ -67,19 +68,19 @@ el.innerHTML = html;
 // Sanitizer suppresses the finding
 const clean = DOMPurify.sanitize(raw);    // clean is marked safe
 el.innerHTML = clean;
-// → suppressed (provably safe)
+// → suppressed (classified as safe by the heuristic)
 
 // Static variable suppresses the finding
 const label = "Enter your name:";
 el.innerHTML = label;
-// → suppressed (provably safe)
+// → suppressed (classified as safe by the heuristic)
 ```
 
 > **Scope:** Tier-1 tracking is intra-procedural only — taint does not follow calls into other functions. See [Limitations](/reference/limitations) for details.
 
 ## Dangerous pattern rules
 
-These rules fire on specific API calls regardless of whether arguments are string literals:
+These rules match supported syntax and API names. Selected JS/TS sinks also apply the taint and suppression heuristics above:
 
 | Rule ID | What it flags |
 |---|---|
@@ -114,6 +115,17 @@ These rules fire on specific API calls regardless of whether arguments are strin
 | `SAST/GoUnsafe` | `import "unsafe"` — direct memory manipulation bypasses type safety | high |
 | `SAST/GoExecCommand` | `exec.Command(cmd, ...)` — possible command injection | high |
 | `SAST/GoPanic` | `panic(...)` — unexpected process termination in production code | medium |
+
+## Rust rules
+
+| Rule ID | What it flags |
+|---|---|
+| `SAST/RustUnsafeBlock` | `unsafe` blocks |
+| `SAST/RustCommandNew` | Calls whose scoped function name matches `Command::new` |
+| `SAST/RustUnwrap` | `.unwrap()` calls |
+| `SAST/RustExpect` | `.expect()` calls |
+
+These rules apply to matching syntax in Rust files, including applications; they are not limited to library code. They do not establish attacker control or prove that a construct is unsafe in context.
 
 ## Code smell rules
 

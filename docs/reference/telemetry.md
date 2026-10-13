@@ -1,121 +1,52 @@
 ---
-title: 'Telemetry & Metrics — OpenTelemetry & Prometheus'
-description: 'greengate emits OTLP metrics after every command to any OpenTelemetry-compatible backend (Grafana, Datadog, Honeycomb) and writes Prometheus .prom files for node_exporter scraping.'
+title: 'Telemetry and metrics'
+description: 'Configure best-effort OTLP HTTP/JSON export and Prometheus text-file output, with per-run metric limitations.'
 ---
 
-# Telemetry & Metrics
+# Telemetry and metrics
 
-greengate emits structured metrics after every command run. Both backends are **opt-in, optional, and independent** — telemetry errors are printed as warnings and never cause a command to fail.
+greengate can export metrics to an OTLP HTTP/JSON endpoint and write a Prometheus text file. Both are optional. Export failures produce warnings rather than failing the gate.
 
-## Configuration
+## Configure export
 
 ```toml
 [telemetry]
-enabled       = true
-service_name  = "my-api"                  # attached as service.name resource attribute
-
-# OTLP HTTP/JSON (port 4318, not gRPC 4317)
-otlp_endpoint = "http://localhost:4318"   # remove this line to disable OTLP
-
-# Prometheus text format (.prom file)
+enabled = true
+service_name = "my-api"
+otlp_endpoint = "http://localhost:4318"
 # metrics_file = "/var/lib/node_exporter/textfile/greengate.prom"
 ```
 
-## OTLP export
+No data is exported unless an endpoint or file is configured. `enabled = false` disables export. The parent directory for `metrics_file` must exist and be writable.
 
-Metrics are POSTed to `{otlp_endpoint}/v1/metrics` using OTLP HTTP/JSON after each command completes. This works with any OpenTelemetry-compatible collector.
+## OTLP
 
-| Backend | How to connect |
-|---|---|
-| **OpenTelemetry Collector** | Point `otlp_endpoint` at the collector's OTLP HTTP receiver (default port 4318) |
-| **Grafana Cloud** | Use the Grafana Agent OTLP endpoint, or Grafana Cloud's OTLP gateway URL |
-| **Datadog** | Enable OTLP intake in the Datadog Agent (`otlp_config.receiver.protocols.http`) |
-| **Honeycomb** | Use the OpenTelemetry Collector as a proxy with your Honeycomb API key |
-| **New Relic** | Use the OTel Collector exporter pointing at `otlp.nr-data.net:4317` |
+The exporter posts JSON to `{otlp_endpoint}/v1/metrics`. Use an HTTP receiver, not a gRPC endpoint. A collector can handle authentication and route data to your monitoring backend.
 
-::: tip Port 4318 vs 4317
-greengate uses OTLP HTTP/JSON on port 4318, not gRPC on port 4317. Make sure your collector's HTTP receiver is enabled. In the OpenTelemetry Collector config:
-```yaml
-receivers:
-  otlp:
-    protocols:
-      http:
-        endpoint: 0.0.0.0:4318
-```
-:::
+Command metrics are emitted when execution reaches command-result handling. Scan metrics are emitted separately. Configuration failures, argument-parsing failures, and the agent hook do not necessarily emit metrics.
 
-## Prometheus text format
+## Prometheus text files
 
-```toml
-[telemetry]
-metrics_file = "/var/lib/node_exporter/textfile/greengate.prom"
-```
+Point `node_exporter --collector.textfile.directory` at the directory containing `metrics_file`. The writer **overwrites** the file on each export; it is not a cumulative record of executions.
 
-Writes a `.prom` file with standard `# HELP` / `# TYPE` headers after each command. Point `node_exporter --collector.textfile.directory` at the containing directory and Prometheus scrapes it automatically.
+In `scan`, the scan-specific export is followed by command-metric export, which overwrites the same file. The final text file can therefore contain only the command metrics. Use OTLP or structured reports when you need scan finding history.
 
-The file is **overwritten** on each command run, so it always reflects the most recent execution. Prometheus will see the latest value on its next scrape.
+## Metrics
 
-## Metrics reference
+| Metric | Type | Meaning |
+|---|---|---|
+| `greengate_scan_findings_total` | counter | Findings in one scan, by severity, plus an `all` total |
+| `greengate_scan_duration_ms` | gauge | One scan's elapsed time |
+| `greengate_command_duration_ms` | gauge | Elapsed command time, with command and success labels |
+| `greengate_command_success` | gauge | `1` for a successful exit, `0` otherwise |
 
-### Scan metrics
+The Prometheus output adds a `service` label. Scan totals are per invocation, not persistent monotonically increasing counts across runs. A counter-rate query is not a reliable finding-rate calculation for these snapshots.
 
-| Metric | Type | Labels | Description |
-|---|---|---|---|
-| `greengate_scan_findings_total` | counter | `severity`, `service` | Number of findings by severity (`critical`, `high`, `medium`, `low`, `all`) |
-| `greengate_scan_duration_ms` | gauge | `service` | Wall-clock time of the scan in milliseconds |
+For the most recently exported command:
 
-### Command metrics
-
-Emitted after every command (`coverage`, `audit`, `ci-lint`, etc.):
-
-| Metric | Type | Labels | Description |
-|---|---|---|---|
-| `greengate_command_duration_ms` | gauge | `command`, `success`, `service` | Wall-clock time of the command in milliseconds |
-| `greengate_command_success` | gauge | `command`, `service` | `1` if the command exited successfully, `0` if it failed |
-
-## Example Grafana queries
-
-```txt
-# Finding rate over the last 7 days
-rate(greengate_scan_findings_total{severity="high"}[7d])
-
-# Commands failing in CI (useful for alerting)
+```text
 greengate_command_success == 0
-
-# Slowest commands (performance monitoring)
 topk(5, greengate_command_duration_ms)
-
-# Scan findings trend per severity (stacked bar chart)
-sum by (severity) (greengate_scan_findings_total)
-
-# Coverage gate failure rate
-(1 - greengate_command_success{command="coverage"}) * 100
 ```
 
-## Example alert rule
-
-```yaml
-# Prometheus alerting rule — fire when high/critical findings appear
-groups:
-  - name: greengate
-    rules:
-      - alert: GreengateHighSeverityFindings
-        expr: greengate_scan_findings_total{severity=~"critical|high"} > 0
-        for: 0m
-        labels:
-          severity: warning
-        annotations:
-          summary: "greengate found {{ $value }} high/critical finding(s)"
-          description: "Service {{ $labels.service }} has security findings that need attention."
-```
-
-## Disabling telemetry
-
-Set `enabled = false` in `.greengate.toml`:
-
-```toml
-[telemetry]
-enabled = false
-```
-
-Or omit the `[telemetry]` section entirely — both OTLP and Prometheus output are disabled by default unless `otlp_endpoint` or `metrics_file` are set.
+A successful exit can include policy-waived incomplete checks or findings. Use the [structured report status](/reference/report-schema) to distinguish those outcomes.

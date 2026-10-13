@@ -1,6 +1,6 @@
 ---
-title: 'Output Formats — GreenGate CLI Reference'
-description: 'GreenGate output formats: SARIF 2.1.0, JSON, JUnit XML, GitLab SAST, and plain text. Upload findings to GitHub Security tab, SonarQube, or any major CI platform.'
+title: 'Output Formats — greengate CLI Reference'
+description: 'greengate output formats: SARIF 2.1.0, JSON, JUnit XML, GitLab SAST, and plain text. Upload findings to GitHub Security tab, SonarQube, or any major CI platform.'
 ---
 
 # Output Formats
@@ -22,8 +22,7 @@ greengate audit --report audit.json
 greengate run --report gates.sarif     # one merged report for the whole pipeline
 ```
 
-The report is written even when the gate fails or cannot run, so CI artifacts
-are there exactly when you need them. A v1 report looks like:
+Gates that reach result handling write reports for findings, incomplete checks, and runtime errors. Parsing, configuration, or other early failures can occur before writing; the destination must be writable. A v1 report looks like:
 
 ```json
 {

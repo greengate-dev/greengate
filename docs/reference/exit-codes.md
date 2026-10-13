@@ -1,6 +1,6 @@
 ---
-title: 'Exit Codes — GreenGate CLI Reference'
-description: 'GreenGate exit code reference: 0 passed, 1 findings, 2 usage error, 3 incomplete, 4 error. Designed for reliable CI pipeline scripting without stdout parsing.'
+title: 'Exit Codes — greengate CLI Reference'
+description: 'greengate exit code reference: 0 passed, 1 findings, 2 usage error, 3 incomplete, 4 error. Designed for reliable CI pipeline scripting without stdout parsing.'
 ---
 
 # Exit Codes
@@ -10,7 +10,7 @@ CI pipelines can rely on the exit code directly — no output parsing required.
 | Code | Meaning |
 |---|---|
 | `0` | Passed — everything was checked and nothing violates policy |
-| `1` | Findings — a check failed (secrets found, SAST issues, lint violations, coverage below threshold, vulnerabilities detected, performance regression) |
+| `1` | Findings — a check failed (secrets found, SAST issues, lint violations, coverage below threshold, vulnerabilities detected) |
 | `2` | Usage error — unknown flag, invalid argument, or an invalid `.greengate.toml` |
 | `3` | Incomplete — some checks could not run and nothing that did run found a problem |
 | `4` | Error — the gate could not run (an unreadable input file, a failed `git` call, a wrapped package manager that failed) |

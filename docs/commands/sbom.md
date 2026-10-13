@@ -1,13 +1,13 @@
 ---
 title: 'sbom — SBOM Generation & Sigstore Attestation'
-description: 'Generate a CycloneDX 1.5 SBOM — components, dependency graph, scopes and hashes — from your lockfiles, and optionally sign it with Sigstore keyless signing for SLSA compliance and EU Cyber Resilience Act readiness. No private key required.'
+description: 'Generate a CycloneDX 1.5 SBOM — components, dependency graph, scopes and hashes — from your lockfiles, and optionally sign it with Sigstore keyless signing to establish file integrity and signer identity. No private key required.'
 ---
 
 # sbom — SBOM Generation & Sigstore Attestation
 
 Generates a [CycloneDX 1.5](https://cyclonedx.org/specification/overview/) Software Bill of Materials (SBOM) from your project's dependency files. No internet access required — the lockfiles are parsed locally, and the output validates against the CycloneDX 1.5 JSON Schema.
 
-Optionally signs the SBOM using [Sigstore](https://sigstore.dev) keyless signing (`--attest`) and verifies signed SBOMs (`--verify`). This covers SLSA Level 2+ provenance requirements and the EU Cyber Resilience Act's software provenance requirements.
+Optionally signs the SBOM using [Sigstore](https://sigstore.dev) keyless signing (`--attest`) and verifies signed SBOMs (`--verify`). Signing and verification establish the file's integrity and the expected signer identity; they do not certify build provenance or regulatory compliance.
 
 ## Usage
 
@@ -15,6 +15,7 @@ Optionally signs the SBOM using [Sigstore](https://sigstore.dev) keyless signing
 greengate sbom [OPTIONS]
 
 Options:
+      --lockfile <FILE>                  Read only this dependency file
   -o, --output <FILE>                    Write SBOM to a file instead of stdout
                                          (default when --attest is set: sbom.json)
       --attest                           Sign the generated SBOM with Sigstore
@@ -114,7 +115,9 @@ brew install sigstore/tap/cosign
 - uses: sigstore/cosign-installer@v3
 ```
 
-### GitHub Actions — full release example
+### GitHub Actions: signing steps
+
+Install greengate using the [CI setup guide](/guide/ci-integration) before these steps.
 
 ```yaml
 permissions:
@@ -125,11 +128,6 @@ steps:
   - uses: actions/checkout@v4
 
   - uses: sigstore/cosign-installer@v3
-
-  - name: Install greengate
-    run: |
-      curl -sL .../greengate-linux-amd64 \
-        -o /usr/local/bin/greengate && chmod +x /usr/local/bin/greengate
 
   - name: Generate and attest SBOM
     run: greengate sbom --attest --output sbom.json
@@ -157,7 +155,7 @@ greengate sbom --verify sbom.json \
   --certificate-identity https://github.com/acme/repo/.github/workflows/release.yml@refs/heads/main
 ```
 
-Without `--certificate-oidc-issuer` / `--certificate-identity`, greengate accepts any valid Sigstore identity. For production pipelines always pin both to your specific workflow URL.
+Without an expected signer identity, a valid signature is reported as incomplete (exit `3` by default). An issuer alone does not satisfy the identity check. Set both an expected issuer and identity to restrict the signer.
 
 ### Setting defaults in config
 
@@ -178,7 +176,7 @@ The output is a CycloneDX 1.5 JSON document:
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:greengate-1710000000",
+  "serialNumber": "urn:uuid:12345678-1234-4123-8123-123456789012",
   "version": 1,
   "metadata": {
     "timestamp": "2026-03-06T12:00:00Z",
@@ -196,11 +194,8 @@ The output is a CycloneDX 1.5 JSON document:
 }
 ```
 
-## Compliance context
+## What signing establishes
 
-| Requirement | How greengate sbom helps |
-|---|---|
-| **SLSA Level 2+** | `--attest` produces a signed provenance bundle anchored in the public Rekor log |
-| **EU Cyber Resilience Act** | Signed CycloneDX SBOM satisfies the software provenance documentation requirement |
-| **NTIA minimum elements** | CycloneDX 1.5 covers all NTIA-required SBOM fields |
-| **Dependency-Track / FOSSA / Grype** | CycloneDX JSON is natively accepted by all major SBOM platforms |
+A verified signature can bind the SBOM file to an expected signer identity and detect modification. The SBOM describes dependencies read from supported files; it does not attest that a particular build used those dependencies, assess their safety, or certify compliance.
+
+Verify required fields and coverage against the requirements of the system consuming your SBOM.

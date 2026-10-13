@@ -7,7 +7,7 @@ description: 'Lint GitHub Actions workflow files for security misconfigurations:
 
 Lints GitHub Actions workflow files under `.github/workflows/` for security misconfigurations that can lead to CI pipeline poisoning, secret exfiltration, and privilege escalation.
 
-CI pipeline attacks have become a primary supply chain vector — the [tj-actions/changed-files compromise](https://github.com/advisories/GHSA-mrrh-fwg8-r2c3), the [Codecov bash uploader incident](https://about.codecov.io/security-update/), and the [reviewdog action compromise](https://github.com/reviewdog/action-setup/security/advisories/GHSA-5rjg-fvgr-3xxf) all exploited misconfigurations that `ci-lint` would flag.
+The checks flag supported workflow patterns. They do not inspect remote action code, detect every compromised action, or establish that a workflow is safe.
 
 ## Usage
 

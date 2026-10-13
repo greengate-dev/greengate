@@ -1,13 +1,13 @@
 ---
 title: 'scan — Secret, PII & SAST Scanning'
-description: 'Scan your codebase for hardcoded secrets, credentials, and PII using 26 built-in patterns plus AST-based SAST for JS, TS, Python, Go, and Rust. Supports --fix auto-redaction and --triage LLM false-positive classification.'
+description: 'Scan your codebase for hardcoded secrets, credentials, and PII using 25 built-in patterns plus AST-based SAST for JS, TS, Python, Go, and Rust. Supports --fix auto-redaction and --triage LLM false-positive classification.'
 ---
 
 # scan — Secret, PII & SAST Scanning
 
-Recursively scans every file in the current directory for hardcoded secrets, credentials, and PII using 26 built-in regex patterns plus Shannon entropy detection. Respects `.gitignore` automatically.
+Recursively scans eligible text files in the current directory for hardcoded secrets, credentials, and PII using 25 built-in regex patterns plus Shannon entropy detection. Respects `.gitignore` automatically.
 
-For JavaScript, TypeScript, Python, Go, and Rust files the scanner additionally runs an AST-based SAST pass using tree-sitter, eliminating false positives from comments and string non-literals.
+For JavaScript, TypeScript, Python, Go, and Rust files the scanner additionally runs an AST-based SAST pass using tree-sitter, using syntax-aware rules and string-literal scoping. False positives and false negatives remain possible.
 
 ## Usage
 
@@ -101,7 +101,7 @@ git diff
 
 ## AI triage (`--triage`)
 
-When enabled, each finding is sent to an LLM along with ~10 lines of surrounding context. The LLM classifies it as likely-real, likely-false-positive, or uncertain and gives a one-sentence reason.
+When enabled, each finding is sent to an LLM along with ~10 lines of surrounding context. The configured endpoint receives that source context and classifies it as likely-real, likely-false-positive, or uncertain and gives a one-sentence reason.
 
 ```
 ⚠️  Found 3 potential issue(s) — 1 triaged as false positive(s) and auto-suppressed, 2 require attention:
@@ -131,12 +131,12 @@ Configure model, endpoint, and auto-suppression threshold in `.greengate.toml`:
 [triage]
 model                   = "claude-haiku-4-5-20251001"
 api_key_env             = "ANTHROPIC_API_KEY"
-auto_suppress_threshold = 0.90   # suppress when ≥ 90% confident it's a false positive
+auto_suppress_threshold = 0.0    # annotate only; review before enabling suppression
 context_lines           = 10
 # endpoint = "http://localhost:11434/v1/chat/completions"  # Ollama / any OpenAI-compat
 ```
 
-See the [triage configuration](/reference/config#triage) section for full options and local model setup.
+See the [configuration reference](/reference/config) section for full options and local model setup.
 
 ## AST-based SAST
 
@@ -145,8 +145,8 @@ When scanning `.js`, `.jsx`, `.ts`, `.tsx`, `.py`, `.go`, or `.rs` files, greeng
 **String-literal scoping** — secret patterns only fire inside string and template literals, not comments or JSX text:
 
 ```ts
-// AKIAIOSFODNN7EXAMPLE123          ← comment: NOT flagged
-const key = "AKIAIOSFODNN7EXAMPLE123";  // ← string literal: flagged
+// AKIAQWERTYUIOPASDFGH          ← comment: NOT flagged
+const key = "AKIAQWERTYUIOPASDFGH";  // ← synthetic key-shaped value: flagged
 ```
 
 **Dangerous pattern detection** — structural rules that catch XSS, eval, command injection, unsafe deserialization, and more. See [SAST Rules](/reference/sast-rules) for the full list.
@@ -187,7 +187,7 @@ greengate scan --since-baseline
 Add `// greengate: ignore` on the same line to suppress a specific finding. Give a reason with `reason="…"` (or any text after the marker): the report lists every suppressed finding with it.
 
 ```ts
-const legacyKey = "AKIAIOSFODNN7EXAMPLE123"; // greengate: ignore
+const legacyKey = "AKIAQWERTYUIOPASDFGH"; // greengate: ignore
 el.innerHTML = sanitizedHtml;                 // greengate: ignore
 ```
 

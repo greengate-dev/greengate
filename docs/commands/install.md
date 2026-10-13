@@ -1,148 +1,117 @@
 ---
-title: 'install — Inspect Before Any Package Code Runs'
-description: 'Install npm, pnpm, Yarn, Bun, pip, uv and Cargo dependencies with no package code running before greengate has checked the complete tree: plan, fetch with scripts off, inspect every install script, then run approved scripts in a bubblewrap sandbox with no network, confined writes, a private home directory and an allowlisted environment.'
+title: 'install: inspect dependencies and restrict install scripts'
+description: 'Plan supported dependency installs, apply policy, inspect artifacts, and run supported script phases with Linux bubblewrap isolation when available.'
 ---
 
-# install — Inspect Before Any Package Code Runs
+# install
 
-`greengate install` installs dependencies so that **no package code runs
-before greengate has looked at the complete dependency tree** — direct and
-transitive, including `npm ci` installs that name no packages.
+`greengate install` combines dependency policy with install-script inspection and execution controls. It supports npm, pnpm, Yarn, Bun, pip, uv, and Cargo. The phases and protection boundaries depend on the package manager.
 
 ```bash
 greengate install npm ci
 greengate install pnpm install --frozen-lockfile
 greengate install yarn install
 greengate install bun install
-greengate install pip install -r requirements.txt     # --pip venv/bin/pip
+greengate install --pip .venv/bin/pip pip install -r requirements.txt
 greengate install uv sync
 greengate install cargo add serde
-greengate install --plan npm install some-new-package   # look, change nothing
 ```
 
-`watch-install`, `pip-install` and `cargo-add` are deprecated and run
-through `greengate install` when they wrap one of these managers; they will
-be removed in 0.5.
+The package manager and its build tools must already be installed. The compatibility commands `watch-install`, `pip-install`, and `cargo-add` are deprecated and scheduled for removal in 0.5.
 
-## Per package manager
+## Planning and policy
 
-| | Plan (no package code) | Fetch | What runs, and how |
-|---|---|---|---|
-| **npm** | `npm install --package-lock-only --ignore-scripts` in a scratch copy | `npm ci --ignore-scripts` | each approved package's install scripts via `npm rebuild <name>@<version>`, sandboxed |
-| **pnpm** | `pnpm install/add --lockfile-only --ignore-scripts` in a scratch copy | `pnpm install --frozen-lockfile --ignore-scripts` | only builds pnpm itself allows (`onlyBuiltDependencies`; pnpm 10 builds nothing by default), via `pnpm rebuild <name>`, sandboxed: the project is writable for pnpm's own state, but the package store and `.git` are read-only except the running package |
-| **Yarn 1** | an `--ignore-scripts` install in a scratch copy (Yarn 1 has no lockfile-only mode) | `yarn install --frozen-lockfile --ignore-scripts` | like npm: each package via `npm rebuild <name>@<version>`, sandboxed |
-| **Yarn Berry** | `yarn install --mode=update-lockfile` in a scratch copy | `yarn install --immutable --mode=skip-build`, which unplugs the packages that need building | Berry builds every package in one step, so isolation keeps builds from the rest of the system but not from each other. A suspicious-looking build is therefore held back even when isolated — allowlist it, or set `dependenciesMeta.<name>.built: false` so Yarn never builds it — and then no builds run, since Berry would build it too. |
-| **Bun** | `bun install/add --lockfile-only` in a scratch copy | `bun install --frozen-lockfile --ignore-scripts` | only packages Bun trusts (`trustedDependencies` and its built-in list; `bun pm untrusted` names the rest), each via `npm rebuild`, sandboxed |
-| **pip** | `pip install --dry-run --report` — **in the sandbox**, because resolving an sdist runs its build backend (a local setuptools project, which writes into its own tree, is resolved over a throwaway copy of the project) | greengate downloads every artifact itself and checks its sha256 against the index | sdists, local directories (from a copy, without secret files) and VCS requirements (checked out by greengate at the planned commit) are built into wheels in the sandbox (with network, for build requirements; writes confined to a scratch directory); then only wheels are installed, which runs no package code |
-| **uv** | `uv lock` / `uv add --no-sync` — **in the sandbox**, because locking runs sdist build backends; manifests are backed up | `uv sync --frozen --no-install-project` in the sandbox (uv checks every hash; sdist builds run there) | new `.pth` startup files are checked before any Python starts and suspicious ones quarantined; then the project itself is installed |
-| **Cargo** | `cargo add` / `update` (manifests are backed up) | `cargo fetch --locked` (cargo checks every checksum) | nothing: build scripts and proc-macros run at `cargo build`, after the gate. New crates' build scripts and proc-macro sources are inspected; networking, shell invocations or encoded payloads block (`allow_cargo_crates` to allowlist). A blocked plan restores `Cargo.toml` and `Cargo.lock`. |
+```bash
+greengate install --plan npm install some-package
+```
 
-pip wheels are also inspected for `.pth` files with executable lines — they
-run at every Python start, so isolation at install time does not help;
-suspicious ones block (`INSTALL/StartupCode`).
+`--plan` avoids applying the requested install. For JavaScript managers it resolves, fetches, and inspects in a scratch project with lifecycle scripts disabled. Cargo restores its manifests and lockfile after inspecting fetched crates. uv restores its manifests and lockfile and stops before dependency sync; its plan does not inspect installed artifacts or `.pth` files.
 
-## Phases
+**Python planning can execute package code.** pip and uv may run source-build backends to obtain metadata. With bubblewrap, those phases run isolated with network access for build requirements. Without isolation, they can run unconfined. `--plan` does not promise code-free resolution or unchanged package-manager caches.
 
-| Phase | What happens | Package code runs? |
+The gate applies [`deps check`](deps.md) policy to the plan and checks known advisories for registry packages added or changed. The name guard scores explicitly requested package names; it does not score every transitive name. An unchanged lockfile does not trigger a full advisory re-audit: run [`audit`](audit.md) for that coverage.
+
+Blocking plan findings and unfinished checks normally stop later phases. `[policy] on_incomplete = "warn"` or `--allow-incomplete` permits incomplete checks; it does not waive runtime errors. `--no-fail` permits findings and can continue the install, although an unplanned JavaScript package's scripts remain excluded. A later execution failure can still make the run fail after package code has run.
+
+## Package-manager behavior
+
+| Manager | Planning and inspection | Execution boundary |
 |---|---|---|
-| **Plan** | npm resolves the full tree into a lockfile in a scratch copy of the project (`--package-lock-only --ignore-scripts`). greengate applies the [`deps check`](deps.md#deps-check-supply-chain-policy) policies to every package the install adds or changes — release cooldown, new install scripts, lost provenance, registry binding, sources — checks those packages for known advisories (blocking at or above `[dependency_review] fail_on_severity`, `high` by default, with the version that clears them all), and applies the name guard to packages named on the command line. A violation stops here: nothing is downloaded. | No |
-| **Fetch** | `npm ci --ignore-scripts` downloads and extracts the planned tree. | No |
-| **Verify artifacts** | npm checks every tarball against the lockfile integrity; greengate checks nothing outside the plan was installed. | No |
-| **Inspect** | Every installed package — nested copies included — that runs code at install: lifecycle scripts, the helper files they call (`node install.js`), and `binding.gyp` builds. Suspicious patterns (network, `eval`, shell, `process.env`, `../`, an embedded encoded payload) are reported. | No |
-| **Execute** | Approved scripts run one package at a time, dependencies first (`npm rebuild <name>@<version>`). | Yes — see below |
-| **Verify files** | Without a sandbox: the tree is compared before and after each script, and a filesystem watcher catches files that appear and vanish. | — |
+| npm | Resolve a lockfile and fetch with lifecycle scripts disabled; inspect installed hooks, selected helper files, and native-build definitions | Approved dependency scripts run per package through `npm rebuild` |
+| pnpm | Resolve and fetch with scripts disabled; respect supported build-approval settings | `pnpm rebuild` runs approved names; the project is writable for bookkeeping, with root changes checked afterward |
+| Yarn 1 | Plan with a scripts-disabled install in a scratch project, then fetch the frozen tree | Dependency scripts run through npm; npm is also required |
+| Yarn Berry | Update the lockfile without builds, then fetch with builds skipped | Approved builds share one `yarn rebuild` sandbox; held-back suspicious or unplanned packages block the combined build step |
+| Bun | Resolve and fetch with scripts disabled; respect Bun's trust decisions | Trusted dependency scripts run through npm; npm is also required |
+| pip | Resolve from a pip report, verify downloads, inspect wheels, and prepare source requirements | Source builds run in a sandbox when available; downloaded and built wheels are checked for suspicious `.pth` startup code before installation |
+| uv | Lock in the sandbox when available, apply policy, then sync dependencies separately from the project | Dependency source builds run during sync; new or changed `.pth` files are inspected and suspicious files are quarantined afterward |
+| Cargo | Add or update dependencies, fetch them, and inspect new build scripts and proc-macro sources | No crate compilation occurs here; later `cargo build` runs outside this gate |
 
-`--plan` stops after **Inspect**, working entirely in the scratch copy: the
-project is not modified and no package code runs.
+pip local-directory sources build from copies, and git requirements are checked out at the planned commit. Editable and `--target` pip installs are unsupported. pip report support requires pip 22.2 or later. Cargo accepts `add`, `update`, and `fetch`; `cargo install` is unsupported.
 
-The install stops before any phase that downloads or runs package code when
-a check failed to run, or did not finish (an unreachable registry, a missing
-offline OSV snapshot) — unless `[policy] on_incomplete = "warn"` or
-`--allow-incomplete`. A run that will exit non-zero never runs package code
-first.
+The JavaScript inspection pass uses static signals, not complete program analysis. pip follows recognized imports into Python source files shipped in the same wheel; uv reads modules from the `.pth` file's site-packages directory. These are bounded checks and do not resolve every possible runtime import or native extension.
 
-The flags greengate sets for a phase cannot be turned off from the command
-line: `--ignore-scripts=false`, `--no-package-lock-only`, a Berry `--mode`
-other than `skip-build`, `--` and the like are refused. `--prefix`, `--dir`
-and `--cwd` are refused too; run greengate from that directory.
+## Require Linux isolation
 
-## How scripts run
+```bash
+greengate install --isolate bwrap npm ci
+```
 
-With **bubblewrap** (Linux, `--isolate auto` picks it when it works), each
-package's scripts run in a sandbox where:
+`--isolate auto` is the default: it uses working bubblewrap on Linux and otherwise permits the unisolated fallback. `--isolate bwrap` requires bubblewrap; `--isolate none` explicitly disables OS isolation.
 
-- the system is read-only, and writes are confined to that package's own
-  directory and a private temp directory,
-- the home directory, `/tmp` and `/run` are private and empty, except the
-  toolchains a build needs (`PATH` entries, `~/.nvm`, `~/.cargo`, `~/.rustup`,
-  `~/.local/share/uv`, node-gyp headers, …), which stay read-only; credential
-  files inside those (`~/.cargo/credentials`, …) stay masked,
-- the project's secret files are masked, in workspace packages and behind
-  symlinked directories too: `.env` and `.env.*`, `.npmrc`, `.yarnrc.yml`,
-  `.pypirc`, `.netrc`, `.git-credentials`, `.git/config`,
-- there is no network (unless the package is listed in
-  `[supply_chain] script_network`), and the script has its own namespaces
-  and terminal session.
+To refuse supported dependency script and Python build phases without isolation:
 
-A package's own code will run at runtime anyway; the sandbox makes sure
-install time grants it nothing more. So a script with suspicious patterns is
-**reported and run isolated** rather than blocked — real installers such as
-esbuild's use networking, `child_process` and `process.env`, and blocking them
-would break ordinary installs. A script that tries to write outside its
-package is refused by the sandbox and reported as `INSTALL/BlockedWrite`.
+```toml
+[supply_chain]
+require_isolation = true
+```
 
-**Without isolation** (`--isolate none`, or no bubblewrap), suspicious
-scripts are **not run** unless the package is in
-`[supply_chain] allow_postinstall`, and writes outside the package are
-detected afterwards (`INSTALL/ForeignWrite`, `INSTALL/PhantomFile`) rather
-than prevented. Set `[supply_chain] require_isolation = true` to refuse to
-run package code at all without a sandbox (the run is then incomplete). For
-pip and uv that includes planning, which runs sdist build backends.
+This includes pip metadata resolution and uv locking and syncing. It does not sandbox a later Cargo build, the project's own JavaScript lifecycle scripts, or uv's final project installation.
 
-In both modes, install scripts see an **allowlisted environment**: `PATH`,
-`HOME`, locale, compilers and their flags, `pkg-config`, CA bundles, proxies,
-toolchain locations and package-manager settings (`npm_config_*`, `PIP_*`,
-`UV_*`, `YARN_*`, `CARGO_*`, `NODE_*`, …). Everything else is removed —
-`DATABASE_URL`, `REDIS_URL` and the like included — and so is anything that
-looks like a credential (`*_TOKEN`, `*_KEY`, `*_SECRET`, `*PASSWORD*`,
-`*_AUTH*`, `AWS_*`, `SSH_AUTH_SOCK`, …) even with an allowed prefix. A kept
-variable holding a URL with credentials (`PIP_INDEX_URL=https://user:pass@…`,
-an authenticated proxy) is passed without them. Pass others with
-`[supply_chain] env_allow`: exact names, or `PREFIX_*`; those are passed as
-they are.
+## Filesystem, network, and environment
 
-`--ignore-scripts` (also `=true` or `=1`) means no install scripts at all: dependencies' are not run
-either (they are still inspected and reported).
+With bubblewrap, supported dependency phases use a read-only system, private home and temporary directories, and writable package or scratch directories. Toolchains remain readable. pnpm and Yarn Berry also need project write access for manager state, so those paths combine restrictions with post-execution checks.
 
-The project's own `preinstall`/`install`/`postinstall`/`prepare` scripts run
-afterwards as usual — they are the project's code.
+Known credential files are masked in the project, nested directories, and linked directories: `.env`, `.env.*`, `.npmrc`, `.yarnrc.yml`, `.pypirc`, `.netrc`, `.git-credentials`, and the root `.git/config`. The search skips dependency/build trees and virtual environments and warns if its directory limit is reached. It does not discover secrets in every arbitrary file.
+
+JavaScript dependency scripts have networking disabled unless their package is listed in `script_network`. pip and uv resolution and source-build phases have networking enabled to obtain build requirements. Allowing network access is a policy decision, not proof that a build is safe.
+
+The environment is reduced to build-related variables, with recognized credential names removed and userinfo stripped from kept URLs. `env_allow` passes matching names or prefixes unchanged, including credentials:
+
+```toml
+[supply_chain]
+require_isolation = true
+script_network = ["puppeteer"]
+env_allow = ["SHARP_*", "ELECTRON_MIRROR"]
+```
+
+Without isolation, eligible scripts run with the reduced environment; suspicious JavaScript scripts are held back unless allowlisted. Filesystem monitoring detects some foreign writes after execution and cannot prevent reads or network access. A script running under OS isolation can still use its writable area and any readable data exposed to it.
+
+The project's own JavaScript lifecycle scripts run normally after dependency handling. uv's final project installation also runs normally, unless `--no-install-project` is requested. Treat the project and package-manager configuration as trusted inputs.
+
+## Script flags and allowlists
+
+`--ignore-scripts`, including `=true` and `=1`, suppresses JavaScript dependency and project lifecycle scripts. Flags that would undo greengate's phase controls are rejected. `--prefix`, `--dir`, and `--cwd` are unsupported for the JavaScript install wrappers; run from the intended directory.
+
+`allow_postinstall` permits selected JavaScript scripts that would otherwise be held back. It does **not** grant network access; use `script_network` separately. `allow_pip_packages` and `allow_cargo_crates` waive selected package checks. Keep allowlists narrow and review their effects.
 
 ## Findings
 
 | Rule | Meaning |
 |---|---|
-| `INSTALL/SuspiciousScript` | An install script (or a file it runs) matches suspicious patterns. Warning when it runs isolated or allowlisted; violation when it is held back. |
-| `INSTALL/BlockedWrite` | A script tried to write outside its package; the sandbox refused. |
-| `INSTALL/ForeignWrite` | Unisolated, a script created, modified or deleted files outside its package. |
-| `INSTALL/PhantomFile` | Unisolated, a script created and deleted files outside its package. |
-| `INSTALL/UnplannedPackage` | A package was installed that the plan did not contain. The install stops before any script runs; its own scripts never run, even under `--no-fail`. |
-| `INSTALL/BuildNotAllowed` | pnpm will not run this package's install scripts (not in `onlyBuiltDependencies`), so greengate does not either. |
-| `INSTALL/SuspiciousBuildScript` | A new crate's build script or proc-macro uses networking, shells out, or embeds an encoded payload. |
-| `INSTALL/StartupCode` | A wheel, downloaded or built from source, adds a `.pth` file whose code runs at every Python start — its lines or a module they import from the wheel — and looks suspicious. |
-| `INSTALL/HashMismatch` | A downloaded pip artifact does not match the sha256 the index published. |
+| `INSTALL/SuspiciousScript` | A script or inspected helper matches suspicious patterns |
+| `INSTALL/BlockedWrite` | A supported build or script attempted a write refused by the sandbox |
+| `INSTALL/ForeignWrite` | A monitored phase changed files outside its permitted package scope |
+| `INSTALL/PhantomFile` | Monitored files appeared and disappeared outside the package scope |
+| `INSTALL/UnplannedPackage` | An installed JavaScript package was absent from the plan; its scripts stay excluded |
+| `INSTALL/BuildNotAllowed` | pnpm's build policy does not allow the package |
+| `INSTALL/SuspiciousBuildScript` | A new Cargo build script or proc-macro source matches suspicious signals |
+| `INSTALL/StartupCode` | Python startup code or a recognized imported helper looks suspicious |
+| `INSTALL/HashMismatch` | A downloaded pip artifact does not match its reported hash |
 
-Plus every `deps check` rule from the plan phase.
+Dependency policy and advisory findings also appear in the report. See [limitations](/reference/limitations) and [exit codes](/reference/exit-codes).
 
 ## Options
 
-```
-greengate install [--plan] [--isolate auto|bwrap|none] [--no-fail] [--pip PIP] <npm|pnpm|yarn|bun|pip|uv|cargo> <COMMAND> [ARGS…]
-```
-
-```toml
-[supply_chain]
-require_isolation = false         # no sandbox → do not run scripts (incomplete)
-script_network = ["puppeteer"]    # packages whose scripts may use the network
-env_allow = ["SHARP_*", "ELECTRON_MIRROR"]  # extra variables for install scripts
-allow_postinstall = ["sharp"]     # run unisolated even with suspicious patterns
+```text
+greengate install [--plan] [--isolate auto|bwrap|none] [--no-fail] [--pip PIP] <MANAGER> <COMMAND> [ARGS…]
 ```

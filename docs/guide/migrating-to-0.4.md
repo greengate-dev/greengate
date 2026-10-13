@@ -1,5 +1,5 @@
 ---
-title: 'Migrating to 0.4 — GreenGate'
+title: 'Migrating to 0.4 — greengate'
 description: 'What changes when you upgrade greengate from 0.3 to 0.4: exit codes, incomplete runs, run continuing past failures, greengate install replacing the install wrappers, baselines v2, exceptions, and renamed flags — with what to change in CI.'
 ---
 
@@ -65,10 +65,10 @@ fail_fast = true
 
 `watch-install`, `pip-install` and `cargo-add` are deprecated and **removed in
 0.5**. When they wrap npm, pnpm, Yarn, Bun, pip ≥ 22.2 or a Cargo project,
-they already run through [`greengate install`](/commands/install) in 0.4. That
+they route through [`greengate install`](/commands/install) in 0.4. That
 changes how install scripts run:
 
-- They run one package at a time, in bubblewrap where available: **no
+- Supported JavaScript dependency scripts run individually (Berry builds together), in bubblewrap where available: **no
   network**, the system read-only, a private home directory and `/tmp`, and
   the project's `.env*`, `.npmrc` and `.git/config` masked (workspace
   packages' too).
@@ -76,11 +76,9 @@ changes how install scripts run:
   proxies, package-manager settings, …); everything else, `DATABASE_URL`
   and credential-like variables included, is removed, and credentials inside
   kept URLs (`PIP_INDEX_URL`, proxies) are stripped.
-- `--ignore-scripts` now also skips dependencies' scripts, and an unfinished
-  check (unreachable registry, no OSV snapshot) stops the install before any
-  package code runs.
+- `--ignore-scripts` also skips JavaScript dependencies' scripts. Blocking plan findings and unfinished checks normally stop later phases; Python planning may already have run build code.
 - Packages the install adds or changes are checked for known advisories and
-  release risk before anything runs.
+  release risk before later install phases. Python resolution may already have run metadata-build code.
 
 **What to change:**
 
@@ -140,8 +138,7 @@ git add .greengate-baseline.json
   `CI/PullRequestTargetWithCheckout`; earlier docs used `CILINT/…` names that
   never matched anything.
 - The GitHub Action takes `report` and `dependency-review` inputs and sets
-  `status`, `findings`, `incomplete` and `report-path` outputs. Pin it to a
-  release: `greengate-dev/greengate@v0.4.0`.
+  `status`, `findings`, `incomplete` and `report-path` outputs. Pin both the action ref and its `version` input to `v0.4.0`; see [CI integration](/guide/ci-integration).
 
 ## 9. `lighthouse` and `reassure` are removed
 

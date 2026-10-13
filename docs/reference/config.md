@@ -19,7 +19,7 @@ exclude_patterns = [
   "vendor/**",
 ]
 
-# Extra patterns added on top of the 26 built-ins
+# Extra patterns added to the built-in credential and PII checks
 extra_patterns = [
   { name = "Internal Service Token", regex = "svc_[a-z0-9]{40}" },
 ]
@@ -30,7 +30,7 @@ entropy_threshold = 4.5    # lower = more sensitive (default 4.5)
 entropy_min_length = 20    # ignore tokens shorter than this (default 20)
 
 [sast]
-# Set to false to disable SAST entirely and fall back to regex for JS/TS files
+# Set to false to disable SAST and use regex scanning for supported source files
 enabled = true
 
 # Suppress specific rule IDs
@@ -52,7 +52,7 @@ custom_rules = [
 
 [coverage]
 file = "coverage/lcov.info"    # default coverage file path
-min  = 85.0                    # default minimum threshold %
+min  = 80.0                    # built-in minimum threshold %
 
 [lint]
 target_dir = "./infrastructure/k8s"    # default Kubernetes manifest directory
@@ -104,28 +104,26 @@ allow_licenses = []
 unknown_license = "warn"
 
 [supply_chain]
-# Halt the install when any layer of the zero-trust gate detects a threat (default: true).
+# Legacy watcher blocking policy; routed watch-install uses this to enable findings failure.
 block_phantom_scripts = true
 
-# Monitor the project root for new executable files after install (default: true).
+# Legacy watcher executable-drop check; this does not enable OS isolation.
 enforce_sandbox = true
 
-# Packages whose postinstall scripts legitimately make network calls or create
-# temp files (e.g. native build tools that compile .node addons). Findings from
-# these packages are downgraded to warnings — they still appear in output for
-# audit trail but do not trigger a non-zero exit.
+# Selected JavaScript packages allowed through suspicious-script checks.
+# This does not grant network access; use script_network separately.
 allow_postinstall = [
   # "esbuild",
   # "prisma",
   # "@swc/core",
 ]
 
-# PyPI package names exempted from greengate pip-install typosquat and source scanning.
+# Selected Python packages exempted from package-name and downloaded-wheel startup checks.
 allow_pip_packages = [
   # "my-internal-requests-wrapper",
 ]
 
-# Cargo crate names exempted from greengate cargo-add typosquat and build.rs scanning.
+# Selected crates exempted from package-name and build/proc-macro inspection checks.
 allow_cargo_crates = [
   # "openssl",   # legitimate complex build.rs for system lib detection
 ]
@@ -138,9 +136,10 @@ internal_packages = [
 ]
 
 # `greengate install`: refuse to run dependency install scripts without a
-# sandbox (the run is then incomplete instead of running them unisolated).
+# sandbox (the run is then incomplete). This also covers pip/uv planning builds.
 require_isolation = false
-# Packages whose install scripts may use the network inside the sandbox.
+# JavaScript packages whose dependency scripts may use the network.
+# Python planning/build phases already use network access for build requirements.
 script_network = [
   # "puppeteer",
 ]
@@ -221,10 +220,11 @@ context_lines = 10
 default_output = "sbom.json"
 
 # For greengate sbom --verify: expected OIDC issuer of the signing certificate.
-# Leave unset to accept any Sigstore identity (permissive but still validates Rekor).
+# Leave the issuer unset to accept any issuer; the expected identity is separate.
 # expected_issuer = "https://token.actions.githubusercontent.com"
 
 # For greengate sbom --verify: expected signer identity (exact match).
+# Without it, successful signature verification is reported as incomplete.
 # Typically the full workflow URL including ref, e.g.:
 # expected_identity = "https://github.com/acme/repo/.github/workflows/release.yml@refs/heads/main"
 

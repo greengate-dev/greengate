@@ -1,160 +1,116 @@
 ---
-title: 'CI/CD Integration — GreenGate'
-description: 'Integrate GreenGate into GitHub Actions, GitLab CI, Bitbucket, and CircleCI. Examples for zero-trust supply chain install, test impact analysis, secret scanning, coverage gates, and PR review.'
+title: 'Run greengate in CI'
+description: 'Install greengate in CI, run dependency and repository gates, and upload reports.'
 ---
 
-# CI/CD Integration
+# CI integration
 
-## GitHub Actions — Full pipeline
+Run greengate gates after checking out the repository and preparing the inputs each gate needs. Dependency installs need their package managers; coverage gates need an existing coverage report.
+
+## Install greengate in GitHub Actions
+
+Pin the binary version for reproducible CI. This example installs greengate 0.4.0 on a Linux x64 runner:
 
 ```yaml
-name: GreenGate Quality Gate
-
-on: [push, pull_request]
-
-permissions:
-  contents: read
-  security-events: write   # required for SARIF upload and Check Runs
-  checks: write            # required for --annotate (GitHub Check Runs)
-  pull-requests: write     # required for --annotate (PR review comment)
-
-jobs:
-  greengate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0   # full history required for --base diff
-
-      - name: Install GreenGate
-        run: |
-          curl -sL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-linux-amd64 \
-            -o /usr/local/bin/greengate
-          chmod +x /usr/local/bin/greengate
-
-      # Zero-trust supply chain gate: static script scan + runtime dropper detection
-      - name: Zero-trust supply chain install
-        run: greengate watch-install npm ci
-
-      - name: Secret, PII & SAST Scan
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: greengate scan --annotate
-
-      - name: Dependency Audit (OSV)
-        run: greengate audit
-
-      # What this PR does to the dependency tree: new advisories with the
-      # smallest fix, licenses, release risk — one PR comment, updated in place
-      - name: Dependency Review
-        if: github.event_name == 'pull_request'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: greengate deps review --annotate
-
-      # Test impact analysis — run only tests affected by this PR's diff
-      - name: Test Impact Analysis
-        if: github.event_name == 'pull_request'
-        run: |
-          TESTS=$(greengate tia --base "${{ github.event.pull_request.base.sha }}")
-          if [ -n "$TESTS" ]; then
-            pytest $TESTS
-          else
-            echo "No affected tests — skipping"
-          fi
-
-      - name: PR Review (Complexity + Coverage Gaps)
-        if: github.event_name == 'pull_request'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.sha }}
-        run: |
-          greengate review \
-            --base "${{ github.event.pull_request.base.sha }}" \
-            --coverage-file coverage/lcov.info \
-            --min-coverage 80 \
-            --annotate
-        continue-on-error: true   # informational until coverage is wired in
-
-      - name: Kubernetes Lint
-        run: greengate lint --dir ./k8s
-
-      - name: Coverage Gate
-        run: greengate coverage --file coverage/lcov.info --min 80
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- name: Install greengate
+  run: |
+    curl -fsSL https://github.com/greengate-dev/greengate/releases/download/v0.4.0/greengate-linux-amd64 -o "$RUNNER_TEMP/greengate"
+    sudo install -m 755 "$RUNNER_TEMP/greengate" /usr/local/bin/greengate
 ```
 
-## GitHub Actions — SARIF upload (alternative)
+Git history is needed for merge-base checks.
 
-If you prefer GitHub Advanced Security inline annotations over `--annotate`:
+## Gate installs and dependency changes
+
+On Linux with working bubblewrap and an existing npm lockfile:
 
 ```yaml
-- name: Scan (SARIF)
-  run: greengate scan --format sarif > results.sarif
-  continue-on-error: true
+- name: Install dependencies with required isolation
+  run: greengate install --isolate bwrap npm ci
+- name: Audit recorded dependencies
+  run: greengate audit
+```
 
+Set up bubblewrap and the project's package manager before these steps. If isolation cannot run, `--isolate bwrap` fails rather than falling back.
+
+To annotate dependency changes on pull requests, grant `contents: read`, `pull-requests: write`, and `checks: write`, then run:
+
+```yaml
+- name: Review dependency changes
+  if: github.event_name == 'pull_request'
+  env:
+    GITHUB_TOKEN: ${{ github.token }}
+  run: greengate deps review --annotate
+```
+
+Fork pull requests may not have write permissions. Keep reporting and annotation permissions separate from dependency-script execution.
+
+## Run configured gates and retain reports
+
+```toml
+[pipeline]
+steps = ["scan", "audit", "ci-lint", "coverage --min 80"]
+```
+
+Generate coverage before running that pipeline. To upload a shared SARIF report even when a gate fails:
+
+```yaml
+- name: Run gates
+  run: greengate run --report gates.sarif
+  continue-on-error: true
 - name: Upload SARIF
+  if: always()
   uses: github/codeql-action/upload-sarif@v4
   with:
-    sarif_file: results.sarif
+    sarif_file: gates.sarif
 ```
 
-## GitLab CI
+SARIF upload needs `security-events: write`; that permission is separate from `checks: write` for annotations. `continue-on-error` makes the gate informational. Remove it, or explicitly enforce the gate's outcome after uploading, when findings should block CI.
+
+Examples use action version tags for readability. Pin reviewed action commits in production; `ci-lint` flags mutable references.
+
+## Composite action
+
+Pin both the action code and downloaded binary:
 
 ```yaml
-stages:
-  - security
-  - quality
-
-.install_greengate: &install_greengate
-  before_script:
-    - curl -sL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-linux-amd64
-        -o /usr/local/bin/greengate
-    - chmod +x /usr/local/bin/greengate
-
-secret-scan:
-  stage: security
-  <<: *install_greengate
-  script:
-    - greengate scan
-
-pr-review:
-  stage: quality
-  <<: *install_greengate
-  only:
-    - merge_requests
-  script:
-    - greengate review
-        --base "$CI_MERGE_REQUEST_DIFF_BASE_SHA"
-        --coverage-file coverage/lcov.info
-        --min-coverage 80
-  allow_failure: true   # informational until coverage is wired in
-
-k8s-lint:
-  stage: security
-  <<: *install_greengate
-  script:
-    - greengate lint --dir ./k8s
-
-coverage-gate:
-  stage: quality
-  <<: *install_greengate
-  script:
-    - greengate coverage --file coverage/lcov.info --min 80
-
-dependency-audit:
-  stage: security
-  <<: *install_greengate
-  script:
-    - greengate audit
+- uses: greengate-dev/greengate@v0.4.0
+  with:
+    version: v0.4.0
+    profile: ci
+    dependency-review: true
+    report: gates.json
 ```
 
-## Git pre-commit hook
+The `version` input controls the downloaded binary independently of the action ref. The action runs `greengate run`, optionally adds dependency review, and exposes `status`, `findings`, `incomplete`, and `report-path`. Prepare the configuration, inputs, history, and permissions first.
 
-Install greengate as a local pre-commit hook to catch secrets before they ever leave your machine:
+## GitLab and other runners
+
+Install a binary or build the same reviewed source revision, then run ordinary CLI commands. For GitLab SAST output:
+
+```yaml
+secret-scan:
+  script:
+    - greengate scan --format gitlab > gl-sast-report.json
+  artifacts:
+    when: always
+    reports:
+      sast: gl-sast-report.json
+```
+
+The scan exit code controls job failure. Other platforms can consume JSON, SARIF, or supported JUnit output. See [output formats](/reference/output-formats) and [exit codes](/reference/exit-codes).
+
+## Test-selection policy
+
+[`tia`](/commands/tia) suggests tests using direct imports. It is not a complete selection guarantee. Preserve full-suite runs where needed, and do not skip testing solely because TIA returned an empty list.
+
+## Local pre-commit checks
 
 ```bash
 greengate install-hooks
 ```
 
-This writes a `.git/hooks/pre-commit` script that runs `greengate scan --staged` on every `git commit`.
+The hook runs `scan --staged`. It requires greengate on `PATH` and can be bypassed with Git's normal hook controls; CI provides a separate gate.

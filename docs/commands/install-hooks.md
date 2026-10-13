@@ -10,10 +10,10 @@ Installs greengate as a Git pre-commit hook. After installation, `greengate scan
 ## Usage
 
 ```
-greengate install-hooks
+greengate install-hooks [--force]
 ```
 
-No options. Run from the root of a Git repository.
+Run within a Git repository containing a `.git` directory. An existing hook is kept unless `--force` is supplied. Git worktrees using a `.git` file and custom `core.hooksPath` locations are not handled by this installer.
 
 ## What it does
 

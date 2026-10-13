@@ -24,22 +24,20 @@ function escapeTemplateInterpolations(md) {
 }
 
 export default defineConfig({
-  title: 'GreenGate',
-  description: 'Rust CLI for zero-trust supply chain protection (npm/pip/cargo), secret scanning, AST-based SAST, AI-assisted triage, SBOM attestation, CI config linting, test impact analysis, coverage gates, and OTLP metrics — single zero-dependency binary.',
+  title: 'greengate',
+  description: 'Dependency checks and install protection for developers, CI, and coding agents, with static repository gates and shared reports.',
   base: '/greengate/',
 
   head: [
     // Open Graph
-    ['meta', { property: 'og:title', content: 'GreenGate — Rust DevOps Security CLI' }],
-    ['meta', { property: 'og:description', content: 'Zero-trust supply chain gate, secret scanning, AST-based SAST, test impact analysis, coverage gates, and Kubernetes linting — one Rust binary, no runtime dependencies.' }],
+    ['meta', { property: 'og:title', content: 'greengate: dependency checks and install protection' }],
+    ['meta', { property: 'og:description', content: 'Review dependency changes, inspect installs, and report repository security checks from one Rust CLI.' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:url', content: 'https://greengate-dev.github.io/greengate/' }],
-    ['meta', { property: 'og:image', content: 'https://greengate-dev.github.io/greengate/og-image.png' }],
     // Twitter Card
-    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
-    ['meta', { name: 'twitter:title', content: 'GreenGate — Rust DevOps Security CLI' }],
-    ['meta', { name: 'twitter:description', content: 'Zero-trust supply chain gate, secret scanning, SAST, test impact analysis, and coverage gates in a single Rust binary.' }],
-    ['meta', { name: 'twitter:image', content: 'https://greengate-dev.github.io/greengate/og-image.png' }],
+    ['meta', { name: 'twitter:card', content: 'summary' }],
+    ['meta', { name: 'twitter:title', content: 'greengate: dependency checks and install protection' }],
+    ['meta', { name: 'twitter:description', content: 'Dependency policy, install-time controls, secret scanning, and CI reports in one Rust CLI.' }],
     // Discovery keywords (Bing, Yandex, DuckDuckGo)
     ['meta', { name: 'keywords', content: 'rust devops cli, supply chain security, npm security, secret scanning, SAST, test impact analysis, kubernetes linting, coverage gate, dependency audit, CI CD security, greengate' }],
     ['link', { rel: 'icon', href: '/greengate/favicon.ico' }],
@@ -52,11 +50,11 @@ export default defineConfig({
 
   themeConfig: {
     logo: null,
-    siteTitle: 'GreenGate',
+    siteTitle: 'greengate',
 
     nav: [
       { text: 'Guide', link: '/guide/getting-started' },
-      { text: 'Commands', link: '/commands/watch-install' },
+      { text: 'Commands', link: '/commands/install' },
       { text: 'Reference', link: '/reference/config' },
       { text: 'GitHub', link: 'https://github.com/greengate-dev/greengate' },
     ],
@@ -78,9 +76,9 @@ export default defineConfig({
         text: 'Commands — Security',
         items: [
           { text: '🛡️ install', link: '/commands/install' },
-          { text: '🔒 watch-install', link: '/commands/watch-install' },
-          { text: '🐍 pip-install', link: '/commands/pip-install' },
-          { text: '🦀 cargo-add', link: '/commands/cargo-add' },
+          { text: 'watch-install (deprecated)', link: '/commands/watch-install' },
+          { text: 'pip-install (deprecated)', link: '/commands/pip-install' },
+          { text: 'cargo-add (deprecated)', link: '/commands/cargo-add' },
           { text: 'scan', link: '/commands/scan' },
           { text: 'ci-lint', link: '/commands/ci-lint' },
           { text: 'image-scan', link: '/commands/image-scan' },
@@ -95,6 +93,7 @@ export default defineConfig({
         items: [
           { text: '🎯 tia', link: '/commands/tia' },
           { text: 'review', link: '/commands/review' },
+          { text: 'provenance', link: '/commands/provenance' },
           { text: 'coverage', link: '/commands/coverage' },
           { text: 'lint', link: '/commands/lint' },
           { text: 'docker-lint', link: '/commands/docker-lint' },

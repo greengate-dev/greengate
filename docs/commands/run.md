@@ -102,11 +102,14 @@ every step.
 
 ## CI usage
 
+Pin the binary version in CI; see [CI integration](/guide/ci-integration).
+
 ```yaml
 - name: Install greengate
   run: |
-    curl -sL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-linux-amd64 \
-      -o /usr/local/bin/greengate && chmod +x /usr/local/bin/greengate
+    curl -fsSL https://github.com/greengate-dev/greengate/releases/download/v0.4.0/greengate-linux-amd64 \
+      -o greengate
+    sudo install -m 755 greengate /usr/local/bin/greengate
 
 - name: Run quality gates
   run: greengate run
