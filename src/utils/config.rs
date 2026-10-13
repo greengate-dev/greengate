@@ -12,10 +12,12 @@ pub struct Config {
     pub lint: LintConfig,
     #[serde(default)]
     pub docker: DockerConfig,
-    #[serde(default)]
-    pub lighthouse: LighthouseConfig,
-    #[serde(default)]
-    pub reassure: ReassureConfig,
+    /// `[lighthouse]` and `[reassure]`: their gates were removed in 0.4.
+    /// Still accepted, so a 0.3 config loads; a warning says to drop them.
+    #[serde(default, rename = "lighthouse")]
+    removed_lighthouse: Option<toml::Value>,
+    #[serde(default, rename = "reassure")]
+    removed_reassure: Option<toml::Value>,
     #[serde(default)]
     pub sast: SastConfig,
     #[serde(default)]
@@ -34,10 +36,138 @@ pub struct Config {
     pub sbom: SbomConfig,
     #[serde(default)]
     pub triage: TriageConfig,
+    #[serde(default)]
+    pub policy: PolicyConfig,
+    #[serde(default)]
+    pub deps: DepsConfig,
+    #[serde(default)]
+    pub dependency_review: DependencyReviewConfig,
+}
+
+/// `greengate deps review` policy, under `[dependency_review]`.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct DependencyReviewConfig {
+    /// Advisories a change introduces fail at or above this severity and
+    /// warn below it. Advisories without a severity count as meeting it.
+    #[serde(default = "default_fail_on_severity")]
+    pub fail_on_severity: SeverityThreshold,
+    /// Which kinds of problem fail the review; the rest are warnings.
+    #[serde(default = "default_fail_on")]
+    pub fail_on: Vec<ReviewFailOn>,
+    /// SPDX ids no new or changed dependency may use.
+    #[serde(default)]
+    pub deny_licenses: Vec<String>,
+    /// When set, only these SPDX ids are acceptable.
+    #[serde(default)]
+    pub allow_licenses: Vec<String>,
+    /// A dependency whose license is missing or unreadable.
+    #[serde(default = "level_warn")]
+    pub unknown_license: Level,
+}
+
+impl Default for DependencyReviewConfig {
+    fn default() -> Self {
+        DependencyReviewConfig {
+            fail_on_severity: default_fail_on_severity(),
+            fail_on: default_fail_on(),
+            deny_licenses: Vec::new(),
+            allow_licenses: Vec::new(),
+            unknown_license: Level::Warn,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum SeverityThreshold {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+impl SeverityThreshold {
+    /// Whether an advisory of `severity` meets the threshold.
+    pub fn met_by(self, severity: crate::report::Severity) -> bool {
+        use crate::report::Severity as S;
+        let rank = match severity {
+            // Unrated advisories are not assumed harmless.
+            S::Unknown | S::Critical => 4,
+            S::High => 3,
+            S::Medium => 2,
+            S::Low => 1,
+        };
+        rank > self as u8
+    }
+}
+
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewFailOn {
+    /// An advisory the change introduces, at or above `fail_on_severity`.
+    NewAdvisory,
+    /// A release-risk signal at level `fail` (see `[supply_chain.release]`).
+    ReleaseRisk,
+    /// A license in `deny_licenses`, or outside `allow_licenses`.
+    DeniedLicense,
+    /// A registry or source rule at level `fail` (`[supply_chain]`).
+    SourcePolicy,
+}
+
+fn default_fail_on_severity() -> SeverityThreshold {
+    SeverityThreshold::High
+}
+
+fn default_fail_on() -> Vec<ReviewFailOn> {
+    vec![
+        ReviewFailOn::NewAdvisory,
+        ReviewFailOn::ReleaseRisk,
+        ReviewFailOn::DeniedLicense,
+        ReviewFailOn::SourcePolicy,
+    ]
+}
+
+/// Dependency discovery, under `[deps]`: shared by `audit`, `sbom` and
+/// `greengate deps`.
+#[derive(Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct DepsConfig {
+    /// Globs (relative to the scanned directory) of dependency files to
+    /// ignore, e.g. test fixtures: `["tests/fixtures/**"]`.
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
+}
+
+/// Gate-wide policy loaded from `.greengate.toml` under `[policy]`.
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyConfig {
+    /// What a gate that could not check everything does: `fail` (exit 3,
+    /// default) or `warn` (exit 0, still reported as incomplete).
+    #[serde(default)]
+    pub on_incomplete: crate::report::OnIncomplete,
+    /// The longest an entry in `.greengate/exceptions.toml` may run, in days
+    /// from today.
+    #[serde(default = "default_max_exception_days")]
+    pub max_exception_days: u32,
+}
+
+fn default_max_exception_days() -> u32 {
+    90
+}
+
+impl Default for PolicyConfig {
+    fn default() -> Self {
+        PolicyConfig {
+            on_incomplete: Default::default(),
+            max_exception_days: default_max_exception_days(),
+        }
+    }
 }
 
 /// Audit settings loaded from `.greengate.toml` under `[audit]`.
-#[derive(Deserialize, Default, Clone)]
+#[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct AuditConfig {
     /// GHSA/CVE IDs to suppress — use for known-acceptable transitive dep
@@ -45,6 +175,38 @@ pub struct AuditConfig {
     /// Document WHY each entry is acceptable in a comment above the list.
     #[serde(default)]
     pub ignore_advisories: Vec<String>,
+    /// Where vulnerability data comes from: `auto` (default — the OSV API,
+    /// falling back to an offline snapshot when it fails), `online`, or
+    /// `offline` (snapshot only; see `greengate db update`).
+    #[serde(default)]
+    pub source: AuditSource,
+    /// Oldest offline snapshot the audit will use, in hours. Older data makes
+    /// the check incomplete.
+    #[serde(default = "default_max_db_age_hours")]
+    pub max_db_age_hours: u64,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            ignore_advisories: Vec::new(),
+            source: AuditSource::default(),
+            max_db_age_hours: default_max_db_age_hours(),
+        }
+    }
+}
+
+fn default_max_db_age_hours() -> u64 {
+    24
+}
+
+#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditSource {
+    #[default]
+    Auto,
+    Online,
+    Offline,
 }
 
 /// A user-defined tree-sitter query rule from `.greengate.toml`.
@@ -180,70 +342,6 @@ impl Default for LintConfig {
     }
 }
 
-// ── Lighthouse config ─────────────────────────────────────────────────────────
-
-#[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct LighthouseConfig {
-    /// URL to audit (required for `greengate lighthouse` unless passed via CLI)
-    #[serde(default)]
-    pub url: Option<String>,
-    /// Device strategy: "mobile" (default) or "desktop"
-    #[serde(default = "default_lighthouse_strategy")]
-    pub strategy: String,
-    #[serde(default = "default_lighthouse_perf")]
-    pub min_performance: u8,
-    #[serde(default = "default_lighthouse_a11y")]
-    pub min_accessibility: u8,
-    #[serde(default = "default_lighthouse_bp")]
-    pub min_best_practices: u8,
-    #[serde(default = "default_lighthouse_seo")]
-    pub min_seo: u8,
-    /// Google PageSpeed Insights API key (optional; can also set PAGESPEED_API_KEY env var)
-    #[serde(default)]
-    pub api_key: Option<String>,
-}
-
-impl Default for LighthouseConfig {
-    fn default() -> Self {
-        Self {
-            url: None,
-            strategy: default_lighthouse_strategy(),
-            min_performance: default_lighthouse_perf(),
-            min_accessibility: default_lighthouse_a11y(),
-            min_best_practices: default_lighthouse_bp(),
-            min_seo: default_lighthouse_seo(),
-            api_key: None,
-        }
-    }
-}
-
-// ── Reassure config ───────────────────────────────────────────────────────────
-
-#[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct ReassureConfig {
-    /// Path to Reassure current.perf file
-    #[serde(default = "default_reassure_current")]
-    pub current: String,
-    /// Path to Reassure baseline.perf file (optional)
-    #[serde(default = "default_reassure_baseline")]
-    pub baseline: String,
-    /// Percentage mean-time increase allowed before flagging a regression
-    #[serde(default = "default_reassure_threshold")]
-    pub threshold: f64,
-}
-
-impl Default for ReassureConfig {
-    fn default() -> Self {
-        Self {
-            current: default_reassure_current(),
-            baseline: default_reassure_baseline(),
-            threshold: default_reassure_threshold(),
-        }
-    }
-}
-
 // ── Default value fns ─────────────────────────────────────────────────────────
 
 fn default_entropy_enabled() -> bool {
@@ -263,30 +361,6 @@ fn default_lcov_file() -> String {
 }
 fn default_target_dir() -> String {
     ".".to_string()
-}
-fn default_lighthouse_strategy() -> String {
-    "mobile".to_string()
-}
-fn default_lighthouse_perf() -> u8 {
-    80
-}
-fn default_lighthouse_a11y() -> u8 {
-    90
-}
-fn default_lighthouse_bp() -> u8 {
-    80
-}
-fn default_lighthouse_seo() -> u8 {
-    80
-}
-fn default_reassure_current() -> String {
-    "output/current.perf".to_string()
-}
-fn default_reassure_baseline() -> String {
-    "output/baseline.perf".to_string()
-}
-fn default_reassure_threshold() -> f64 {
-    15.0
 }
 
 // ── Docker config ─────────────────────────────────────────────────────────────
@@ -347,6 +421,11 @@ pub struct PipelineConfig {
     /// Each entry is a command string, e.g. "scan", "coverage --min 80".
     #[serde(default)]
     pub steps: Vec<String>,
+    /// Stop at the first step that does not pass. By default every step runs
+    /// and the run reports the worst result, so one failing gate does not
+    /// hide what the others would have found.
+    #[serde(default)]
+    pub fail_fast: bool,
 }
 
 // ── Supply chain config ───────────────────────────────────────────────────────
@@ -394,6 +473,135 @@ pub struct SupplyChainConfig {
     /// Empty (default) disables the confusion check.
     #[serde(default)]
     pub internal_packages: Vec<String>,
+    /// Release-risk policy for packages a change introduces or upgrades
+    /// (`greengate deps check`), under `[supply_chain.release]`.
+    #[serde(default)]
+    pub release: ReleasePolicy,
+    /// Packages that must come from a specific registry, as
+    /// `[[supply_chain.registries]]` entries.
+    #[serde(default)]
+    pub registries: Vec<RegistryRule>,
+    /// Policy for dependencies that do not come from a registry, under
+    /// `[supply_chain.sources]`.
+    #[serde(default)]
+    pub sources: SourcePolicy,
+    /// `greengate install`: fail (incomplete) instead of running install
+    /// scripts unisolated when no sandbox is available.
+    #[serde(default)]
+    pub require_isolation: bool,
+    /// Packages whose install scripts may use the network inside the
+    /// sandbox (e.g. ones that download a prebuilt binary).
+    #[serde(default)]
+    pub script_network: Vec<String>,
+    /// Extra environment variables for install scripts, by name or
+    /// `PREFIX_*`, passed as they are. Scripts otherwise see only an
+    /// allowlist (`PATH`, compilers, proxies, package-manager settings…)
+    /// without anything that looks like a credential, and kept URLs without
+    /// their `user:password@`.
+    #[serde(default)]
+    pub env_allow: Vec<String>,
+}
+
+/// How a policy signal is enforced.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    Off,
+    /// Reported, never fails the gate.
+    Warn,
+    /// A finding: fails the gate.
+    Fail,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ReleasePolicy {
+    /// Releases younger than this many hours are "too new" (cooldown).
+    #[serde(default = "default_min_release_age_hours")]
+    pub min_release_age_hours: u64,
+    #[serde(default = "level_warn")]
+    pub young_release: Level,
+    /// The release runs install code its predecessor did not.
+    #[serde(default = "level_fail")]
+    pub new_install_script: Level,
+    /// The predecessor had publish provenance; this release does not.
+    #[serde(default = "level_fail")]
+    pub provenance_regression: Level,
+    /// The release was published by an account that never published an
+    /// earlier version of the package.
+    #[serde(default = "level_warn")]
+    pub publisher_change: Level,
+    /// The release is yanked or deprecated.
+    #[serde(default = "level_warn")]
+    pub withdrawn: Level,
+    /// The lockfile records no integrity hash for a registry package (only
+    /// for formats that normally record one).
+    #[serde(default = "level_warn")]
+    pub missing_integrity: Level,
+}
+
+impl Default for ReleasePolicy {
+    fn default() -> Self {
+        Self {
+            min_release_age_hours: default_min_release_age_hours(),
+            young_release: Level::Warn,
+            new_install_script: Level::Fail,
+            provenance_regression: Level::Fail,
+            publisher_change: Level::Warn,
+            withdrawn: Level::Warn,
+            missing_integrity: Level::Warn,
+        }
+    }
+}
+
+fn default_min_release_age_hours() -> u64 {
+    24
+}
+fn level_warn() -> Level {
+    Level::Warn
+}
+fn level_fail() -> Level {
+    Level::Fail
+}
+fn level_off() -> Level {
+    Level::Off
+}
+
+/// Packages matching `pattern` must resolve from `url`.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryRule {
+    /// Exact name, npm scope (`@acme`, `@acme/*`), or `prefix-*`.
+    pub pattern: String,
+    pub url: String,
+    /// Restrict the rule to these ecosystems (`npm`, `PyPI`, `crates.io`);
+    /// empty means all.
+    #[serde(default)]
+    pub ecosystems: Vec<String>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct SourcePolicy {
+    /// Git dependencies not pinned to a full commit hash.
+    #[serde(default = "level_warn")]
+    pub git: Level,
+    /// Tarball / archive URL dependencies.
+    #[serde(default = "level_warn")]
+    pub url: Level,
+    /// Local path dependencies outside the workspace.
+    #[serde(default = "level_off")]
+    pub path: Level,
+}
+
+impl Default for SourcePolicy {
+    fn default() -> Self {
+        Self {
+            git: Level::Warn,
+            url: Level::Warn,
+            path: Level::Off,
+        }
+    }
 }
 
 impl Default for SupplyChainConfig {
@@ -408,6 +616,12 @@ impl Default for SupplyChainConfig {
             slopsquat_min_age_days: default_slopsquat_min_age_days(),
             slopsquat_min_downloads: default_slopsquat_min_downloads(),
             internal_packages: Vec::new(),
+            release: ReleasePolicy::default(),
+            registries: Vec::new(),
+            sources: SourcePolicy::default(),
+            require_isolation: false,
+            script_network: Vec::new(),
+            env_allow: Vec::new(),
         }
     }
 }
@@ -610,8 +824,19 @@ fn default_triage_context_lines() -> usize {
 /// # Errors
 /// Returns an error if `.greengate.toml` exists but cannot be read or parsed.
 /// A *missing* file is not an error — it yields the defaults.
+/// Marks a configuration error so `main` can exit with the usage-error code.
+/// Holds the file at fault.
+#[derive(Debug)]
+pub struct ConfigError(pub &'static str);
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid {}", self.0)
+    }
+}
+
 pub fn load() -> Result<Config> {
-    load_inner(true)
+    load_inner(true).context(ConfigError(".greengate.toml"))
 }
 
 /// Like [`load`] but suppresses the "Loaded config" info message.
@@ -621,7 +846,7 @@ pub fn load() -> Result<Config> {
 /// # Errors
 /// As [`load`].
 pub fn load_silent() -> Result<Config> {
-    load_inner(false)
+    load_inner(false).context(ConfigError(".greengate.toml"))
 }
 
 fn load_inner(verbose: bool) -> Result<Config> {
@@ -638,11 +863,21 @@ fn load_inner(verbose: bool) -> Result<Config> {
     // setting that is quietly off.
     let content = std::fs::read_to_string(path)
         .context("failed to read .greengate.toml (it exists but could not be opened)")?;
-    let cfg = toml::from_str(&content).context(
+    let cfg: Config = toml::from_str(&content).context(
         "failed to parse .greengate.toml — fix the file, or run `greengate check-config` for detail",
     )?;
     if verbose {
         eprintln!("ℹ️  Loaded config from .greengate.toml");
+        for (section, there) in [
+            ("lighthouse", cfg.removed_lighthouse.is_some()),
+            ("reassure", cfg.removed_reassure.is_some()),
+        ] {
+            if there {
+                crate::utils::terminal::warn(&format!(
+                    "[{section}] in .greengate.toml is ignored: the {section} gate was removed in greengate 0.4. Remove the section."
+                ));
+            }
+        }
     }
     Ok(cfg)
 }
@@ -664,6 +899,26 @@ pub enum Profile {
 pub fn apply_profile(cfg: &mut Config, profile: Profile) {
     match profile {
         Profile::Strict => {
+            // Supply chain: warn-level release and source signals fail. A
+            // signal switched off stays off — that was a deliberate choice.
+            let r = &mut cfg.supply_chain.release;
+            let s = &mut cfg.supply_chain.sources;
+            for level in [
+                &mut r.young_release,
+                &mut r.withdrawn,
+                &mut r.missing_integrity,
+                &mut s.git,
+                &mut s.url,
+            ] {
+                if *level == Level::Warn {
+                    *level = Level::Fail;
+                }
+            }
+            // Dependency review: every new advisory, and unknown licenses.
+            cfg.dependency_review.fail_on_severity = SeverityThreshold::Low;
+            if cfg.dependency_review.unknown_license == Level::Warn {
+                cfg.dependency_review.unknown_license = Level::Fail;
+            }
             // Raise coverage threshold to 90 % if not already higher
             if cfg.coverage.min < 90.0 {
                 cfg.coverage.min = 90.0;
@@ -678,13 +933,6 @@ pub fn apply_profile(cfg: &mut Config, profile: Profile) {
             }
             // Ensure SAST is on
             cfg.sast.enabled = true;
-            // Stricter Lighthouse scores
-            if cfg.lighthouse.min_performance < 90 {
-                cfg.lighthouse.min_performance = 90;
-            }
-            if cfg.lighthouse.min_accessibility < 95 {
-                cfg.lighthouse.min_accessibility = 95;
-            }
         }
         Profile::Relaxed => {
             // Lower coverage threshold to 70 % if not already lower

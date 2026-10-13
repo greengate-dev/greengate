@@ -1,81 +1,68 @@
 ---
-title: 'Secret Detection Patterns — GreenGate'
-description: 'All 26 built-in hardcoded secret and credential patterns in GreenGate: AWS access keys, Azure connection strings, GCP service accounts, Stripe, GitHub PATs, Twilio, and more. Plus Shannon entropy scanning.'
+title: 'Secret and PII patterns'
+description: 'The built-in credential and PII patterns in the 0.4.0 scanner, plus entropy checks and custom patterns.'
 ---
 
-# Secret Detection Patterns
+# Secret and PII patterns
 
-greengate ships with 26 built-in regex patterns covering the most common cloud providers, SaaS platforms, and API services. All patterns are applied only to string literals (not comments or JSX text) when scanning JS/TS files.
+greengate has 25 built-in regex patterns, plus configurable entropy detection. Some patterns match identifiers or credential-file markers rather than secret values. Findings require context; a match does not prove that a credential is active.
+
+With SAST enabled, supported JS/TS, Python, Go, and Rust files use string-literal scoping. Other text files use line-based scanning. Known example credentials and common entropy noise are filtered.
 
 ## Built-in patterns
 
-| Pattern name | What it detects |
+| Reported name | Match |
 |---|---|
-| AWS Access Key | `AKIA...` access key IDs |
-| AWS Secret Key | 40-character AWS secret access keys |
-| AWS Session Token | Temporary STS session tokens |
-| Azure Client Secret | Azure AD application secrets |
-| Azure Storage Key | Azure storage account keys |
-| GCP API Key | Google Cloud `AIza...` API keys |
-| GCP Service Account JSON | Embedded service account credential blocks |
-| DigitalOcean Personal Access Token | `dop_v1_...` tokens |
-| Alibaba Cloud Access Key | `LTAI...` access key IDs |
-| GitHub Personal Access Token | `ghp_...`, `github_pat_...` |
-| GitHub OAuth Token | `gho_...` |
-| GitHub App Token | `ghs_...`, `ghr_...` |
-| Stripe Secret Key | `sk_live_...`, `sk_test_...` |
-| Stripe Publishable Key | `pk_live_...`, `pk_test_...` |
-| Twilio Account SID | `AC...` SIDs |
-| Twilio Auth Token | 32-hex Twilio auth tokens |
-| Expo Access Token | `expo_...` tokens |
-| Sentry Auth Token | `sntrys_...` tokens |
-| Mapbox Token | `pk.eyJ1...` tokens |
-| Slack Bot Token | `xoxb-...` |
-| Slack User Token | `xoxp-...` |
-| Generic API Key | High-entropy values assigned to keys named `api_key`, `apikey`, `api-key` |
-| Generic Secret | High-entropy values assigned to keys named `secret`, `password`, `passwd`, `pwd` |
-| Private Key | `-----BEGIN ... PRIVATE KEY-----` blocks |
-| Email Address (PII) | RFC 5322-compliant email addresses |
-| IPv4 Address (PII) | Private-range IPv4 addresses in sensitive contexts |
+| AWS Access Key | `AKIA` access-key identifiers |
+| AWS Secret Key | `aws_secret_access_key` assignments |
+| Azure Storage Connection String | Connection strings containing `AccountKey` |
+| Azure SAS Token | SAS URL parameters containing a signature |
+| Google API Key | `AIza` API keys |
+| GCP Service Account Key | JSON containing the `service_account` type marker |
+| GCP OAuth2 Token | `ya29.` access tokens |
+| DigitalOcean PAT | `dop_v1_` tokens |
+| Alibaba Cloud Access Key ID | `LTAI` identifiers |
+| GitHub PAT (classic) | `ghp_` tokens |
+| GitHub PAT (fine-grained) | `github_pat_` tokens |
+| Slack Webhook | Slack incoming-webhook URLs |
+| Stripe Secret Key | `sk_live_` keys |
+| Stripe Publishable Key | `pk_live_` identifiers; these may intentionally be public |
+| SendGrid API Key | `SG.` API keys |
+| Mailgun API Key | `key-` API keys |
+| Twilio Account SID | `AC` account identifiers |
+| HashiCorp Vault Token | `hvs.` service tokens |
+| Expo Access Token | `expa_` tokens |
+| Sentry DSN | Supported Sentry ingest URLs |
+| Mapbox Secret Token | `sk.eyJ` secret tokens |
+| PEM Private Key | Supported private-key headers |
+| JWT Token | Three-part tokens matching the supported shape |
+| Generic PII (SSN) | US-style Social Security number shapes |
+| Generic PII (Email) | Email-like addresses |
 
-## Adding custom patterns
+The names above match the current code's report identifiers. The patterns are format-specific, not comprehensive provider credential inventories or full email-address validation.
+
+## Custom patterns
 
 ```toml
-# .greengate.toml
 [scan]
 extra_patterns = [
   { name = "Internal Service Token", regex = "svc_[a-z0-9]{40}" },
-  { name = "Legacy API Key", regex = "legacy_[A-Za-z0-9]{32}" },
 ]
 ```
 
-Custom patterns are applied in addition to the built-ins (not instead of them).
+Custom patterns supplement the built-ins and use the same scanning scope.
 
-## Shannon entropy detection
-
-Enable entropy-based detection to catch unrecognized high-entropy tokens (API keys, bearer tokens, random secrets) not covered by named patterns:
+## Entropy detection
 
 ```toml
 [scan]
 entropy = true
-entropy_threshold = 4.5    # bits per character — lower = more sensitive
-entropy_min_length = 20    # ignore tokens shorter than this
+entropy_threshold = 4.5
+entropy_min_length = 20
 ```
 
-## Excluding paths
+Entropy is a heuristic for unrecognized high-entropy tokens. Raising the threshold reduces sensitivity; lowering it can increase false positives. It cannot identify every secret or distinguish all credentials from hashes and data.
 
-```toml
-[scan]
-exclude_patterns = [
-  "tests/**",
-  "*.test.ts",
-  "fixtures/**",
-  "vendor/**",
-]
-```
+## Exclusions and suppressions
 
-## Suppressing individual findings
-
-```ts
-const key = "AKIAIOSFODNN7EXAMPLE123"; // greengate: ignore
-```
+Use `[scan] exclude_patterns` for paths that should not be scanned. A `greengate: ignore` comment or an expiring exception can suppress a reviewed finding while keeping it visible in the shared report. See [baselines and exceptions](/guide/baselines-and-exceptions).

@@ -1,3 +1,4 @@
+use crate::report::{Finding, Report, Severity};
 use crate::utils::terminal;
 use anyhow::Result;
 use std::path::Path;
@@ -9,7 +10,7 @@ struct LintIssue {
     detail: String,
 }
 
-pub fn run_docker_lint(dockerfile_path: &str) -> Result<()> {
+pub fn run_docker_lint(dockerfile_path: &str) -> Result<Report> {
     terminal::info(&format!("Linting Dockerfile '{}'...", dockerfile_path));
 
     let content = match std::fs::read_to_string(dockerfile_path) {
@@ -18,10 +19,15 @@ pub fn run_docker_lint(dockerfile_path: &str) -> Result<()> {
     };
 
     let issues = check_dockerfile(Path::new(dockerfile_path), &content);
+    let mut report = Report::new("docker-lint");
+    report.findings = issues
+        .iter()
+        .map(|i| Finding::in_file(i.rule, Severity::Medium, &i.file, i.line, &i.detail))
+        .collect();
 
     if issues.is_empty() {
         terminal::success("Dockerfile passed all lint checks.");
-        return Ok(());
+        return Ok(report);
     }
 
     terminal::warn(&format!("Found {} issue(s):", issues.len()));
@@ -36,7 +42,8 @@ pub fn run_docker_lint(dockerfile_path: &str) -> Result<()> {
         }
     }
 
-    anyhow::bail!("Docker lint failed: {} issue(s) found.", issues.len());
+    eprintln!("Docker lint failed: {} issue(s) found.", issues.len());
+    Ok(report)
 }
 
 // ── Checks ────────────────────────────────────────────────────────────────────

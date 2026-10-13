@@ -17,6 +17,7 @@
 //! Any new executable that appears in the Python scripts directory (e.g.
 //! `~/.local/bin`, `venv/bin`) between the before/after snapshots is flagged.
 
+use crate::report::{Check, Finding, Report, Severity};
 use crate::utils::terminal;
 use anyhow::Result;
 use std::collections::HashSet;
@@ -149,15 +150,18 @@ const PY_SIGNALS: &[(&str, &str)] = &[
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
+pub fn run_pip_install(opts: PipInstallOpts) -> Result<Report> {
+    let install_args = install_args(&opts.args);
+    let mut report = Report::new("pip-install");
+    report.no_fail = opts.no_fail;
     terminal::info(&format!(
-        "Zero-Trust Supply Chain Gate (pip): intercepting `{} {}`",
+        "Zero-Trust Supply Chain Gate (pip): intercepting `{} install {}`",
         opts.pip,
-        opts.args.join(" ")
+        install_args.join(" ")
     ));
 
     // ── Layer 1: Typosquat pre-flight ─────────────────────────────────────────
-    let packages_to_install = extract_package_names(&opts.args);
+    let packages_to_install = extract_package_names(install_args);
     let mut typosquats: Vec<(String, String)> = Vec::new(); // (requested, closest_match)
     for pkg in &packages_to_install {
         if let Some(candidate) = check_typosquat(pkg) {
@@ -181,15 +185,26 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
         eprintln!("  Verify the exact package name at https://pypi.org before installing.");
         eprintln!();
 
-        let blocking = typosquats
-            .iter()
-            .filter(|(pkg, _)| !is_allowlisted(pkg, &opts.allow_packages))
-            .count();
-        if blocking > 0 && !opts.no_fail {
-            return Err(anyhow::anyhow!(
+        for (requested, closest) in &typosquats {
+            let finding = Finding::package(
+                "SUPPLY-CHAIN/TYPOSQUAT",
+                Severity::High,
+                "pip",
+                requested,
+                format!("suspiciously close to popular package '{closest}'"),
+            );
+            if is_allowlisted(requested, &opts.allow_packages) {
+                report.warnings.push(finding);
+            } else {
+                report.findings.push(finding);
+            }
+        }
+        if !report.findings.is_empty() && !opts.no_fail {
+            eprintln!(
                 "Zero-Trust Supply Chain Gate: {} potential typosquat(s) — halting before install.",
-                blocking
-            ));
+                report.findings.len()
+            );
+            return Ok(report);
         }
     }
 
@@ -212,12 +227,15 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
             &opts.allow_packages,
             &|_| false,
             &policy,
+            &mut report.checks,
         );
         let blocking = slopsquat::print_reports(Ecosystem::Pypi, &reports);
+        slopsquat::record(Ecosystem::Pypi, &reports, &mut report);
         if blocking > 0 && !opts.no_fail {
-            return Err(anyhow::anyhow!(
+            eprintln!(
                 "Zero-Trust Supply Chain Gate (pip): {blocking} high-suspicion slopsquat(s) — halting before install."
-            ));
+            );
+            return Ok(report);
         }
     }
 
@@ -228,10 +246,13 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
 
     // ── Run pip ───────────────────────────────────────────────────────────────
     let status = std::process::Command::new(&opts.pip) // greengate: ignore — intentionally wrapping pip to intercept the install
-        .args(&opts.args)
+        .arg("install")
+        .args(install_args)
         .status();
 
-    match &status {
+    // A failed install still gets the post-install checks below — whatever it
+    // left behind is evidence — but it can never be reported as a pass.
+    let pip_failure = match &status {
         Err(e) => {
             return Err(anyhow::anyhow!(
                 "Failed to launch `{}`: {}. Is pip installed and on PATH?",
@@ -239,14 +260,12 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
                 e
             ));
         }
-        Ok(s) if !s.success() => {
-            terminal::warn(&format!(
-                "`{}` exited with non-zero status — install may be incomplete.",
-                opts.pip
-            ));
-        }
-        _ => {}
-    }
+        Ok(s) if !s.success() => Some(format!(
+            "`{}` failed ({s}) — the install did not complete.",
+            opts.pip
+        )),
+        _ => None,
+    };
 
     // ── Layer 2: RECORD-driven static analysis ────────────────────────────────
     let post_dist_info = snapshot_dist_info_dirs(&site_packages_dirs);
@@ -325,8 +344,26 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
                     t.max_entropy
                 );
             }
-            if !allowed {
+            let finding = Finding::package(
+                "SUPPLY-CHAIN/SCRIPT_THREAT",
+                Severity::High,
+                "pip",
+                &t.package,
+                format!(
+                    "{}: {}",
+                    t.file.display(),
+                    if t.signals.is_empty() {
+                        format!("entropy {:.2}", t.max_entropy)
+                    } else {
+                        t.signals.join(", ")
+                    }
+                ),
+            );
+            if allowed {
+                report.warnings.push(finding);
+            } else {
                 any_blocking = true;
+                report.findings.push(finding);
             }
         }
         eprintln!();
@@ -345,24 +382,40 @@ pub fn run_pip_install(opts: PipInstallOpts) -> Result<()> {
         for exe in &new_executables {
             eprintln!("  [EXEC_DROP] {}", exe.display());
             any_blocking = true;
+            report.findings.push(Finding::in_file(
+                "SUPPLY-CHAIN/EXEC_DROP",
+                Severity::High,
+                exe,
+                0,
+                "new executable dropped into the scripts directory",
+            ));
         }
         eprintln!();
     }
 
     if any_blocking && !opts.no_fail {
-        return Err(anyhow::anyhow!(
-            "Zero-Trust Supply Chain Gate (pip): blocking finding(s) detected — halting."
-        ));
+        eprintln!("Zero-Trust Supply Chain Gate (pip): blocking finding(s) detected — halting.");
     }
 
-    if script_threats.is_empty() && new_executables.is_empty() && typosquats.is_empty() {
+    if let Some(failure) = pip_failure {
+        eprintln!("{failure}");
+        report.checks.push(Check::error("pip", failure));
+        return Ok(report);
+    }
+
+    if script_threats.is_empty()
+        && new_executables.is_empty()
+        && typosquats.is_empty()
+        && report.unfinished().next().is_none()
+    {
         terminal::success(
             "Zero-Trust Supply Chain Gate (pip): clean — no typosquats, suspicious scripts, \
              or unexpected executables detected.",
         );
     }
 
-    Ok(())
+    report.print_unfinished();
+    Ok(report)
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -376,8 +429,106 @@ struct PipThreat {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Extract plain package names from pip args (skip flags and version specs).
-fn extract_package_names(args: &[String]) -> Vec<String> {
+/// The arguments to pass after `pip install`. The command takes them without
+/// the subcommand (`greengate pip-install requests`), but a leading `install`
+/// is tolerated so it is neither sent twice nor checked as a package name.
+fn install_args(args: &[String]) -> &[String] {
+    match args.split_first() {
+        Some((first, rest)) if first == "install" => rest,
+        _ => args,
+    }
+}
+
+/// Options of `pip install` and `uv add` that take a separate value, which
+/// is never a package name.
+const OPTIONS_WITH_VALUE: &[&str] = &[
+    // pip install
+    "-r",
+    "--requirement",
+    "-c",
+    "--constraint",
+    "-e",
+    "--editable",
+    "-t",
+    "--target",
+    "-d",
+    "--dest",
+    "-i",
+    "--index-url",
+    "--extra-index-url",
+    "-f",
+    "--find-links",
+    "--trusted-host",
+    "--platform",
+    "--python-version",
+    "--implementation",
+    "--abi",
+    "--root",
+    "--prefix",
+    "--src",
+    "--upgrade-strategy",
+    "-C",
+    "--config-settings",
+    "--global-option",
+    "--no-binary",
+    "--only-binary",
+    "--progress-bar",
+    "--log",
+    "--proxy",
+    "--retries",
+    "--timeout",
+    "--exists-action",
+    "--cert",
+    "--client-cert",
+    "--cache-dir",
+    "--report",
+    "--python",
+    "--keyring-provider",
+    "--root-user-action",
+    "--use-feature",
+    "--use-deprecated",
+    "--group",
+    // uv add
+    "--index",
+    "--default-index",
+    "--optional",
+    "--extra",
+    "--rev",
+    "--tag",
+    "--branch",
+    "--package",
+    "--project",
+    "--directory",
+    "--marker",
+    "-m",
+    "-p",
+    "-P",
+    "--upgrade-package",
+    "--reinstall-package",
+    "--refresh-package",
+    "--no-build-isolation-package",
+    "--script",
+];
+
+/// Whether a requirement argument names its source instead of a registry
+/// package: a URL or direct reference (`name @ https://…`), a VCS URL, a
+/// local path or archive.
+fn is_direct_source(arg: &str) -> bool {
+    arg.contains("://")
+        || ["git+", "hg+", "svn+", "bzr+"]
+            .iter()
+            .any(|p| arg.starts_with(p))
+        || arg.starts_with(['.', '/', '~'])
+        || arg.contains(['/', '\\'])
+        || [".whl", ".tar.gz", ".zip", ".tar.bz2", ".tgz"]
+            .iter()
+            .any(|e| arg.ends_with(e))
+}
+
+/// Package names given on a pip / uv command line, for the name guard:
+/// options and their values, URLs, paths and archives skipped, version
+/// specifiers and extras stripped.
+pub(crate) fn extract_package_names(args: &[String]) -> Vec<String> {
     let mut names = Vec::new();
     let mut skip_next = false;
     for arg in args {
@@ -385,30 +536,16 @@ fn extract_package_names(args: &[String]) -> Vec<String> {
             skip_next = false;
             continue;
         }
-        // Skip flags that take a value
-        if matches!(
-            arg.as_str(),
-            "-r" | "--requirement"
-                | "-t"
-                | "--target"
-                | "-d"
-                | "--dest"
-                | "--index-url"
-                | "-i"
-                | "--extra-index-url"
-                | "--trusted-host"
-                | "--constraint"
-                | "-c"
-        ) {
+        if OPTIONS_WITH_VALUE.contains(&arg.as_str()) {
             skip_next = true;
             continue;
         }
-        if arg.starts_with('-') {
+        if arg.starts_with('-') || is_direct_source(arg) {
             continue;
         }
         // Strip version specifiers: requests>=2.0 → requests
         let name = arg
-            .split(&['>', '<', '=', '!', '[', ';', '@'][..])
+            .split(&['>', '<', '=', '!', '~', '[', ';', '@'][..])
             .next()
             .unwrap_or(arg)
             .trim()
@@ -545,7 +682,7 @@ fn snapshot_scripts_dir(site_packages: &[PathBuf]) -> HashSet<PathBuf> {
     set
 }
 
-fn scan_python_signals(source: &str) -> Vec<String> {
+pub(crate) fn scan_python_signals(source: &str) -> Vec<String> {
     PY_SIGNALS
         .iter()
         .filter(|(_, needle)| source.contains(needle))
@@ -659,6 +796,21 @@ mod tests {
     }
 
     #[test]
+    fn install_args_drops_a_leading_install_only() {
+        let to_vec = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(install_args(&to_vec(&["requests"])), to_vec(&["requests"]));
+        assert_eq!(
+            install_args(&to_vec(&["install", "requests"])),
+            to_vec(&["requests"])
+        );
+        // A package literally named `install` later in the list is kept.
+        assert_eq!(
+            install_args(&to_vec(&["-U", "install"])),
+            to_vec(&["-U", "install"])
+        );
+    }
+
+    #[test]
     fn extract_names_skips_flags() {
         let args: Vec<String> = ["-r", "requirements.txt", "--upgrade", "flask"]
             .iter()
@@ -666,6 +818,29 @@ mod tests {
             .collect();
         let names = extract_package_names(&args);
         assert_eq!(names, vec!["flask"]);
+    }
+
+    #[test]
+    fn extract_names_skips_sources_and_option_values() {
+        let args: Vec<String> = [
+            "--find-links",
+            "wh",
+            "-f",
+            "other",
+            "git+https://git.example/x",
+            "mine @ git+https://git.example/mine",
+            "./local",
+            "dist/pkg-1.0-py3-none-any.whl",
+            "/abs/pkg",
+            "--index",
+            "corp",
+            "requests~=2.31",
+            "Flask[async]",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(extract_package_names(&args), ["requests", "flask"]);
     }
 
     #[test]

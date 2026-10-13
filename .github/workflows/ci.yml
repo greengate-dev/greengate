@@ -234,45 +234,7 @@ jobs:
         run: |
           jq -e '.bomFormat == "CycloneDX" and .specVersion == "1.5" and (.components | length > 0)' sbom.json
 
-  # ── 4. Performance audit (Lighthouse + Reassure) ─────────────────────────────
-  perf:
-    name: Performance
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build greengate
-        run: cargo build --release
-
-      # Lighthouse — gates on PageSpeed Insights scores for a deployed URL.
-      # Set LIGHTHOUSE_URL as a repository variable (Settings → Variables) to activate.
-      # Set PAGESPEED_API_KEY as a repository secret for higher API quota.
-      - name: Lighthouse audit
-        if: ${{ vars.LIGHTHOUSE_URL != '' }}
-        env:
-          PAGESPEED_API_KEY: ${{ secrets.PAGESPEED_API_KEY }}
-        run: |
-          ./target/release/greengate lighthouse \
-            --url "${{ vars.LIGHTHOUSE_URL }}" \
-            --strategy mobile
-        continue-on-error: true   # informational until thresholds are tuned
-
-      # Reassure — gates on React component render regressions.
-      # Only runs when output/current.perf is present (produced by a prior
-      # frontend job that runs `reassure measure` and uploads the artifact).
-      - name: Reassure performance gate
-        if: hashFiles('output/current.perf') != ''
-        run: ./target/release/greengate reassure
-        continue-on-error: true   # informational until baseline is established
-
-  # ── 5. Formatting + lints ───────────────────────────────────────────────────
+  # ── 4. Formatting + lints ───────────────────────────────────────────────────
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -294,7 +256,7 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-  # ── 6. Supply chain — advisories against our own dependency tree ────────────
+  # ── 5. Supply chain — advisories against our own dependency tree ────────────
   # greengate gates other people's dependencies; it should not be exempt from
   # the same check. Without this, RUSTSEC-2026-0285 (rustls) sat in the lockfile
   # unnoticed.

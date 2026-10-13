@@ -1,149 +1,7 @@
+use crate::deps::{Ecosystem, Lockfile, Package, Scope, Source};
+use crate::report::{Check, Finding, Report, Severity};
 use anyhow::{Context, Result};
 use serde_json::json;
-
-/// A parsed package entry used for SBOM generation.
-struct SbomPackage {
-    name: String,
-    version: String,
-    #[allow(dead_code)]
-    ecosystem: &'static str,
-    purl: String,
-}
-
-// ── Lock-file parsers ─────────────────────────────────────────────────────────
-
-fn parse_cargo_lock(content: &str) -> Vec<SbomPackage> {
-    let Ok(value) = content.parse::<toml::Value>() else {
-        return Vec::new();
-    };
-    let Some(packages) = value.get("package").and_then(|p| p.as_array()) else {
-        return Vec::new();
-    };
-    packages
-        .iter()
-        .filter_map(|pkg| {
-            let name = pkg.get("name")?.as_str()?.to_string();
-            let version = pkg.get("version")?.as_str()?.to_string();
-            let purl = format!("pkg:cargo/{}@{}", name, version);
-            Some(SbomPackage {
-                name,
-                version,
-                ecosystem: "crates.io",
-                purl,
-            })
-        })
-        .collect()
-}
-
-fn parse_package_lock(content: &str) -> Vec<SbomPackage> {
-    let Ok(root) = serde_json::from_str::<serde_json::Value>(content) else {
-        return Vec::new();
-    };
-    let Some(packages) = root.get("packages").and_then(|p| p.as_object()) else {
-        return Vec::new();
-    };
-    packages
-        .iter()
-        .filter_map(|(key, val)| {
-            if key.is_empty() {
-                return None;
-            }
-            let name = key.trim_start_matches("node_modules/").to_string();
-            let version = val.get("version")?.as_str()?.to_string();
-            let purl = format!("pkg:npm/{}@{}", name, version);
-            Some(SbomPackage {
-                name,
-                version,
-                ecosystem: "npm",
-                purl,
-            })
-        })
-        .collect()
-}
-
-fn parse_requirements_txt(content: &str) -> Vec<SbomPackage> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                return None;
-            }
-            if let Some(idx) = line.find("==") {
-                let name = line[..idx].trim().to_string();
-                let version = line[idx + 2..].trim().to_string();
-                let purl = format!("pkg:pypi/{}@{}", name.to_lowercase(), version);
-                Some(SbomPackage {
-                    name,
-                    version,
-                    ecosystem: "PyPI",
-                    purl,
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn parse_go_sum(content: &str) -> Vec<SbomPackage> {
-    let mut seen = std::collections::HashSet::new();
-    content
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 2 {
-                return None;
-            }
-            let module = parts[0];
-            let ver_raw = parts[1];
-            // go.sum entries may have "/go.mod" suffix — skip those, keep the plain version
-            if ver_raw.ends_with("/go.mod") {
-                return None;
-            }
-            let version = ver_raw.trim_start_matches('v').to_string();
-            if !seen.insert(format!("{}@{}", module, version)) {
-                return None;
-            }
-            let purl = format!("pkg:golang/{}@{}", module, version);
-            Some(SbomPackage {
-                name: module.to_string(),
-                version,
-                ecosystem: "Go",
-                purl,
-            })
-        })
-        .collect()
-}
-
-// ── Lock-file detection ───────────────────────────────────────────────────────
-
-const LOCK_FILES: &[(&str, &str)] = &[
-    ("Cargo.lock", "cargo"),
-    ("package-lock.json", "npm"),
-    ("requirements.txt", "pypi"),
-    ("go.sum", "go"),
-];
-
-fn detect_and_parse() -> Result<(Vec<SbomPackage>, String)> {
-    for (filename, kind) in LOCK_FILES {
-        if std::path::Path::new(filename).exists() {
-            let content = std::fs::read_to_string(filename)
-                .with_context(|| format!("Failed to read {}", filename))?;
-            let packages = match *kind {
-                "cargo" => parse_cargo_lock(&content),
-                "npm" => parse_package_lock(&content),
-                "pypi" => parse_requirements_txt(&content),
-                "go" => parse_go_sum(&content),
-                _ => Vec::new(),
-            };
-            return Ok((packages, filename.to_string()));
-        }
-    }
-    anyhow::bail!(
-        "No supported lock file found. Supported: Cargo.lock, package-lock.json, requirements.txt, go.sum"
-    )
-}
 
 // ── Sigstore / cosign attestation ─────────────────────────────────────────────
 
@@ -212,7 +70,7 @@ pub fn run_sbom_verify(
     bundle_path: &str,
     issuer: Option<&str>,
     identity: Option<&str>,
-) -> Result<()> {
+) -> Result<Report> {
     require_cosign()?;
 
     crate::utils::terminal::info(&format!(
@@ -262,51 +120,174 @@ pub fn run_sbom_verify(
 
     let status = cmd.status().context("Failed to spawn cosign verify-blob")?;
 
+    let mut report = Report::new("sbom-verify");
     if !status.success() {
-        anyhow::bail!(
-            "SBOM attestation FAILED — the SBOM may have been tampered with or the \
-             signing identity does not match the expected policy."
+        let message = "SBOM attestation FAILED — the SBOM may have been tampered with or the \
+                       signing identity does not match the expected policy.";
+        eprintln!("{message}");
+        report.findings.push(Finding::in_file(
+            "SBOM/AttestationInvalid",
+            Severity::High,
+            sbom_path,
+            0,
+            message,
+        ));
+        return Ok(report);
+    }
+
+    // Without an expected identity, cosign accepts a valid signature from
+    // anyone: the file is intact, but who signed it was never checked.
+    if identity.is_none() {
+        report.checks.push(Check::incomplete(
+            "sbom:signer",
+            "signature is valid, but no expected signer identity is set \
+             (--certificate-identity or [sbom] expected_identity), so the signer was not checked",
+        ));
+        crate::utils::terminal::warn(
+            "Signature is valid and anchored in Rekor, but the signer identity was NOT checked.",
         );
+        report.print_unfinished();
+        return Ok(report);
     }
 
     crate::utils::terminal::success(
         "Attestation verified. Signature is valid and anchored in the Rekor transparency log.",
     );
-    Ok(())
+    Ok(report)
 }
 
 // ── CycloneDX output ──────────────────────────────────────────────────────────
 
-pub fn run_sbom(output_file: Option<&str>) -> Result<()> {
-    let (packages, source) = detect_and_parse()?;
-    crate::utils::terminal::info(&format!(
-        "Generating SBOM from {} ({} package(s))...",
-        source,
-        packages.len()
-    ));
+/// Which dependency files the SBOM covers.
+pub struct SbomOpts<'a> {
+    pub output: Option<&'a str>,
+    /// Use only this file instead of discovering every one under `.`.
+    pub lockfile: Option<&'a str>,
+    pub exclude: &'a [String],
+}
 
-    let components: Vec<_> = packages
+pub fn run_sbom(opts: SbomOpts<'_>) -> Result<()> {
+    let lockfiles = match opts.lockfile {
+        Some(path) => vec![crate::deps::load(std::path::Path::new(path))?],
+        None => {
+            let found = crate::deps::discover(std::path::Path::new("."), opts.exclude);
+            if let Some((path, err)) = found.failed.first() {
+                anyhow::bail!("could not read {}: {err}", path.display());
+            }
+            // An SBOM states what the product contains; with two lockfiles for
+            // one ecosystem, which one is installed is a guess.
+            if let Some((dir, files)) = found.ambiguous().into_iter().next() {
+                let names: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
+                anyhow::bail!(
+                    "{} has several lockfiles for one ecosystem ({}). Choose one with --lockfile, \
+                     or exclude the others with [deps] exclude_patterns.",
+                    dir.display(),
+                    names.join(", ")
+                );
+            }
+            found.lockfiles
+        }
+    };
+    anyhow::ensure!(
+        !lockfiles.is_empty(),
+        "No supported dependency files found. Supported: package-lock.json, npm-shrinkwrap.json, \
+         yarn.lock, pnpm-lock.yaml, bun.lock, Cargo.lock, uv.lock, poetry.lock, pylock.toml, \
+         requirements.txt, go.mod, go.sum"
+    );
+    for lock in &lockfiles {
+        for u in &lock.unresolved {
+            crate::utils::terminal::warn(&format!(
+                "{}: not in the SBOM — {u}",
+                lock.path.display()
+            ));
+        }
+    }
+
+    let sbom = cyclonedx(&lockfiles, now_secs());
+    let components = sbom["components"].as_array().map_or(0, Vec::len);
+    let sources: Vec<String> = lockfiles
         .iter()
-        .map(|p| {
-            json!({
-                "type": "library",
-                "name": p.name,
-                "version": p.version,
-                "purl": p.purl,
-                "scope": "required"
-            })
-        })
+        .map(|l| l.path.display().to_string())
         .collect();
+    crate::utils::terminal::info(&format!(
+        "Generating SBOM from {} ({components} component(s))...",
+        sources.join(", ")
+    ));
+    let json_str = serde_json::to_string_pretty(&sbom)?;
 
-    let now = std::time::SystemTime::now()
+    if let Some(path) = opts.output {
+        std::fs::write(path, &json_str)
+            .with_context(|| format!("Failed to write SBOM to {}", path))?;
+        crate::utils::terminal::success(&format!(
+            "SBOM written to {} ({components} components, CycloneDX 1.5).",
+            path
+        ));
+    } else {
+        println!("{}", json_str);
+    }
+
+    Ok(())
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
+        .as_secs()
+}
 
-    let sbom = json!({
+/// A CycloneDX 1.5 BOM for `lockfiles`: one component per distinct package
+/// URL, the dependency graph, scopes and hashes as the lockfiles record them.
+fn cyclonedx(lockfiles: &[Lockfile], now: u64) -> serde_json::Value {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut components: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    let mut depends: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut root_depends: BTreeSet<String> = BTreeSet::new();
+
+    for lock in lockfiles {
+        let refs: Vec<Option<String>> = lock
+            .packages
+            .iter()
+            .map(|p| (!p.member).then(|| purl(lock.ecosystem, p)))
+            .collect();
+        for (i, p) in lock.packages.iter().enumerate() {
+            let Some(r) = &refs[i] else { continue };
+            components
+                .entry(r.clone())
+                .or_insert_with(|| component(r, p));
+            let entry = depends.entry(r.clone()).or_default();
+            for (t, _) in &lock.edges[i] {
+                if let Some(Some(tr)) = refs.get(*t) {
+                    entry.insert(tr.clone());
+                }
+            }
+        }
+        for i in lock.direct() {
+            if let Some(Some(r)) = refs.get(i) {
+                root_depends.insert(r.clone());
+            }
+        }
+    }
+
+    let root_name = std::env::current_dir()
+        .ok()
+        .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "project".to_string());
+    let mut dependencies = vec![json!({
+        "ref": "root",
+        "dependsOn": root_depends,
+    })];
+    dependencies.extend(
+        depends
+            .into_iter()
+            .map(|(r, on)| json!({ "ref": r, "dependsOn": on })),
+    );
+
+    json!({
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
-        "serialNumber": format!("urn:uuid:greengate-{}", now),
+        "serialNumber": format!("urn:uuid:{}", uuid_v4()),
         "version": 1,
         "metadata": {
             "timestamp": format_timestamp(now),
@@ -314,26 +295,155 @@ pub fn run_sbom(output_file: Option<&str>) -> Result<()> {
                 "vendor": "greengate-dev",
                 "name": "greengate",
                 "version": env!("CARGO_PKG_VERSION")
-            }]
+            }],
+            "component": { "type": "application", "bom-ref": "root", "name": root_name }
         },
-        "components": components
+        "components": components.into_values().collect::<Vec<_>>(),
+        "dependencies": dependencies,
+    })
+}
+
+fn component(bom_ref: &str, p: &Package) -> serde_json::Value {
+    let mut c = json!({
+        "type": "library",
+        "bom-ref": bom_ref,
+        "name": p.name,
+        "purl": bom_ref,
     });
-
-    let json_str = serde_json::to_string_pretty(&sbom)?;
-
-    if let Some(path) = output_file {
-        std::fs::write(path, &json_str)
-            .with_context(|| format!("Failed to write SBOM to {}", path))?;
-        crate::utils::terminal::success(&format!(
-            "SBOM written to {} ({} components, CycloneDX 1.5).",
-            path,
-            packages.len()
-        ));
-    } else {
-        println!("{}", json_str);
+    if !p.version.is_empty() {
+        c["version"] = json!(p.version);
     }
+    let scope = match p.scope {
+        Scope::Prod => Some("required"),
+        Scope::Optional => Some("optional"),
+        // Development-only: not part of what ships.
+        Scope::Dev => Some("excluded"),
+        Scope::Unknown => None,
+    };
+    if let Some(scope) = scope {
+        c["scope"] = json!(scope);
+    }
+    if let Some(hash) = p.integrity.as_deref().and_then(cyclonedx_hash) {
+        c["hashes"] = json!([hash]);
+    }
+    c
+}
 
-    Ok(())
+/// Percent-encode everything outside the purl-safe set.
+fn pct(s: &str, keep_slash: bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric()
+            || matches!(b, b'.' | b'-' | b'_' | b'~')
+            || (keep_slash && b == b'/')
+        {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Package URL (https://github.com/package-url/purl-spec), with a qualifier
+/// naming where the package came from when that is not the default registry.
+fn purl(eco: Ecosystem, p: &Package) -> String {
+    let name = match eco {
+        // `@scope/name`: the scope is the namespace, its `@` encoded.
+        Ecosystem::Npm => pct(&p.name, true),
+        Ecosystem::PyPI => pct(&crate::deps::normalize_python(&p.name), false),
+        Ecosystem::Go => pct(&p.name, true),
+        Ecosystem::Cargo => pct(&p.name, false),
+    };
+    let mut out = format!("pkg:{}/{name}", eco.purl_type());
+    if !p.version.is_empty() {
+        out.push('@');
+        out.push_str(&pct(&p.version, false));
+    }
+    let qualifier = match &p.source {
+        Source::Registry { url: Some(u) } => Some(("repository_url", u.clone())),
+        Source::Git { url, rev } => Some((
+            "vcs_url",
+            match rev {
+                Some(r) => format!("{url}@{r}"),
+                None => url.clone(),
+            },
+        )),
+        Source::Url { url } => Some(("download_url", url.clone())),
+        _ => None,
+    };
+    if let Some((key, value)) = qualifier {
+        out.push_str(&format!("?{key}={}", pct(&value, false)));
+    }
+    out
+}
+
+/// A CycloneDX hash from a lockfile integrity value: SRI (`sha512-<base64>`)
+/// or `<alg>:<hex>`.
+fn cyclonedx_hash(integrity: &str) -> Option<serde_json::Value> {
+    let first = integrity.split_whitespace().next()?;
+    let (alg, hex) = if let Some((alg, hex)) = first.split_once(':') {
+        (alg.to_ascii_lowercase(), hex.to_ascii_lowercase())
+    } else {
+        let (alg, b64) = first.split_once('-')?;
+        let bytes = base64_decode(b64)?;
+        (
+            alg.to_ascii_lowercase(),
+            bytes.iter().map(|b| format!("{b:02x}")).collect(),
+        )
+    };
+    let alg = match alg.as_str() {
+        "sha1" => "SHA-1",
+        "sha256" => "SHA-256",
+        "sha384" => "SHA-384",
+        "sha512" => "SHA-512",
+        _ => return None,
+    };
+    Some(json!({ "alg": alg, "content": hex }))
+}
+
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0;
+    for c in input.bytes().filter(|&c| c != b'=') {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => return None,
+        };
+        buf = (buf << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// A random (version 4) UUID, as CycloneDX requires for `serialNumber`.
+/// `RandomState` is seeded from OS randomness per instance.
+fn uuid_v4() -> String {
+    use std::hash::BuildHasher;
+    let rand = |n: u64| std::collections::hash_map::RandomState::new().hash_one(n);
+    let mut b = [0u8; 16];
+    b[..8].copy_from_slice(&rand(1).to_le_bytes());
+    b[8..].copy_from_slice(&rand(2).to_le_bytes());
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
 }
 
 fn format_timestamp(unix: u64) -> String {
@@ -440,25 +550,106 @@ mod tests {
     }
 
     #[test]
-    fn parse_cargo_lock_basic() {
-        let input = r#"
-[[package]]
-name = "serde"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-"#;
-        let pkgs = parse_cargo_lock(input);
-        assert_eq!(pkgs.len(), 1);
-        assert_eq!(pkgs[0].name, "serde");
-        assert_eq!(pkgs[0].purl, "pkg:cargo/serde@1.0.0");
+    fn purls_follow_the_spec() {
+        use crate::deps::{Ecosystem, Package, Source};
+        let p = |name: &str, version: &str, source: Source| Package::new(name, version, source);
+        assert_eq!(
+            purl(
+                Ecosystem::Npm,
+                &p("@sindresorhus/is", "4.6.0", Source::registry())
+            ),
+            "pkg:npm/%40sindresorhus/is@4.6.0"
+        );
+        assert_eq!(
+            purl(
+                Ecosystem::PyPI,
+                &p("Django_Rest", "3.0+local", Source::registry())
+            ),
+            "pkg:pypi/django-rest@3.0%2Blocal"
+        );
+        assert_eq!(
+            purl(
+                Ecosystem::Go,
+                &p("github.com/gin-gonic/gin", "v1.9.0", Source::registry())
+            ),
+            "pkg:golang/github.com/gin-gonic/gin@v1.9.0"
+        );
+        assert_eq!(
+            purl(
+                Ecosystem::Npm,
+                &p(
+                    "x",
+                    "1.0.0",
+                    Source::Registry {
+                        url: Some("https://npm.acme.dev/".into())
+                    }
+                )
+            ),
+            "pkg:npm/x@1.0.0?repository_url=https%3A%2F%2Fnpm.acme.dev%2F"
+        );
     }
 
     #[test]
-    fn parse_requirements_txt_basic() {
-        let input = "requests==2.31.0\nflask==3.0.0\n# comment\n";
-        let pkgs = parse_requirements_txt(input);
-        assert_eq!(pkgs.len(), 2);
-        assert_eq!(pkgs[0].purl, "pkg:pypi/requests@2.31.0");
-        assert_eq!(pkgs[1].purl, "pkg:pypi/flask@3.0.0");
+    fn integrity_values_become_cyclonedx_hashes() {
+        // sha512 of the empty string, SRI-encoded.
+        let sri = "sha512-z4PhNX7vuL3xVChQ1m2AB9Yg5AULVxXcg/SpIdNs6c5H0NE8XYXysP+DGNKHfuwvY7kxvUdBeoGlODJ6+SfaPg==";
+        let h = cyclonedx_hash(sri).unwrap();
+        assert_eq!(h["alg"], "SHA-512");
+        assert!(
+            h["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("cf83e1357eefb8bd")
+        );
+        let h = cyclonedx_hash("sha256:ABCDEF").unwrap();
+        assert_eq!(
+            (h["alg"].as_str(), h["content"].as_str()),
+            (Some("SHA-256"), Some("abcdef"))
+        );
+        assert!(cyclonedx_hash("md5-xyz").is_none());
+    }
+
+    #[test]
+    fn serial_number_is_a_v4_uuid() {
+        let u = uuid_v4();
+        let parts: Vec<&str> = u.split('-').collect();
+        assert_eq!(
+            parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+            [8, 4, 4, 4, 12]
+        );
+        assert!(parts[2].starts_with('4'));
+        assert!(matches!(
+            parts[3].chars().next(),
+            Some('8' | '9' | 'a' | 'b')
+        ));
+        assert_ne!(u, uuid_v4());
+    }
+
+    #[test]
+    fn bom_has_graph_scopes_and_root() {
+        let lock = crate::deps::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/deps/npm/package-lock.json"),
+        )
+        .unwrap();
+        let bom = cyclonedx(std::slice::from_ref(&lock), 0);
+        let comps = bom["components"].as_array().unwrap();
+        assert_eq!(comps.len(), 5);
+        let scope = |purl: &str| {
+            comps
+                .iter()
+                .find(|c| c["purl"] == purl)
+                .map(|c| c["scope"].clone())
+                .unwrap()
+        };
+        assert_eq!(scope("pkg:npm/is-number@7.0.0"), "excluded");
+        assert_eq!(scope("pkg:npm/ms@2.0.0"), "required");
+        let deps = bom["dependencies"].as_array().unwrap();
+        let of = |r: &str| deps.iter().find(|d| d["ref"] == r).unwrap()["dependsOn"].clone();
+        assert_eq!(
+            of("pkg:npm/debug@2.6.9"),
+            serde_json::json!(["pkg:npm/ms@2.0.0"])
+        );
+        assert_eq!(of("root").as_array().unwrap().len(), 4);
     }
 }

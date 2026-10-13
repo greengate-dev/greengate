@@ -76,8 +76,6 @@ src/
   linter.rs        — Kubernetes manifest linter
   coverage.rs      — LCOV/Cobertura coverage gate
   auditor.rs       — OSV dependency auditor
-  lighthouse.rs    — PageSpeed Insights gate
-  reassure.rs      — Reassure performance gate
 tests/             — Integration tests
 ```
 

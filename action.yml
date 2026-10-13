@@ -1,8 +1,7 @@
 name: greengate
 description: >-
-  Zero-trust DevOps security gate — scans for secrets, SAST issues,
-  vulnerable dependencies, coverage gaps, CI misconfigurations, and more
-  in one fast Rust binary. No Docker required.
+  Dependency and repository gates for CI, with vulnerability audits,
+  static scanning, dependency review, and shared reports from one Rust CLI.
 author: greengate-dev
 branding:
   icon: shield
@@ -11,7 +10,7 @@ branding:
 inputs:
   version:
     description: >-
-      greengate release tag to download, e.g. "v0.3.2".
+      greengate release tag to download, e.g. "v0.4.0".
       Use "latest" to always pull the newest release
       (pin to a specific version for reproducible CI).
     required: false
@@ -27,11 +26,40 @@ inputs:
     description: Extra arguments forwarded verbatim to `greengate run`.
     required: false
     default: ''
+  report:
+    description: >-
+      Where to write the merged report: SARIF 2.1.0 when the path ends in
+      ".sarif", otherwise greengate.report/v1 JSON. Defaults to a JSON file
+      in RUNNER_TEMP.
+    required: false
+    default: ''
+  dependency-review:
+    description: >-
+      "true" to also run `greengate deps review --annotate` on pull requests:
+      one comment summarising the dependency changes (updated in place) and a
+      check run annotating the lockfile lines. Needs `contents: read`,
+      `pull-requests: write` and `checks: write`, and a checkout with
+      history (`fetch-depth: 0`) so the merge base can be found.
+    required: false
+    default: 'false'
 
 outputs:
+  status:
+    description: >-
+      Overall result: passed, findings, incomplete or error.
+      Empty if the report could not be read.
+    value: ${{ steps.run.outputs.status }}
   findings:
-    description: Total number of findings reported across all pipeline steps.
+    description: >-
+      Total number of findings across all pipeline steps and, when enabled,
+      the dependency review.
     value: ${{ steps.run.outputs.findings }}
+  incomplete:
+    description: Number of checks that did not complete.
+    value: ${{ steps.run.outputs.incomplete }}
+  report-path:
+    description: Path of the report file written by the run.
+    value: ${{ steps.run.outputs.report-path }}
 
 runs:
   using: composite
@@ -89,12 +117,90 @@ runs:
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
+        # Inputs reach the script through the environment, never through
+        # `${{ }}` inside it, so an input carrying shell syntax stays data.
+        GG_PROFILE: ${{ inputs.profile }}
+        GG_ARGS: ${{ inputs.args }}
+        GG_REPORT: ${{ inputs.report }}
+        GG_DEPENDENCY_REVIEW: ${{ inputs.dependency-review }}
       run: |
-        set -euo pipefail
+        set -uo pipefail
+        set -f  # GG_ARGS is word-split on purpose; never glob-expand it
 
-        PROFILE_ARG=""
-        if [ -n "${{ inputs.profile }}" ]; then
-          PROFILE_ARG="--profile ${{ inputs.profile }}"
+        REPORT="${GG_REPORT:-${RUNNER_TEMP:-/tmp}/greengate-report.json}"
+        # A report left by an earlier run must not stand in for this one if
+        # greengate exits before writing (e.g. a usage error).
+        rm -f "$REPORT"
+        PROFILE_ARGS=()
+        if [ -n "$GG_PROFILE" ]; then
+          PROFILE_ARGS=(--profile "$GG_PROFILE")
         fi
 
-        greengate run $PROFILE_ARG ${{ inputs.args }}
+        # The review writes the same format as the run, so the two merge.
+        case "$REPORT" in
+          *.sarif|*.SARIF) REVIEW_REPORT="${RUNNER_TEMP:-/tmp}/greengate-deps-review.sarif" ;;
+          *)               REVIEW_REPORT="${RUNNER_TEMP:-/tmp}/greengate-deps-review.json" ;;
+        esac
+        rm -f "$REVIEW_REPORT"
+        REVIEW_CODE=0
+        if [ "$GG_DEPENDENCY_REVIEW" = "true" ] && [ -n "${GITHUB_BASE_REF:-}" ]; then
+          greengate ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} deps review --annotate \
+            --report "$REVIEW_REPORT"
+          REVIEW_CODE=$?
+        fi
+
+        # shellcheck disable=SC2086
+        greengate run ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"} --report "$REPORT" $GG_ARGS
+        CODE=$?
+        # Findings (1) outrank every other result; otherwise the higher code.
+        if [ "$CODE" -ne 1 ] && [ "$REVIEW_CODE" -ne 0 ]; then
+          if [ "$REVIEW_CODE" -eq 1 ] || [ "$REVIEW_CODE" -gt "$CODE" ]; then
+            CODE=$REVIEW_CODE
+          fi
+        fi
+
+        case "$REPORT" in
+          *.sarif|*.SARIF)
+            # One run per command; the review's run follows the pipeline's.
+            MERGE='.[0].runs += .[1].runs | .[0]'
+            FILTER_STATUS='if all(.runs[]; .invocations[0].executionSuccessful) then (if ([.runs[].results | length] | add) > 0 then "findings" else "passed" end) else "incomplete" end'
+            FILTER_FINDINGS='[.runs[].results | length] | add'
+            FILTER_INCOMPLETE='[.runs[].invocations[0].toolExecutionNotifications // [] | length] | add'
+            ;;
+          *)
+            # The review's checks under deps-review/, its findings with the
+            # pipeline's, and the worse status (findings > error > incomplete).
+            MERGE='def rank: {"passed": 0, "incomplete": 1, "error": 2, "findings": 3}[.] // 0;
+              .[0] as $p | .[1] as $r
+              | $p + {
+                  status: (if ($r.status | rank) > ($p.status | rank) then $r.status else $p.status end),
+                  checks: ($p.checks + ($r.checks | map(.id = "deps-review/" + .id))),
+                  findings: ($p.findings + $r.findings),
+                  warnings: (($p.warnings // []) + ($r.warnings // [])),
+                  suppressed: (($p.suppressed // []) + ($r.suppressed // []))
+                }'
+            FILTER_STATUS='.status'
+            FILTER_FINDINGS='.findings | length'
+            FILTER_INCOMPLETE='[.checks[] | select(.status != "passed")] | length'
+            ;;
+        esac
+        # The outputs and the report describe both commands, like the exit code.
+        if [ -f "$REPORT" ] && [ -f "$REVIEW_REPORT" ]; then
+          if command -v jq >/dev/null 2>&1 \
+            && jq -s "$MERGE" "$REPORT" "$REVIEW_REPORT" > "$REPORT.merged"; then
+            mv "$REPORT.merged" "$REPORT"
+          else
+            rm -f "$REPORT.merged"
+            echo "::warning::greengate action: could not merge the dependency review into $REPORT; see $REVIEW_REPORT"
+          fi
+        fi
+
+        echo "report-path=${REPORT}" >> "$GITHUB_OUTPUT"
+        if [ -f "$REPORT" ] && command -v jq >/dev/null 2>&1; then
+          echo "status=$(jq -r "$FILTER_STATUS" "$REPORT")" >> "$GITHUB_OUTPUT"
+          echo "findings=$(jq -r "$FILTER_FINDINGS" "$REPORT")" >> "$GITHUB_OUTPUT"
+          echo "incomplete=$(jq -r "$FILTER_INCOMPLETE" "$REPORT")" >> "$GITHUB_OUTPUT"
+        fi
+
+        # 0 passed · 1 findings · 2 usage/config error · 3 incomplete · 4 error
+        exit "$CODE"

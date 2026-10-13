@@ -1,141 +1,79 @@
 ---
-title: 'Known Limitations — GreenGate'
-description: 'Known boundaries of GreenGate: supported language coverage, taint tracking scope, what the zero-trust supply chain gate cannot detect, and Lighthouse API requirements.'
+title: 'Limitations and protection boundaries'
+description: 'Supported analysis, install-isolation boundaries, and checks that greengate 0.4.0 does not perform.'
 ---
 
 # Limitations
 
-This page documents the known boundaries of GreenGate's analysis. Understanding these limitations helps you set accurate expectations and decide where additional tooling may be warranted.
+greengate combines dependency policy, install-time controls, and static repository checks. A clean report means the checks that ran found no blocking issue; it does not prove that a dependency or application is safe.
 
----
+## Install protection
 
-## SAST — taint tracking scope
-
-GreenGate implements **Tier-1 intra-procedural taint tracking** for JS/TS. This means:
-
-### What IS covered
-
-| Scenario | Example |
+| Boundary | Current behavior |
 |---|---|
-| Direct source → sink (same statement) | `el.innerHTML = req.body.html` |
-| Single-hop variable assignment | `const x = req.body.data; el.innerHTML = x` |
-| Template literal propagation | `` const h = `<b>${x}</b>`; el.innerHTML = h `` |
-| String concatenation propagation | `const cmd = "ls " + x; exec(cmd)` |
-| Member access on tainted object | `const id = req.params.id; exec("cmd " + id)` |
-| Sanitizer-through-variable suppression | `const s = DOMPurify.sanitize(x); el.innerHTML = s` |
-| Static variable suppression | `const label = "Hello"; el.innerHTML = label` |
+| OS isolation | Linux with working bubblewrap only. The default `auto` mode can fall back to unisolated execution; require isolation explicitly when needed. |
+| Python planning | pip and uv may execute source-build backends to read metadata, including under `--plan`. `require_isolation = true` refuses these phases without isolation. |
+| JavaScript network access | Dependency scripts run without networking under bubblewrap unless allowlisted in `script_network`. Resolution and fetching still need network access or manager caches. |
+| Python network access | Metadata resolution and source builds use network access for build requirements, even when isolated. |
+| Project code | JavaScript root lifecycle scripts and uv's final project installation run normally. They are outside dependency-script isolation. |
+| pnpm and Yarn Berry | Manager bookkeeping needs project writes; root changes are checked afterward. Berry builds share a sandbox and are not isolated from one another. |
+| Cargo | New build scripts and proc-macro sources are inspected when adding or updating dependencies. Later compilation runs outside this gate. |
+| Credential files | Known names are masked, including nested and linked directories. Dependency/build trees and virtual environments are excluded from discovery; a directory limit can leave files unmasked, with a warning. Arbitrary secret-bearing files are not discovered automatically. |
+| Unisolated execution | Environment reduction and filesystem monitoring do not prevent reads, networking, or all harmful side effects. Suspicious scripts may be held back; allowlists waive selected checks. |
 
-### What is NOT covered (Tier 2 / Tier 3)
+`--plan` avoids applying the requested install, but its depth varies: JavaScript plans inspect fetched packages, Cargo plans inspect fetched sources, and uv plans stop before syncing or inspecting installed startup files. Package-manager caches can change.
 
-| Gap | Reason | Workaround |
-|---|---|---|
-| **Inter-procedural taint** — taint flowing through a user-defined function call | Requires building a call graph across functions, which is Tier 2 | Add `// greengate: ignore` on the call site, or use a purpose-built SAST tool (Semgrep, Snyk Code) for this pattern |
-| **Cross-file taint** — taint flowing through `import`/`require` across modules | Requires a whole-project analysis pass; not practical in a single-file scanner | Same as above |
-| **Object/array destructuring propagation** | `const { name } = req.body` — destructured properties are not yet tracked | Assign to an intermediate variable before the sink |
-| **Conditional taint** — value is tainted only on certain branches | Flow-sensitive analysis (not implemented) | Unlikely to matter in practice for most XSS/injection sinks |
-| **Prototype chain / dynamic dispatch** | `this.input` or `obj[key]` | Use explicit variable assignments |
+Script inspection uses static signals and bounded helper traversal. pip reads Python helpers shipped in the same wheel; uv reads the `.pth` file's site-packages directory. Dynamic imports, native extensions, and every possible encoded payload are not covered.
 
-### Practical false negative risk
+The install gate checks advisory and release risk for packages added or changed. An unchanged `npm ci` lockfile does not trigger a full advisory re-audit. Use [`audit`](/commands/audit) for supported registry dependencies and [`deps review`](/commands/deps) for changes.
 
-Because Tier-2 (inter-procedural) taint is not tracked, a pattern like:
+The name guard scores explicitly requested names using registry metadata. It does not score the full transitive tree or establish malicious intent. Agent checks recognize supported shell command shapes; installs hidden behind arbitrary scripts, aliases, or Makefile targets are not discovered. `npx`, `bunx`, and `pnpm dlx` are not intercepted.
 
-```js
-function getInput() {
-  return req.body.data;   // taint source inside a helper
-}
+See the [install reference](/commands/install) and the [install-gate benchmark](https://github.com/greengate-dev/greengate/blob/main/bench/INSTALL_GATE_RESULTS.md) for tested scenarios.
 
-el.innerHTML = getInput();  // greengate sees an unknown call — flags normally
-```
+## Legacy compatibility paths
 
-…is **still flagged** at normal confidence because GreenGate does not know `getInput()` is safe. The false negative scenario is the opposite: a sanitizer wrapped in a function will NOT suppress the finding:
+Supported `watch-install`, `pip-install`, and `cargo-add` invocations route through `install` in 0.4.0. Unsupported routing cases retain older behavior with a deprecation notice. The legacy watcher uses polling and post-install checks, does not isolate the process, and can miss temporary files between observations. The [legacy benchmark](https://github.com/greengate-dev/greengate/blob/main/bench/INSTALL_RESULTS.md) measures that older path.
 
-```js
-function safeHtml(input) {
-  return DOMPurify.sanitize(input);  // safe inside function
-}
+## Static analysis
 
-el.innerHTML = safeHtml(raw);  // greengate does not know safeHtml() is safe
-                               // → flagged (false positive)
-```
-
-For this case, use `// greengate: ignore` on the assignment line, or add `safeHtml` to a custom-safe list via a custom SAST rule.
-
----
-
-## SAST — language coverage
-
-| Language | AST-based SAST | Taint tracking | Code smells |
+| Language | AST rules | Taint tracking | Code-smell rules |
 |---|---|---|---|
-| JavaScript (`.js`, `.jsx`) | ✅ | ✅ | ✅ |
-| TypeScript (`.ts`, `.tsx`) | ✅ | ✅ | ✅ |
-| Python (`.py`) | ✅ | ❌ | ❌ |
-| Go (`.go`) | ✅ | ❌ | ❌ |
-| Rust (`.rs`) | ✅ | ❌ | ❌ |
-| Ruby, PHP, Java, C# | ❌ | ❌ | ❌ |
+| JavaScript / TypeScript | Yes | Within the current file/function analysis | Yes |
+| Python | Yes | No | No |
+| Go | Yes | No | No |
+| Rust | Yes | No | No |
+| Ruby, PHP, Java, C# | No | No | No |
 
-Python, Go, and Rust use AST query rules without taint tracking. Rust rules
-flag `unsafe` blocks, `Command::new(...)`, `.unwrap()`, and `.expect()` for
-review; these constructs are not necessarily vulnerabilities. Rust analysis
-does not establish whether command arguments are attacker-controlled.
-Taint tracking is JS/TS only.
+JavaScript and TypeScript taint tracking recognizes selected source and sanitizer names. It does not follow arbitrary function calls, cross-file flows, TypeScript types, or every control-flow path. A tainted label is a signal for review, not a demonstrated exploit; name-based sanitizer recognition can suppress unsafe code as well as valid code.
 
----
+Python, Go, and Rust rules match syntax and API names. Rust `unsafe`, `Command::new`, `.unwrap()`, and `.expect()` findings are review signals, not proof of a vulnerability. Comments and source strings are handled differently by AST rules and regex scanning; false positives and false negatives remain possible.
 
-## SAST — no TypeScript type information
+Custom rules cannot add full inter-procedural analysis. Use deeper analysis or runtime testing when the risk requires it.
 
-GreenGate uses [tree-sitter](https://tree-sitter.github.io/tree-sitter/) for AST parsing. tree-sitter is a syntax parser — it does **not** have access to TypeScript's type checker. This means:
+## Secret scanning
 
-- The engine cannot know the declared type of a variable (e.g. it cannot tell whether a `string` came from `HTMLElement.innerHTML` or a user-defined getter).
-- Generic suppression decisions (is this `exec()` a child_process call or a DB query builder call?) are made by inspecting the receiver's **name** and AST shape, not its type.
+Regex and entropy checks cannot recognize every credential or determine whether a matched value is active. Known example keys and common entropy noise are filtered, but new secret formats and unusual file layouts can be missed.
 
-For higher-fidelity type-aware analysis, Semgrep Pro or a dedicated type-aware linter would be needed.
+With SAST enabled, supported source files use string-literal scoping for secret checks. Other text files use regex and entropy scanning. Git ignores and configured exclusions affect coverage; binary files are skipped. History scanning does not read uncommitted credentials from past commits.
 
----
+## Dependency audits and reviews
 
-## Dependency audit — OSV API dependency
+Audits match supported registry package names and versions against OSV. Git, URL, and local-path dependencies are not matched as registry releases. Maven, .NET/NuGet, Ruby, `Pipfile.lock`, and binary `bun.lockb` are unsupported; unresolved requirements can make the run incomplete.
 
-`greengate audit` queries the [OSV database](https://osv.dev). In environments without outbound internet access:
+OSV availability, supported version ordering, cache freshness, and registry metadata limit the result. Missing data is reported as incomplete where tracked. With `on_incomplete = "warn"` or `--allow-incomplete`, an incomplete report can exit `0`. Private registry releases do not receive the public-registry release checks.
 
-- Audit results are cached locally for **24 hours** (offline-friendly for most CI scenarios).
-- If the cache is stale and the network is unavailable, `greengate audit` exits with a warning rather than a hard failure, so it does not break air-gapped builds.
+License checks use registry metadata, not a legal review of package contents. Signing a CycloneDX SBOM proves file integrity and the verified signer identity; it does not certify build provenance or regulatory compliance.
 
-`ignore_advisories` in `.greengate.toml` suppresses specific GHSA/CVE IDs without disabling the audit entirely. See the [audit command docs](/commands/audit) for details.
+## Test selection and coverage
 
----
+TIA compares tests' direct static imports with changed source-path stems. It does not build a transitive graph, resolve all workspace aliases, or prove that unselected tests are unaffected. Config/data changes produce warnings rather than test selection. Go output is a list of test files, not `go test` package arguments.
 
-## Secret scanning — entropy tuning
+`review` counts only changed lines present in the supplied coverage report. Missing files and unmeasured lines are excluded from the percentage. Generate coverage for the code you want to gate. Review-time estimates are scoring heuristics.
 
-Shannon entropy detection (`entropy = true`) may produce false positives on:
+## Other boundaries
 
-- **Lock file integrity hashes** (e.g. `pnpm-lock.yaml` sha512 checksums) — add `"pnpm-lock.yaml"` to `exclude_patterns`.
-- **Base64-encoded binary assets** embedded in source (SVGs, fonts) — exclude `**/public/**` or the specific asset directory.
-- **Minified JavaScript** — exclude `**/*.min.js`.
-
-Raising `entropy_threshold` (e.g. to `5.0`) reduces false positives but may miss shorter secrets. Lowering it (e.g. to `3.5`) via `--profile strict` increases sensitivity.
-
----
-
-## Baseline mode
-
-`--since-baseline` compares findings against `.greengate-baseline.json`. Findings are matched by **file path + rule ID + line number**. If a secret moves to a different line (e.g. after a rebase or auto-formatter pass), it will re-appear as a new finding. Commit `.greengate-baseline.json` to version control and regenerate it with `--update-baseline` whenever baseline findings are intentionally resolved.
-
----
-
-## Runtime analysis boundaries
-
-Code and secret scanning are static. `watch-install` additionally observes
-filesystem changes during the wrapped command, but does not isolate the
-process or inspect network traffic. Its 250 ms polling can miss files created
-and deleted between observations. Preflight checks inspect existing packages;
-newly installed lifecycle scripts are checked after execution. The slopsquat
-guard checks explicitly supplied package names, not the full resolved tree
-(`npm ci` and `pip-install -r requirements.txt` do not supply names to it).
-
-The [install-protection benchmark](https://github.com/greengate-dev/greengate/blob/main/bench/INSTALL_RESULTS.md)
-reports detection timing, misses, and native-build false positives separately.
-
-GreenGate cannot:
-
-- Detect secrets injected at runtime via environment variables (those are generally safe — use env vars instead of hardcoding).
-- Detect vulnerabilities that only manifest under specific runtime conditions (race conditions, logic bugs, SSRF depending on user-controlled URLs at runtime).
-- Replace dynamic analysis tools (DAST, fuzzing, penetration testing).
+- `image-scan` scans text files from local Docker image layers, not image configuration metadata or running containers. Pull images before scanning. Binary and oversized files are skipped.
+- Kubernetes and Dockerfile linting inspect supported syntax and rules; they do not validate all deployment behavior.
+- Authorship reporting uses commit metadata and author identity; it cannot reliably attribute every AI-assisted change.
+- Static checks do not replace dynamic application testing, fuzzing, or runtime access controls.

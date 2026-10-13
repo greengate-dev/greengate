@@ -424,6 +424,7 @@ mod tests {
                 severity: Severity::Critical,
                 commit: None,
                 blame: None,
+                suppressed: None,
             },
             Finding {
                 path: PathBuf::from("b.js"),
@@ -432,6 +433,7 @@ mod tests {
                 severity: Severity::Critical,
                 commit: None,
                 blame: None,
+                suppressed: None,
             },
             Finding {
                 path: PathBuf::from("c.js"),
@@ -440,6 +442,7 @@ mod tests {
                 severity: Severity::High,
                 commit: None,
                 blame: None,
+                suppressed: None,
             },
         ];
 

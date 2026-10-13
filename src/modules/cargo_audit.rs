@@ -18,9 +18,11 @@
 //! is flagged for manual review (common indicator of over-bundled or suspicious
 //! crates).
 
+use crate::deps::Source;
+use crate::report::{Check, Finding, Report, Severity};
 use crate::utils::terminal;
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -147,7 +149,9 @@ const BUILD_RS_SIGNALS: &[(&str, &str)] = &[
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_cargo_add(opts: CargoAddOpts) -> Result<()> {
+pub fn run_cargo_add(opts: CargoAddOpts) -> Result<Report> {
+    let mut report = Report::new("cargo-add");
+    report.no_fail = opts.no_fail;
     terminal::info(&format!(
         "Zero-Trust Supply Chain Gate (cargo): intercepting `cargo add {}`",
         opts.args.join(" ")
@@ -178,15 +182,26 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<()> {
         eprintln!("  Verify the exact crate name at https://crates.io before adding.");
         eprintln!();
 
-        let blocking = typosquats
-            .iter()
-            .filter(|(krate, _)| !is_allowlisted(krate, &opts.allow_crates))
-            .count();
-        if blocking > 0 && !opts.no_fail {
-            return Err(anyhow::anyhow!(
+        for (requested, closest) in &typosquats {
+            let finding = Finding::package(
+                "SUPPLY-CHAIN/TYPOSQUAT",
+                Severity::High,
+                "cargo",
+                requested,
+                format!("suspiciously close to popular crate '{closest}'"),
+            );
+            if is_allowlisted(requested, &opts.allow_crates) {
+                report.warnings.push(finding);
+            } else {
+                report.findings.push(finding);
+            }
+        }
+        if !report.findings.is_empty() && !opts.no_fail {
+            eprintln!(
                 "Zero-Trust Supply Chain Gate (cargo): {} potential typosquat(s) — halting before add.",
-                blocking
-            ));
+                report.findings.len()
+            );
+            return Ok(report);
         }
     }
 
@@ -207,25 +222,28 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<()> {
             .iter()
             .map(|k| k.split('@').next().unwrap_or(k).to_string())
             .collect();
-        let lock = parse_cargo_lock("Cargo.lock");
-        let in_lock = |name: &str| lock.iter().any(|e| e.split(' ').next() == Some(name));
+        let lock = lock_crates("Cargo.lock");
+        let in_lock = |name: &str| lock.keys().any(|e| e.split(' ').next() == Some(name));
         let reports = slopsquat::guard(
             Ecosystem::Cargo,
             &names,
             &opts.allow_crates,
             &in_lock,
             &policy,
+            &mut report.checks,
         );
         let blocking = slopsquat::print_reports(Ecosystem::Cargo, &reports);
+        slopsquat::record(Ecosystem::Cargo, &reports, &mut report);
         if blocking > 0 && !opts.no_fail {
-            return Err(anyhow::anyhow!(
+            eprintln!(
                 "Zero-Trust Supply Chain Gate (cargo): {blocking} high-suspicion slopsquat(s) — halting before add."
-            ));
+            );
+            return Ok(report);
         }
     }
 
     // ── Pre-add Cargo.lock snapshot ───────────────────────────────────────────
-    let pre_lock_crates = parse_cargo_lock("Cargo.lock");
+    let pre_lock_crates: HashSet<String> = lock_crates("Cargo.lock").into_keys().collect();
 
     // ── Run cargo add ─────────────────────────────────────────────────────────
     let status = std::process::Command::new("cargo") // greengate: ignore — intentionally wrapping cargo to intercept the add
@@ -241,20 +259,33 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<()> {
             ));
         }
         Ok(s) if !s.success() => {
-            terminal::warn(
-                "`cargo add` exited with non-zero status — Cargo.toml may be unchanged.",
-            );
-            return Ok(());
+            return Err(anyhow::anyhow!(
+                "`cargo add` failed ({s}) — Cargo.toml was not updated."
+            ));
         }
         _ => {}
     }
 
-    let _ = std::process::Command::new("cargo") // greengate: ignore — fetching registry sources after add
+    // build.rs scanning reads the fetched sources; without them nothing new
+    // can be scanned, and that must not look like a clean result.
+    let fetched = std::process::Command::new("cargo") // greengate: ignore — fetching registry sources after add
         .args(["fetch", "--quiet"])
         .status();
+    match fetched {
+        Ok(s) if s.success() => {}
+        Ok(s) => report.checks.push(Check::incomplete(
+            "cargo-fetch",
+            format!("`cargo fetch` failed ({s}); new crates' sources may be missing"),
+        )),
+        Err(e) => report.checks.push(Check::incomplete(
+            "cargo-fetch",
+            format!("`cargo fetch` could not run: {e}"),
+        )),
+    }
 
     // ── Layer 3: Dependency explosion guard ───────────────────────────────────
-    let post_lock_crates = parse_cargo_lock("Cargo.lock");
+    let post_lock = lock_crates("Cargo.lock");
+    let post_lock_crates: HashSet<String> = post_lock.keys().cloned().collect();
     let new_crates: Vec<String> = post_lock_crates
         .difference(&pre_lock_crates)
         .cloned()
@@ -276,11 +307,39 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<()> {
     let registry_src = locate_cargo_registry_src();
     let mut build_threats: Vec<BuildRsThreat> = Vec::new();
 
-    for crate_name in &new_crates {
-        // Crate names in the lock file may include version: "serde 1.0.197"
-        let name_only = crate_name.split_whitespace().next().unwrap_or(crate_name);
-        if let Some(build_rs) = find_build_rs(&registry_src, name_only)
-            && let Ok(src) = std::fs::read_to_string(&build_rs)
+    let mut not_scanned: Vec<String> = Vec::new();
+    for crate_id in &new_crates {
+        // Lock entries are "name version", e.g. "serde 1.0.197".
+        let mut parts = crate_id.split_whitespace();
+        let (Some(name_only), Some(version)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let build_rs = match post_lock.get(crate_id) {
+            // The project's own code (a workspace or path crate).
+            Some((_, true)) => continue,
+            Some((Source::Registry { .. }, _)) => {
+                match find_build_script(&registry_src, name_only, version) {
+                    CrateSource::BuildScript(path) => path,
+                    CrateSource::NoBuildScript => continue,
+                    CrateSource::Missing => {
+                        not_scanned.push(format!("{crate_id} (source not found)"));
+                        continue;
+                    }
+                }
+            }
+            Some(_) => {
+                not_scanned.push(format!("{crate_id} (git/other source)"));
+                continue;
+            }
+            None => {
+                not_scanned.push(format!("{crate_id} (not in Cargo.lock)"));
+                continue;
+            }
+        };
+        let Ok(src) = std::fs::read_to_string(&build_rs) else {
+            not_scanned.push(format!("{crate_id} (build script unreadable)"));
+            continue;
+        };
         {
             let signals = scan_build_rs_signals(&src);
             let max_entropy = max_entropy_score(&src);
@@ -294,6 +353,13 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<()> {
                 });
             }
         }
+    }
+
+    if !not_scanned.is_empty() {
+        report.checks.push(Check::incomplete(
+            "build-scripts",
+            format!("build scripts not scanned for: {}", not_scanned.join(", ")),
+        ));
     }
 
     // ── Report ─────────────────────────────────────────────────────────────────
@@ -319,8 +385,26 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<()> {
                     t.max_entropy
                 );
             }
-            if !allowed {
+            let finding = Finding::in_file(
+                "SUPPLY-CHAIN/BUILD_RS",
+                Severity::High,
+                &t.path,
+                0,
+                format!(
+                    "{}: {}",
+                    t.krate,
+                    if t.signals.is_empty() {
+                        format!("entropy {:.2}", t.max_entropy)
+                    } else {
+                        t.signals.join(", ")
+                    }
+                ),
+            );
+            if allowed {
+                report.warnings.push(finding);
+            } else {
                 any_blocking = true;
+                report.findings.push(finding);
             }
         }
         eprintln!();
@@ -333,19 +417,18 @@ pub fn run_cargo_add(opts: CargoAddOpts) -> Result<()> {
     }
 
     if any_blocking && !opts.no_fail {
-        return Err(anyhow::anyhow!(
-            "Zero-Trust Supply Chain Gate (cargo): blocking build.rs finding(s) detected."
-        ));
+        eprintln!("Zero-Trust Supply Chain Gate (cargo): blocking build.rs finding(s) detected.");
     }
 
-    if typosquats.is_empty() && build_threats.is_empty() {
+    if typosquats.is_empty() && build_threats.is_empty() && report.unfinished().next().is_none() {
         terminal::success(
             "Zero-Trust Supply Chain Gate (cargo): clean — no typosquats or suspicious \
              build scripts detected.",
         );
     }
 
-    Ok(())
+    report.print_unfinished();
+    Ok(report)
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -360,7 +443,7 @@ struct BuildRsThreat {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Extract crate names from `cargo add` args (strip feature flags and version specs).
-fn extract_crate_names(args: &[String]) -> Vec<String> {
+pub(crate) fn extract_crate_names(args: &[String]) -> Vec<String> {
     let mut names = Vec::new();
     let mut skip_next = false;
     for arg in args {
@@ -419,40 +502,22 @@ fn check_typosquat(krate: &str) -> Option<String> {
     None
 }
 
-/// Parse crate names+versions from a Cargo.lock file (TOML v3 format).
-/// Returns a set of "name version" strings, e.g. `{"serde 1.0.197"}`.
-fn parse_cargo_lock(path: &str) -> HashSet<String> {
-    let mut set = HashSet::new();
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return set;
-    };
-
-    // Cargo.lock v3 has `[[package]]` sections with `name = "..."` and `version = "..."`.
-    let mut current_name: Option<String> = None;
-    let mut current_version: Option<String> = None;
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line == "[[package]]" {
-            if let (Some(n), Some(v)) = (current_name.take(), current_version.take()) {
-                set.insert(format!("{} {}", n, v));
-            }
-        } else if let Some(rest) = line.strip_prefix("name = ") {
-            current_name = Some(rest.trim_matches('"').to_string());
-        } else if let Some(rest) = line.strip_prefix("version = ") {
-            current_version = Some(rest.trim_matches('"').to_string());
-        }
-    }
-    // Flush last package
-    if let (Some(n), Some(v)) = (current_name, current_version) {
-        set.insert(format!("{} {}", n, v));
-    }
-    set
+/// Every package in a `Cargo.lock`, as `"name version"` → (source, whether
+/// it is the project's own code). Empty when there is no readable lockfile.
+fn lock_crates(path: &str) -> HashMap<String, (Source, bool)> {
+    crate::deps::load(Path::new(path))
+        .map(|lock| {
+            lock.packages
+                .into_iter()
+                .map(|p| (format!("{} {}", p.name, p.version), (p.source, p.member)))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Locate the cargo registry source cache directory.
 /// Typically `~/.cargo/registry/src/`.
-fn locate_cargo_registry_src() -> PathBuf {
+pub(crate) fn locate_cargo_registry_src() -> PathBuf {
     // Prefer CARGO_HOME env var
     if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
         let p = PathBuf::from(cargo_home).join("registry").join("src");
@@ -470,37 +535,53 @@ fn locate_cargo_registry_src() -> PathBuf {
     PathBuf::from(".cargo/registry/src")
 }
 
-/// Find the `build.rs` for `crate_name` anywhere under the registry src dir.
-fn find_build_rs(registry_src: &Path, crate_name: &str) -> Option<PathBuf> {
-    // Registry layout: registry_src/<mirror-hash>/<crate_name>-<version>/build.rs
-    let Ok(mirrors) = std::fs::read_dir(registry_src) else {
-        return None;
-    };
-    for mirror in mirrors.flatten() {
-        let mirror_path = mirror.path();
-        if !mirror_path.is_dir() {
-            continue;
-        }
-        let Ok(crate_dirs) = std::fs::read_dir(&mirror_path) else {
-            continue;
-        };
-        for crate_dir in crate_dirs.flatten() {
-            let dir_name = crate_dir.file_name().to_string_lossy().to_lowercase();
-            // Match "<crate_name>-<version>" prefix
-            let prefix = format!("{}-", crate_name.to_lowercase().replace('-', "_"));
-            let dir_norm = dir_name.replace('-', "_");
-            if dir_norm.starts_with(&prefix) || dir_norm == crate_name.replace('-', "_") {
-                let build_rs = crate_dir.path().join("build.rs");
-                if build_rs.exists() {
-                    return Some(build_rs);
-                }
-            }
-        }
-    }
-    None
+/// Where a registry crate's build script is, if it has one.
+pub(crate) enum CrateSource {
+    /// The crate's source directory is not in the registry cache.
+    Missing,
+    NoBuildScript,
+    BuildScript(PathBuf),
 }
 
-fn scan_build_rs_signals(source: &str) -> Vec<String> {
+/// Find the build script of exactly `name`-`version` under the registry src
+/// dir (`<registry_src>/<index-hash>/<name>-<version>/`). Matching the exact
+/// directory matters: a prefix match would scan `serde_json` for `serde`, or
+/// another cached version of the same crate.
+pub(crate) fn find_build_script(registry_src: &Path, name: &str, version: &str) -> CrateSource {
+    let dir_name = format!("{name}-{version}");
+    let Ok(indexes) = std::fs::read_dir(registry_src) else {
+        return CrateSource::Missing;
+    };
+    for index in indexes.flatten() {
+        let crate_dir = index.path().join(&dir_name);
+        if crate_dir.is_dir() {
+            return match build_script_path(&crate_dir) {
+                Some(path) => CrateSource::BuildScript(path),
+                None => CrateSource::NoBuildScript,
+            };
+        }
+    }
+    CrateSource::Missing
+}
+
+/// The build script a crate declares: `package.build` in its Cargo.toml (a
+/// path, or `false` for none), else `build.rs` if present.
+fn build_script_path(crate_dir: &Path) -> Option<PathBuf> {
+    let manifest = std::fs::read_to_string(crate_dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|m| m.parse::<toml::Table>().ok());
+    let declared = manifest
+        .as_ref()
+        .and_then(|m| m.get("package"))
+        .and_then(|p| p.get("build"));
+    match declared {
+        Some(toml::Value::Boolean(false)) => None,
+        Some(toml::Value::String(path)) => Some(crate_dir.join(path)),
+        _ => Some(crate_dir.join("build.rs")).filter(|p| p.is_file()),
+    }
+}
+
+pub(crate) fn scan_build_rs_signals(source: &str) -> Vec<String> {
     BUILD_RS_SIGNALS
         .iter()
         .filter(|(_, needle)| source.contains(needle))
@@ -508,7 +589,7 @@ fn scan_build_rs_signals(source: &str) -> Vec<String> {
         .collect()
 }
 
-fn max_entropy_score(text: &str) -> f64 {
+pub(crate) fn max_entropy_score(text: &str) -> f64 {
     const WINDOW: usize = 64;
     let bytes = text.as_bytes();
     if bytes.len() < 32 {
@@ -644,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_cargo_lock_basic() {
+    fn lock_crates_reads_names_versions_and_sources() {
         let lock = r#"
 [[package]]
 name = "serde"
@@ -656,12 +737,61 @@ name = "tokio"
 version = "1.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 "#;
-        let tmp = std::env::temp_dir().join("greengate_test_Cargo.lock");
-        std::fs::write(&tmp, lock).unwrap();
-        let set = parse_cargo_lock(tmp.to_str().unwrap());
-        assert!(set.contains("serde 1.0.197"));
-        assert!(set.contains("tokio 1.37.0"));
-        std::fs::remove_file(&tmp).ok();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.lock");
+        std::fs::write(&path, lock).unwrap();
+        let set = lock_crates(path.to_str().unwrap());
+        assert!(matches!(
+            set.get("serde 1.0.197"),
+            Some((Source::Registry { .. }, false))
+        ));
+        assert!(set.contains_key("tokio 1.37.0"));
+    }
+
+    #[test]
+    fn find_build_script_matches_the_exact_crate_and_version() {
+        let reg = tempfile::tempdir().unwrap();
+        let index = reg.path().join("index.crates.io-abc");
+        for dir in ["serde_json-1.0.0", "serde-1.0.1", "serde-1.0.2"] {
+            std::fs::create_dir_all(index.join(dir)).unwrap();
+        }
+        // Only an unrelated crate and another version carry a build.rs.
+        std::fs::write(index.join("serde_json-1.0.0/build.rs"), "fn main(){}").unwrap();
+        std::fs::write(index.join("serde-1.0.1/build.rs"), "fn main(){}").unwrap();
+
+        assert!(matches!(
+            find_build_script(reg.path(), "serde", "1.0.2"),
+            CrateSource::NoBuildScript
+        ));
+        assert!(matches!(
+            find_build_script(reg.path(), "serde", "9.9.9"),
+            CrateSource::Missing
+        ));
+        let CrateSource::BuildScript(p) = find_build_script(reg.path(), "serde", "1.0.1") else {
+            panic!("expected serde-1.0.1/build.rs");
+        };
+        assert!(p.ends_with("serde-1.0.1/build.rs"));
+    }
+
+    #[test]
+    fn build_script_path_honours_the_build_key() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"x\"\nbuild = \"tools/gen.rs\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            build_script_path(dir.path()),
+            Some(dir.path().join("tools/gen.rs"))
+        );
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"x\"\nbuild = false\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("build.rs"), "").unwrap();
+        assert_eq!(build_script_path(dir.path()), None);
     }
 
     #[test]

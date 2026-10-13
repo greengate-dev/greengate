@@ -7,7 +7,9 @@
 /// | CI/UnpinnedAction                | medium   | `uses:` ref is a tag/branch, not a commit SHA  |
 /// | CI/ExpressionInjection           | critical | User-controlled `${{...}}` in a run: step      |
 /// | CI/PullRequestTargetWithCheckout | critical | `pull_request_target` + checkout of PR code    |
-use crate::modules::scanner::Severity;
+use crate::modules::scanner::{Severity, covering_ignore};
+use crate::modules::suppress::{self, Policy};
+use crate::report::{Check, Finding, Report, Suppression, SuppressionKind};
 use crate::utils::output::ReportFormat;
 use crate::utils::terminal;
 use anyhow::Result;
@@ -32,6 +34,7 @@ pub struct CiLintOpts {
     pub format: ReportFormat,
     /// If Some, scan only this file. If None, auto-discover .github/workflows/.
     pub file: Option<String>,
+    pub policy: Policy,
 }
 
 // ── Compiled regexes ──────────────────────────────────────────────────────────
@@ -58,7 +61,8 @@ static RE_INJECTION: LazyLock<Regex> = LazyLock::new(|| {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-pub fn run_ci_lint(opts: CiLintOpts) -> Result<()> {
+pub fn run_ci_lint(opts: CiLintOpts) -> Result<Report> {
+    let mut report = Report::new("ci-lint");
     let files = match opts.file {
         Some(ref f) => vec![PathBuf::from(f)],
         None => find_workflow_files(),
@@ -66,34 +70,100 @@ pub fn run_ci_lint(opts: CiLintOpts) -> Result<()> {
 
     if files.is_empty() {
         terminal::info("No GitHub Actions workflow files found (.github/workflows/*.yml)");
-        return Ok(());
+    } else {
+        terminal::info(&format!(
+            "CI lint: scanning {} workflow file(s)...",
+            files.len()
+        ));
     }
 
-    terminal::info(&format!(
-        "CI lint: scanning {} workflow file(s)...",
-        files.len()
-    ));
-
     let mut all_findings: Vec<CiLintFinding> = Vec::new();
+    // Covered by a `# greengate: ignore` on the line or the line above.
+    let mut inline: Vec<Finding> = Vec::new();
     for path in &files {
         match lint_workflow(path) {
-            Ok(findings) => all_findings.extend(findings),
-            Err(e) => eprintln!("  ⚠️  Skipping {}: {}", path.display(), e),
+            Ok(findings) => {
+                let text = std::fs::read_to_string(path).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                for f in findings {
+                    let reason = (f.line > 0)
+                        .then(|| covering_ignore(&lines, f.line - 1))
+                        .flatten();
+                    match reason {
+                        Some(reason) => {
+                            let mut r = Finding::in_file(
+                                f.rule_id,
+                                f.severity.into(),
+                                &f.path,
+                                f.line,
+                                &f.message,
+                            );
+                            r.suppression = Some(Suppression::new(
+                                SuppressionKind::Inline,
+                                (!reason.is_empty()).then_some(reason),
+                            ));
+                            inline.push(r);
+                        }
+                        None => all_findings.push(f),
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("  ⚠️  Skipping {}: {}", path.display(), e);
+                report.checks.push(Check::incomplete(
+                    format!("workflow:{}", path.display()),
+                    format!("could not be linted: {e}"),
+                ));
+            }
         }
     }
 
-    if all_findings.is_empty() {
-        terminal::success("CI lint: no issues found.");
-        return Ok(());
-    }
+    let mut found: Vec<Finding> = all_findings
+        .iter()
+        .map(|f| Finding::in_file(f.rule_id, f.severity.into(), &f.path, f.line, &f.message))
+        .collect();
+    let outcome = suppress::apply(
+        &mut found,
+        &suppress::Options {
+            tool: "ci-lint",
+            policy: opts.policy,
+            matcher: None,
+            base: None,
+        },
+    )?;
+    let (active, gone) = suppress::partition(
+        all_findings.into_iter().zip(found).collect(),
+        &outcome.verdicts,
+    );
+    let (all_findings, active_findings): (Vec<CiLintFinding>, Vec<Finding>) =
+        active.into_iter().unzip();
+    report.findings = active_findings;
+    report.suppressed = inline;
+    report
+        .suppressed
+        .extend(gone.into_iter().map(|((_, mut f), s)| {
+            f.suppression = Some(s);
+            f
+        }));
+    report.warnings = outcome.warnings;
 
+    // Structured formats always print a document, even an empty one, so
+    // stdout stays parseable.
     match opts.format {
         ReportFormat::Json => emit_json(&all_findings)?,
         ReportFormat::Sarif => emit_sarif(&all_findings)?,
+        ReportFormat::Text if all_findings.is_empty() => {
+            if !files.is_empty() && report.unfinished().next().is_none() {
+                terminal::success("CI lint: no issues found.");
+            }
+        }
         ReportFormat::Text => emit_text(&all_findings),
     }
-
-    anyhow::bail!("CI lint: {} issue(s) found.", all_findings.len());
+    if opts.format == ReportFormat::Text {
+        suppress::print_summary(&outcome.notes, &report.suppressed);
+    }
+    report.print_unfinished();
+    Ok(report)
 }
 
 // ── File discovery ────────────────────────────────────────────────────────────
@@ -180,11 +250,11 @@ fn check_line_patterns(path: &Path, content: &str) -> Vec<CiLintFinding> {
 
 /// Returns true if the YAML value tree contains `pull_request_target` anywhere
 /// in the `on:` trigger section.
-fn has_pull_request_target(on_value: &serde_yaml::Value) -> bool {
+fn has_pull_request_target(on_value: &serde_norway::Value) -> bool {
     match on_value {
-        serde_yaml::Value::String(s) => s == "pull_request_target",
-        serde_yaml::Value::Sequence(seq) => seq.iter().any(has_pull_request_target),
-        serde_yaml::Value::Mapping(map) => map
+        serde_norway::Value::String(s) => s == "pull_request_target",
+        serde_norway::Value::Sequence(seq) => seq.iter().any(has_pull_request_target),
+        serde_norway::Value::Mapping(map) => map
             .keys()
             .any(|k| k.as_str() == Some("pull_request_target")),
         _ => false,
@@ -193,7 +263,7 @@ fn has_pull_request_target(on_value: &serde_yaml::Value) -> bool {
 
 /// Returns true if a step's `with.ref` value contains a pull-request head ref
 /// expression — meaning the checkout will fetch untrusted PR code.
-fn step_checks_out_pr_code(step: &serde_yaml::Value) -> bool {
+fn step_checks_out_pr_code(step: &serde_norway::Value) -> bool {
     let uses = step
         .get("uses")
         .and_then(|v| v.as_str())
@@ -213,7 +283,7 @@ fn step_checks_out_pr_code(step: &serde_yaml::Value) -> bool {
 }
 
 fn check_prt_checkout(path: &Path, content: &str) -> Vec<CiLintFinding> {
-    let yaml: serde_yaml::Value = match serde_yaml::from_str(content) {
+    let yaml: serde_norway::Value = match serde_norway::from_str(content) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };

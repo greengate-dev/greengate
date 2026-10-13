@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-labelledby="title description">
+  <title id="title">greengate</title>
+  <desc id="description">Dependency checks and install protection for developers, CI, and coding agents.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#101d19"/>
+      <stop offset="1" stop-color="#101827"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="400" rx="24" fill="url(#background)"/>
+  <path d="M96 68L137 84V120C137 150 119 172 96 183C73 172 55 150 55 120V84Z" fill="#14372b" stroke="#4ade80" stroke-width="4"/>
+  <path d="M76 120L90 134L117 103" fill="none" stroke="#4ade80" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <g font-family="system-ui, -apple-system, Segoe UI, sans-serif">
+    <text x="166" y="155" font-size="84" font-weight="700" fill="#f1f5f9">greengate</text>
+    <text x="60" y="239" font-size="38" font-weight="600" fill="#dcfce7">Dependency checks and install protection.</text>
+    <text x="60" y="294" font-size="26" fill="#cbd5e1">For developers, CI pipelines, and coding agents.</text>
+    <text x="60" y="352" font-size="21" fill="#86efac">Dependency policy · Install controls · Repository gates</text>
+  </g>
+</svg>

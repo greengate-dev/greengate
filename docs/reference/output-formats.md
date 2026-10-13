@@ -1,11 +1,54 @@
 ---
-title: 'Output Formats — GreenGate CLI Reference'
-description: 'GreenGate output formats: SARIF 2.1.0, JSON, JUnit XML, GitLab SAST, and plain text. Upload findings to GitHub Security tab, SonarQube, or any major CI platform.'
+title: 'Output Formats — greengate CLI Reference'
+description: 'greengate output formats: SARIF 2.1.0, JSON, JUnit XML, GitLab SAST, and plain text. Upload findings to GitHub Security tab, SonarQube, or any major CI platform.'
 ---
 
 # Output Formats
 
-The `scan` command supports five output formats via `--format`. The `review` command supports three formats (`text`, `json`, `sarif`) — see [review output formats](#review-command-formats) below.
+Every gate can write a unified report file with [`--report`](#report-files). In addition, the `scan` command supports five output formats via `--format`. The `review` command supports three formats (`text`, `json`, `sarif`) — see [review output formats](#review-command-formats) below.
+
+## Report files (`--report`) {#report-files}
+
+Every gate accepts the global `--report <path>` flag, which writes the result
+to a file in addition to the normal output:
+
+- a path ending in `.sarif` gets **SARIF 2.1.0**, ready for
+  `github/codeql-action/upload-sarif`
+- any other path gets a **`greengate.report/v1`** JSON document
+  ([JSON Schema](/schema/report-v1.json))
+
+```bash
+greengate audit --report audit.json
+greengate run --report gates.sarif     # one merged report for the whole pipeline
+```
+
+Gates that reach result handling write reports for findings, incomplete checks, and runtime errors. Parsing, configuration, or other early failures can occur before writing; the destination must be writable. A v1 report looks like:
+
+```json
+{
+  "schema": "greengate.report/v1",
+  "tool": { "name": "greengate", "version": "0.4.0" },
+  "command": "audit",
+  "status": "incomplete",
+  "duration_ms": 812,
+  "checks": [
+    { "id": "lockfile:./package-lock.json", "status": "passed" },
+    { "id": "osv", "status": "incomplete", "reason": "1 package(s) not checked: …" }
+  ],
+  "findings": [],
+  "warnings": [],
+  "suppressed": []
+}
+```
+
+`status` is `passed`, `findings`, `incomplete` or `error`, and maps to the
+[exit code](exit-codes.md). `warnings` are signals below the blocking threshold
+or on an allowlist; `suppressed` are findings matched by a suppression. Neither
+affects the status.
+
+In SARIF, checks that did not complete appear as
+`invocations[0].toolExecutionNotifications`, and `executionSuccessful` is
+`false`, so a partial run is never shown as a clean one.
 
 ## text (default)
 

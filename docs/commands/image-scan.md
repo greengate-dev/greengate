@@ -13,9 +13,9 @@ Build pipelines often copy secrets into images inadvertently:
 - `COPY .env /app/` — the `.env` file (with its `DATABASE_URL`, `STRIPE_SECRET_KEY`, etc.) is now in the image.
 - `ARG` values written to config files — `ARG API_KEY` followed by `RUN echo "key=$API_KEY" > /etc/app/config` bakes the key into a layer.
 - Build tools that write credentials to `~/.aws/credentials` or `~/.ssh/` during the build stage and are then `COPY`-ed into the final image.
-- `ENV` variables set in a `Dockerfile` layer — they persist in the image manifest and are readable by anyone with image access.
+- Credentials left in earlier filesystem layers can remain in the archive after a later layer deletes the file. Image-configuration `ENV` values are not scanned by this command.
 
-These secrets never touch your source repository, so `git` history scanning won't find them. `image-scan` catches them at the layer level.
+Layer scanning can find text-file credentials absent from the current source tree, including deleted files retained in earlier layers.
 
 ## How it works
 
@@ -26,13 +26,13 @@ docker save <image> -o /tmp/greengate-image-<nanos>.tar
 Unpack outer tar → manifest.json + <hash>/layer.tar files
     │
     ▼  (per layer)
-Unpack layer.tar → full filesystem snapshot
+Unpack each layer.tar → files added or changed in that layer
     │
     ▼
 Walk all text files (skip binary, > 1 MB, whiteout files)
     │
     ▼
-Run 26 secret patterns + Shannon entropy scan
+Run built-in secret patterns + Shannon entropy scan
     │
     ▼
 Deduplicate across layers → emit findings
@@ -84,7 +84,7 @@ greengate image-scan my-app:v1.2.3 --format json
 # Audit mode — report but don't fail
 greengate image-scan my-app:v1.2.3 --no-fail
 
-# Strict profile — lower entropy threshold, more patterns
+# Strict profile — lower entropy threshold
 greengate image-scan my-app:v1.2.3 --profile strict
 ```
 
@@ -99,10 +99,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download greengate
+      - name: Download published greengate
         run: |
-          curl -sSfL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-linux-amd64 \
-            -o /usr/local/bin/greengate && chmod +x /usr/local/bin/greengate
+          curl -fsSL https://github.com/greengate-dev/greengate/releases/latest/download/greengate-linux-amd64 \
+            -o greengate
+          sudo install -m 755 greengate /usr/local/bin/greengate
 
       - name: Build image
         run: docker build -t my-app:${{ github.sha }} .
@@ -133,12 +134,12 @@ The `if: success()` guard ensures the image is only pushed when the scan passes.
 ## Requirements
 
 - **Docker** must be running and `docker` must be in `PATH`. greengate prints an error with installation instructions if Docker is not found.
-- The image must be pullable by the Docker daemon — either already cached locally or accessible from a configured registry.
-- No root or elevated privileges required.
+- The image must be present locally: greengate calls `docker save`, not `docker pull`. Pull it yourself before scanning if needed. The external `tar` command must also be available.
+- The process needs permission to access your Docker daemon.
 
 ## Performance
 
-Image scanning time is proportional to image size and the number of layers. A typical 200 MB application image (10–15 layers) scans in 5–15 seconds on modern hardware. Base images like `alpine` or `distroless` scan in under 2 seconds.
+Scanning cost depends on the number, size, and contents of the layers.
 
 The extracted layer data is written to a temporary directory and removed automatically when the command exits — even if the scan fails mid-way.
 
@@ -155,6 +156,6 @@ The following are silently skipped to keep scan output noise-free:
 | Skip condition | Reason |
 |---|---|
 | Files > 1 MB | Likely build artifacts, compiled binaries, or data files |
-| Binary files (contain null bytes) | Not text — can't contain inline secrets |
+| Binary files (contain null bytes) | Binary scanning is unsupported; credentials embedded in binaries may be missed |
 | Whiteout files (`.wh.` prefix) | OCI layer deletion markers, not real files |
-| Symlinks | Followed by the layer extraction tool; skipped at scan time to avoid cycles |
+| Symlinks | Not followed by the scanning walk |

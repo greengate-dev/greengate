@@ -5,6 +5,49 @@ All notable changes to greengate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0]
+
+### Breaking
+
+See [Migrating to 0.4](docs/guide/migrating-to-0.4.md).
+
+- Standardized exit codes and made incomplete security checks fail by default.
+- Pipelines now run every step and report the worst result; fail-fast remains available.
+- Deprecated `watch-install`, `pip-install` and `cargo-add` in favour of `greengate install`, ahead of removal in 0.5.
+- Removed the `lighthouse` and `reassure` commands and pipeline steps.
+- SBOM generation now rejects ambiguous lockfiles for the same ecosystem.
+- Updated advisory exceptions, legacy baseline handling and scan flags; migration guidance covers compatibility.
+
+### Added
+
+- Unified JSON and SARIF reports across all gates, with configurable handling of incomplete checks.
+- Offline vulnerability databases, registry mirrors and configurable cache storage.
+- Broader lockfile support, dependency graphs, and `deps list` / `deps why` commands.
+- Dependency policy checks and change reviews covering advisories, licenses, release risk, provenance and remediation.
+- Unified `install` command for npm, pnpm, Yarn, Bun, pip, uv and Cargo, with planning, inspection and sandbox protection.
+- Change-aware scanning, persistent baselines, governed exceptions and suppression reporting.
+- Install-command checks and a Claude Code hook for AI-agent workflows.
+- Expanded install-protection benchmarks covering attack scenarios and legitimate builds.
+- Guides for AI agents, install protection and structured reports.
+
+### Changed
+
+- GitHub Action reporting and dependency-review integration now use the shared result model.
+- SBOMs include richer dependency metadata and cover all supported dependency files.
+- Improved consistency across audit queries, pipeline summaries, telemetry and inline suppressions.
+
+### Security
+
+- Strengthened install isolation, credential masking and Python startup-code inspection.
+- Replaced an unmaintained YAML dependency.
+
+### Fixed
+
+- Corrected dependency parsing, advisory matching and suggested fix versions.
+- Fixed SBOM validity, container-layer scanning and Cargo build-script selection.
+- Corrected command exit statuses and structured output.
+- Reduced scan false positives and corrected command documentation.
+
 ## [0.3.4] - 2026-10-11
 
 ### Added
@@ -27,6 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Two panics in `scan --triage` — source-context slicing past end of file, and LLM response parsing with reversed braces. Both covered by regression tests.
 - Mutex poisoning in `watch-install` no longer aborts the run.
+- `watch-install`, `pip-install` and `cargo-add` exited 0 when the wrapped package manager failed, so a broken install passed CI. They now fail, and `--no-fail` no longer masks it; post-install checks still run and report first.
+- `pip-install` ran `pip <args>` instead of `pip install <args>`, so the documented `greengate pip-install requests` never installed anything — the failure was hidden by the exit-0 bug above. A leading `install` is still accepted.
 - README install commands for Linux and macOS failed silently for non-root users — `curl -sL` into root-owned `/usr/local/bin` hid the permission error. They now download with `curl -fsSL` and install with `sudo install`, with a no-root `~/.local/bin` alternative.
 - Corrected README and website audit support to match the six implemented dependency-file formats; documented existing Rust AST rules and install-watcher boundaries.
 
@@ -50,5 +95,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README leads with the install-time supply-chain gate rather than breadth.
 - `scan --fix` de-emphasized in favour of suppression and baselines.
 
-[0.3.4]: https://github.com/greengate-dev/greengate/compare/v0.3.3...HEAD
+[0.4.0]: https://github.com/greengate-dev/greengate/compare/v0.3.4...v0.4.0
+[0.3.4]: https://github.com/greengate-dev/greengate/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/greengate-dev/greengate/releases/tag/v0.3.3

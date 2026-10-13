@@ -1,3 +1,5 @@
+use crate::modules::{baseline, suppress};
+use crate::report::{self, Report};
 use crate::utils::{
     config::{SastConfig, ScanConfig},
     files, terminal,
@@ -227,6 +229,9 @@ pub struct Finding {
     pub severity: Severity,
     /// Git blame info (author + commit), populated only with `--blame` flag
     pub blame: Option<String>,
+    /// Set when a `greengate: ignore` comment covers the finding: the
+    /// comment's reason, or empty when it gives none.
+    pub suppressed: Option<String>,
 }
 
 /// Convenience constructor that auto-derives severity from the rule ID.
@@ -244,6 +249,7 @@ pub(crate) fn make_finding(
         commit,
         severity,
         blame: None,
+        suppressed: None,
     }
 }
 
@@ -261,6 +267,8 @@ pub enum OutputFormat {
 pub enum DiffMode {
     Staged,
     Since(String),
+    /// Exactly these files (`--new-since` picks them from the diff).
+    Files(Vec<PathBuf>),
     /// Scan the entire git commit history via `git log --all -p`.
     History,
 }
@@ -378,6 +386,11 @@ fn is_entropy_noise(token: &str, line: &str) -> bool {
     if line.contains("base64,") {
         return true;
     }
+    // greengate's own finding fingerprints, in baselines, reports and
+    // exceptions files.
+    if line.contains(&format!("gg1:{token}")) {
+        return true;
+    }
     false
 }
 
@@ -444,6 +457,72 @@ pub(crate) fn pattern_hits<'p>(
             .filter(|m| !is_known_false_positive(m.as_str()))
             .map(|_| name.as_str())
     })
+}
+
+/// The text a finding of `rule` matched on `line`: the secret pattern's
+/// match, or the flagged token for an entropy rule. Fingerprints hash it, so
+/// a finding keeps its identity when the code around it changes.
+pub fn matched_text(
+    rule: &str,
+    line: &str,
+    patterns: &[(String, Regex)],
+    cfg: &ScanConfig,
+) -> Option<String> {
+    if let Some((_, re)) = patterns.iter().find(|(name, _)| name == rule) {
+        return re.find(line).map(|m| m.as_str().to_string());
+    }
+    flagged_entropy_tokens(line, cfg)
+        .find(|(_, r)| *r == rule)
+        .map(|(token, _)| token.to_string())
+}
+
+// ── Inline suppression ────────────────────────────────────────────────────────
+
+const IGNORE_MARKER: &str = "greengate: ignore";
+
+/// The reason a `greengate: ignore` comment on `line` gives — `reason=…`
+/// (quoted or to the end of the line), or whatever text follows the marker,
+/// as in `// greengate: ignore — test fixture`. Empty when it gives none;
+/// `None` when `line` has no such comment.
+pub(crate) fn ignore_reason(line: &str) -> Option<String> {
+    let at = line.find(IGNORE_MARKER)?;
+    let rest = line[at + IGNORE_MARKER.len()..]
+        .trim()
+        .trim_end_matches("*/")
+        .trim_end_matches("-->")
+        .trim();
+    let reason = match rest.strip_prefix("reason=") {
+        Some(r) => match r.chars().next() {
+            Some(q @ ('"' | '\'')) => r[1..].split(q).next().unwrap_or(""),
+            _ => r,
+        },
+        None => rest.trim_start_matches(['—', '–', '-', ':', ' ']),
+    };
+    Some(reason.trim().to_string())
+}
+
+/// The `greengate: ignore` covering line `idx` of `lines`: one on that line,
+/// or a standalone comment on the line above. Its reason, possibly empty.
+pub(crate) fn covering_ignore(lines: &[&str], idx: usize) -> Option<String> {
+    lines.get(idx).and_then(|l| ignore_reason(l)).or_else(|| {
+        let above = lines.get(idx.checked_sub(1)?)?;
+        if is_standalone_ignore(above) {
+            ignore_reason(above)
+        } else {
+            None
+        }
+    })
+}
+
+/// A comment line holding only the marker: it covers the line after it.
+fn is_standalone_ignore(line: &str) -> bool {
+    line.trim()
+        .trim_start_matches("//")
+        .trim_start_matches('#')
+        .trim_start_matches("/*")
+        .trim_start_matches("<!--")
+        .trim()
+        .starts_with(IGNORE_MARKER)
 }
 
 // ── Git history scan ──────────────────────────────────────────────────────────
@@ -594,7 +673,7 @@ fn run_history_scan(
     let findings: Vec<Finding> = added_lines
         .par_iter()
         .flat_map_iter(|added| {
-            let rules: Vec<&str> = if added.text.contains("greengate: ignore") {
+            let rules: Vec<&str> = if added.text.contains(IGNORE_MARKER) {
                 Vec::new()
             } else {
                 pattern_hits(added.text, all_patterns)
@@ -650,6 +729,7 @@ fn get_changed_files(mode: &DiffMode) -> Result<Vec<PathBuf>> {
     let args: &[&str] = match mode {
         DiffMode::Staged => &["diff", "--cached", "--name-only"],
         DiffMode::Since(commit) => &["diff", commit.as_str(), "--name-only"],
+        DiffMode::Files(files) => return Ok(files.clone()),
         DiffMode::History => unreachable!("History mode is handled before get_changed_files"),
     };
     let output = Command::new("git")
@@ -680,7 +760,7 @@ fn collect_scan_files(
     is_text: bool,
 ) -> Result<Vec<PathBuf>> {
     let files: Vec<PathBuf> = match &opts.diff {
-        Some(mode @ (DiffMode::Staged | DiffMode::Since(_))) => {
+        Some(mode @ (DiffMode::Staged | DiffMode::Since(_) | DiffMode::Files(_))) => {
             if is_text {
                 terminal::info("Diff mode: scanning only changed files...");
             }
@@ -719,27 +799,23 @@ fn scan_lines(
     suppressions: Suppressions,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
-    let mut suppress_next = false;
+    let mut covers_next: Option<String> = None;
     let mut in_pem_block = false;
     for (idx, line) in content.lines().enumerate() {
-        match suppressions {
-            Suppressions::Honor if line.contains("greengate: ignore") => {
-                // A standalone comment line (no other content) suppresses the NEXT
-                // line. An inline trailing comment suppresses only THIS line.
-                suppress_next = line
-                    .trim()
-                    .trim_start_matches("//")
-                    .trim_start_matches('#')
-                    .trim()
-                    .starts_with("greengate: ignore");
-                continue;
+        // An inline trailing comment covers its own line; a standalone comment
+        // line covers itself and the NEXT line. Covered lines are still
+        // scanned, so the report can list what each comment suppresses.
+        let suppressed = match suppressions {
+            Suppressions::Honor => {
+                let here = ignore_reason(line);
+                let carried = covers_next.take();
+                if here.is_some() && is_standalone_ignore(line) {
+                    covers_next.clone_from(&here);
+                }
+                here.or(carried)
             }
-            Suppressions::Honor if suppress_next => {
-                suppress_next = false;
-                continue;
-            }
-            Suppressions::Honor | Suppressions::Ignore => {}
-        }
+            Suppressions::Ignore => None,
+        };
         let (pem_begin, pem_end) = is_pem_boundary(line);
         if pem_begin {
             in_pem_block = true;
@@ -753,12 +829,9 @@ fn scan_lines(
             check_entropy(line, config)
         };
         for rule in pattern_hits(line, patterns).chain(entropy_rules) {
-            findings.push(make_finding(
-                path.to_path_buf(),
-                rule.to_string(),
-                idx + 1,
-                None,
-            ));
+            let mut f = make_finding(path.to_path_buf(), rule.to_string(), idx + 1, None);
+            f.suppressed.clone_from(&suppressed);
+            findings.push(f);
         }
         if pem_end {
             in_pem_block = false;
@@ -1220,10 +1293,41 @@ pub fn emit_findings(findings: &[Finding], format: OutputFormat) -> Result<()> {
         OutputFormat::Gitlab => output_gitlab(findings)?,
     }
 
-    anyhow::bail!(
+    eprintln!(
         "Scan failed: {} secret(s)/PII found. Review the findings above.",
         findings.len()
     );
+    Ok(())
+}
+
+/// Scan findings as a [`Report`] for `command`.
+pub fn findings_report(command: &'static str, findings: &[Finding]) -> Report {
+    let mut report = Report::new(command);
+    report.findings = findings.iter().map(Finding::to_report).collect();
+    report
+}
+
+impl Finding {
+    pub fn to_report(&self) -> report::Finding {
+        let mut f = report::Finding::in_file(
+            &self.rule_id,
+            self.severity.into(),
+            &self.path,
+            self.line,
+            match &self.commit {
+                Some(c) => format!("{} (commit {c})", self.rule_id),
+                None => self.rule_id.clone(),
+            },
+        );
+        f.reference = self.blame.clone();
+        f.suppression = self.suppressed.as_ref().map(|reason| {
+            report::Suppression::new(
+                report::SuppressionKind::Inline,
+                (!reason.is_empty()).then(|| reason.clone()),
+            )
+        });
+        f
+    }
 }
 
 // ── Git blame enrichment ──────────────────────────────────────────────────────
@@ -1281,8 +1385,9 @@ pub fn enrich_with_blame(findings: &mut [Finding]) {
 
 // ── Main entry ────────────────────────────────────────────────────────────────
 
-/// Collect all findings without emitting output. Used by `run_scan` and
-/// the GitHub annotation path in `main.rs`.
+/// Collect all findings without emitting output, including the ones a
+/// `greengate: ignore` covers (see [`split_suppressed`]). Used by `run_scan`
+/// and the scan command in `main.rs`.
 pub fn collect_findings(opts: &ScanOpts<'_>) -> Result<Vec<Finding>> {
     let is_text = matches!(opts.format, OutputFormat::Text);
 
@@ -1319,6 +1424,36 @@ pub fn collect_findings(opts: &ScanOpts<'_>) -> Result<Vec<Finding>> {
 
 // ── Image-scan helpers (public re-exports for image_scan module) ──────────────
 
+/// Scan in-memory sources the way `collect_findings` scans files — regex and
+/// entropy, plus SAST when enabled — honouring `greengate: ignore`.
+pub fn scan_contents(
+    opts: &ScanOpts<'_>,
+    patterns: &[(String, Regex)],
+    sources: &[(PathBuf, String)],
+) -> Vec<Finding> {
+    let mut out: Vec<Finding> = sources
+        .par_iter()
+        .filter(|(path, _)| !(opts.sast_config.enabled && is_sast_file(path)))
+        .flat_map_iter(|(path, content)| {
+            scan_lines(path, content, patterns, opts.config, Suppressions::Honor)
+        })
+        .collect();
+    if opts.sast_config.enabled {
+        out.extend(crate::modules::sast::scan_sources(
+            sources,
+            opts.sast_config,
+            patterns,
+            opts.config,
+        ));
+    }
+    out
+}
+
+/// Split findings into active ones and those a `greengate: ignore` covers.
+pub fn split_suppressed(findings: Vec<Finding>) -> (Vec<Finding>, Vec<Finding>) {
+    findings.into_iter().partition(|f| f.suppressed.is_none())
+}
+
 /// Scan a raw text string against pre-compiled patterns + entropy rules.
 /// `path_label` is used as the `path` field on returned `Finding`s.
 pub fn scan_text_content(
@@ -1330,13 +1465,144 @@ pub fn scan_text_content(
     scan_lines(path_label, content, patterns, cfg, Suppressions::Ignore)
 }
 
-pub fn run_scan(opts: &ScanOpts<'_>) -> Result<()> {
+/// Findings as they were at the `--new-since` base, as fingerprint subjects.
+pub fn base_subjects(
+    opts: &ScanOpts<'_>,
+    diff: &crate::modules::new_since::Diff,
+) -> Result<(String, Vec<baseline::Subject>)> {
+    let patterns = compile_patterns(opts.config)?;
+    let matcher = |rule: &str, line: &str| matched_text(rule, line, &patterns, opts.config);
+    let sources: Vec<(PathBuf, String)> = diff
+        .base
+        .iter()
+        .map(|(p, c)| (p.clone(), c.clone()))
+        .collect();
+    let (at_base, _) = split_suppressed(scan_contents(opts, &patterns, &sources));
+    let mut read = baseline::Sources::new(|p| diff.base.get(p).cloned());
+    let subjects = at_base
+        .iter()
+        .map(|f| baseline::subject(&f.to_report(), &mut read, Some(&matcher)))
+        .collect();
+    Ok((diff.label.clone(), subjects))
+}
+
+/// Exceptions, the `--new-since` base and the baseline over scan findings.
+/// Returns the findings that count, and a report that lists them along with
+/// every suppressed one (`inline` included) and why.
+pub fn apply_suppressions(
+    findings: Vec<Finding>,
+    inline: Vec<Finding>,
+    opts: &ScanOpts<'_>,
+    policy: suppress::Policy,
+    base: Option<(String, Vec<baseline::Subject>)>,
+) -> Result<(Vec<Finding>, Report, suppress::Outcome)> {
+    let patterns = compile_patterns(opts.config)?;
+    let matcher = |rule: &str, line: &str| matched_text(rule, line, &patterns, opts.config);
+    let mut reports: Vec<report::Finding> = findings.iter().map(Finding::to_report).collect();
+    let mut outcome = suppress::apply(
+        &mut reports,
+        &suppress::Options {
+            tool: "scan",
+            policy,
+            matcher: Some(&matcher),
+            base,
+        },
+    )?;
+    let (active, gone) = suppress::partition(
+        findings.into_iter().zip(reports).collect(),
+        &outcome.verdicts,
+    );
+    let (findings, active_reports): (Vec<Finding>, Vec<report::Finding>) =
+        active.into_iter().unzip();
+    let mut report = Report::new("scan");
+    report.findings = active_reports;
+    report.suppressed = inline
+        .iter()
+        .map(Finding::to_report)
+        .chain(gone.into_iter().map(|((_, mut r), s)| {
+            r.suppression = Some(s);
+            r
+        }))
+        .collect();
+    report.warnings = std::mem::take(&mut outcome.warnings);
+    Ok((findings, report, outcome))
+}
+
+/// `greengate baseline migrate`: re-scan, keep the findings a version-1
+/// baseline matched (exact path, rule and line) and write them as version 2.
+/// Returns (entries kept, entries in the old baseline), or `None` when the
+/// baseline is already version 2.
+pub fn migrate_baseline(opts: &ScanOpts<'_>) -> Result<Option<(usize, usize)>> {
+    let path = Path::new(baseline::BASELINE_FILE);
+    let legacy = match baseline::load(path)? {
+        baseline::Loaded::V1(legacy) => legacy,
+        baseline::Loaded::V2(_) => return Ok(None),
+        baseline::Loaded::Missing => anyhow::bail!("there is no {}", path.display()),
+    };
+    let (findings, _) = split_suppressed(collect_findings(opts)?);
+    let known: Vec<&Finding> = findings
+        .iter()
+        .filter(|f| {
+            legacy.contains(&baseline::LegacyEntry {
+                path: baseline::normalize_path(&f.path.to_string_lossy()),
+                rule_id: f.rule_id.clone(),
+                line: f.line,
+            })
+        })
+        .collect();
+    let patterns = compile_patterns(opts.config)?;
+    let matcher = |rule: &str, line: &str| matched_text(rule, line, &patterns, opts.config);
+    let mut sources = baseline::Sources::new(|p| fs::read_to_string(p).ok());
+    let subjects: Vec<baseline::Subject> = known
+        .iter()
+        .map(|f| baseline::subject(&f.to_report(), &mut sources, Some(&matcher)))
+        .collect();
+    let salt = baseline::new_salt()?;
+    let kept = baseline::save(path, "scan", &salt, &baseline::key(&salt, &subjects))?;
+    Ok(Some((kept, legacy.len())))
+}
+
+/// Which files a scan covers, from its flags — the same for `scan` and for a
+/// `run` step. With `--new-since`, also the base its findings are compared
+/// against (the merge base with the ref; `""` means the pull request's base).
+pub fn select_diff(
+    staged: bool,
+    history: bool,
+    changed_since: Option<String>,
+    new_since: Option<&str>,
+) -> Result<(Option<DiffMode>, Option<crate::modules::new_since::Diff>)> {
+    let new_since = new_since
+        .map(|r| crate::modules::new_since::resolve(Some(r)))
+        .transpose()?;
+    let diff = if history {
+        Some(DiffMode::History)
+    } else if staged {
+        Some(DiffMode::Staged)
+    } else if let Some(d) = &new_since {
+        Some(DiffMode::Files(d.changed.clone()))
+    } else {
+        changed_since.map(DiffMode::Since)
+    };
+    Ok((diff, new_since))
+}
+
+pub fn run_scan(
+    opts: &ScanOpts<'_>,
+    policy: suppress::Policy,
+    new_since: Option<&crate::modules::new_since::Diff>,
+) -> Result<Report> {
     let is_text = matches!(opts.format, OutputFormat::Text);
     if is_text {
         terminal::info("Starting secret and PII scan...");
     }
-    let findings = collect_findings(opts)?;
-    emit_findings(&findings, opts.format)
+    let (findings, inline) = split_suppressed(collect_findings(opts)?);
+    let base = new_since.map(|d| base_subjects(opts, d)).transpose()?;
+    let (findings, report, outcome) = apply_suppressions(findings, inline, opts, policy, base)?;
+    emit_findings(&findings, opts.format)?;
+    if is_text {
+        suppress::print_summary(&outcome.notes, &report.suppressed);
+    }
+    Ok(report)
 }
 
 // ── Exclude helpers ───────────────────────────────────────────────────────────
@@ -1363,6 +1629,52 @@ fn is_excluded(path: &Path, excludes: Option<&ignore::overrides::Override>) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ignore_reasons() {
+        let r = |l: &str| ignore_reason(l);
+        assert_eq!(r("x = 1"), None);
+        assert_eq!(r("x  # greengate: ignore").as_deref(), Some(""));
+        assert_eq!(
+            r(r#"k = "v"  // greengate: ignore reason="rotated test key""#).as_deref(),
+            Some("rotated test key")
+        );
+        assert_eq!(
+            r("k  # greengate: ignore reason=no quotes here").as_deref(),
+            Some("no quotes here")
+        );
+        assert_eq!(
+            r("run()  // greengate: ignore — the wrapped package manager").as_deref(),
+            Some("the wrapped package manager")
+        );
+        assert_eq!(
+            r("<!-- greengate: ignore: docs -->").as_deref(),
+            Some("docs")
+        );
+    }
+
+    #[test]
+    fn covering_ignore_is_this_line_or_a_standalone_comment_above() {
+        let lines = [
+            "# greengate: ignore reason=fixture",
+            "A = 1",
+            "B = 2  # greengate: ignore",
+            "C = 3",
+        ];
+        assert_eq!(covering_ignore(&lines, 1).as_deref(), Some("fixture"));
+        assert_eq!(covering_ignore(&lines, 2).as_deref(), Some(""));
+        // An inline comment covers only its own line.
+        assert_eq!(covering_ignore(&lines, 3), None);
+    }
+
+    #[test]
+    fn fingerprints_are_not_entropy_findings() {
+        let cfg = ScanConfig::default();
+        let line = r#"  "fingerprint": "gg1:9f86d081884c7d659a2feaa0c55ad015","#;
+        assert!(check_entropy(line, &cfg).is_empty());
+        // The same hex elsewhere is still flagged.
+        assert!(!check_entropy("k = 9f86d081884c7d659a2feaa0c55ad015", &cfg).is_empty());
+    }
 
     fn compile_builtins() -> Vec<(String, Regex)> {
         BUILTIN_PATTERNS
