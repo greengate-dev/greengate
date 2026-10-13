@@ -329,12 +329,16 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        // uv's own virtualenv bootstrap, not a package's.
-        if name.starts_with("_virtualenv") {
-            continue;
+        // The modules it imports are read from its own directory.
+        let dir = path.parent().unwrap_or(Path::new(""));
+        let signals = inspect::pth_signals(&code, &|m| {
+            inspect::module_source(m, |f| std::fs::read_to_string(dir.join(f)).ok())
+        });
+        // uv's own virtualenv bootstrap, inspected like the rest, is not a
+        // package's startup code.
+        if name != "_virtualenv.pth" || !signals.is_empty() {
+            startup.push(name.clone());
         }
-        startup.push(name.clone());
-        let signals = inspect::pth_signals(&code);
         if !signals.is_empty() {
             // It has not run yet: no Python has started since the sync.
             let quarantined = path.with_extension("pth.greengate-blocked");

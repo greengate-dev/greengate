@@ -3,7 +3,7 @@
 //! contains before and after it runs.
 
 use crate::modules::watch_install::script_signals;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Lifecycle hooks npm runs on install, in order.
@@ -330,49 +330,122 @@ fn benign_pth_statement(stmt: &str) -> bool {
     editable || BENIGN_PTH.contains(&shape.as_str())
 }
 
+/// Why one line of startup code looks malicious: the usual Python signals,
+/// plus writing or deleting files — nothing legitimate does that at
+/// interpreter start — and encoded payloads.
+fn startup_line_signals(l: &str) -> Vec<String> {
+    let mut out = crate::modules::pip_audit::scan_python_signals(l);
+    let writes = l.contains(".write(")
+        || ["'w'", "\"w\"", "'a'", "\"a\"", "'wb'", "\"wb\""]
+            .iter()
+            .any(|m| l.contains("open(") && l.contains(m))
+        || [
+            "os.remove(",
+            "os.unlink(",
+            "shutil.",
+            "os.rename(",
+            "os.chmod(",
+        ]
+        .iter()
+        .any(|m| l.contains(m));
+    if writes {
+        out.push("writes files at Python start".into());
+    }
+    if encoded_blob(l).is_some() {
+        out.push("encoded payload".into());
+    }
+    out
+}
+
+/// Top-level names of the modules Python code imports: `import a.b, c`,
+/// `from a import b`, `__import__('a')`, `importlib.import_module('a')`.
+fn imported_modules(code: &str) -> Vec<String> {
+    let ident = |s: &str| {
+        let top = s.split('.').next().unwrap_or("");
+        (!top.is_empty()
+            && !top.starts_with(|c: char| c.is_ascii_digit())
+            && top.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .then(|| top.to_string())
+    };
+    let mut out: Vec<String> = Vec::new();
+    for line in code.lines() {
+        for stmt in pth_statements(line) {
+            let stmt = stmt.trim();
+            if let Some(names) = stmt.strip_prefix("import ") {
+                out.extend(
+                    names
+                        .split(',')
+                        .filter_map(|n| n.split_whitespace().next().and_then(ident)),
+                );
+            } else if let Some(from) = stmt.strip_prefix("from ") {
+                out.extend(from.split_whitespace().next().and_then(ident));
+            }
+            for call in ["__import__(", "import_module("] {
+                for (i, _) in stmt.match_indices(call) {
+                    let arg = stmt[i + call.len()..].trim_start();
+                    let Some(q) = arg.chars().next().filter(|c| *c == '\'' || *c == '"') else {
+                        continue;
+                    };
+                    out.extend(arg[1..].split(q).next().and_then(ident));
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Why the executable lines of a `.pth` file look malicious; empty when
-/// they do not. `.pth` lines run at every Python start, so on top of the
-/// usual Python signals, writing or deleting files counts: nothing
-/// legitimate does that at interpreter start. Statements of well-known
-/// benign lines are set aside first ([`BENIGN_PTH`]), since several use
-/// `__import__` or `os.environ`; everything else on the line, including
-/// anything appended to a benign statement, is inspected.
-pub fn pth_signals(code: &str) -> Vec<String> {
+/// they do not. `.pth` lines run at every Python start
+/// ([`startup_line_signals`]). Statements of well-known benign lines are
+/// set aside first ([`BENIGN_PTH`]), since several use `__import__` or
+/// `os.environ`; everything else on the line, including anything appended
+/// to a benign statement, is inspected.
+///
+/// A line that imports a module runs that module too, so every module the
+/// lines import — benign ones included, and what those import in turn — is
+/// inspected the same way when `module` finds its source (the wheel or the
+/// environment ships it; `None` for the standard library and the like).
+pub fn pth_signals(code: &str, module: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in code.lines() {
         let rest: Vec<&str> = pth_statements(line.trim())
             .into_iter()
             .filter(|s| !benign_pth_statement(s))
             .collect();
-        if rest.is_empty() {
+        if !rest.is_empty() {
+            out.extend(startup_line_signals(&rest.join(";")));
+        }
+    }
+    let mut queue = imported_modules(code);
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Some(name) = queue.pop() {
+        // A bound on helper chains; legitimate ones are one module deep.
+        if seen.len() >= 32 || !seen.insert(name.clone()) {
             continue;
         }
-        let l = rest.join(";");
-        let l = l.as_str();
-        out.extend(crate::modules::pip_audit::scan_python_signals(l));
-        let writes = l.contains(".write(")
-            || ["'w'", "\"w\"", "'a'", "\"a\"", "'wb'", "\"wb\""]
-                .iter()
-                .any(|m| l.contains("open(") && l.contains(m))
-            || [
-                "os.remove(",
-                "os.unlink(",
-                "shutil.",
-                "os.rename(",
-                "os.chmod(",
-            ]
-            .iter()
-            .any(|m| l.contains(m));
-        if writes {
-            out.push("writes files at Python start".into());
+        let Some(source) = module(&name) else {
+            continue;
+        };
+        for line in source.lines() {
+            out.extend(
+                startup_line_signals(line)
+                    .into_iter()
+                    .map(|s| format!("{s} (in module {name})")),
+            );
         }
-        if encoded_blob(l).is_some() {
-            out.push("encoded payload".into());
-        }
+        queue.extend(imported_modules(&source));
     }
     out.sort();
     out.dedup();
     out
+}
+
+/// The source of module `name` in a directory of installed or packed
+/// modules: `name.py`, else `name/__init__.py`, read through `read`.
+pub fn module_source(name: &str, read: impl Fn(&str) -> Option<String>) -> Option<String> {
+    read(&format!("{name}.py")).or_else(|| read(&format!("{name}/__init__.py")))
 }
 
 /// The length of the longest run of base64/hex characters that mixes
@@ -551,7 +624,7 @@ mod tests {
             // The oldest one.
             "import sys, types, os;p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('zope',));ie = os.path.exists(os.path.join(p,'__init__.py'));m = not ie and sys.modules.setdefault('zope', types.ModuleType('zope'));mp = (m or []) and m.__dict__.setdefault('__path__',[]);(p not in mp) and mp.append(p)",
         ] {
-            assert!(pth_signals(benign).is_empty(), "{benign}");
+            assert!(pth_signals(benign, &|_| None).is_empty(), "{benign}");
         }
         for bad in [
             "import os; open(os.path.expanduser('~/x'), 'w').write('x')",
@@ -566,8 +639,39 @@ mod tests {
             // A `;` inside a string does not hide what follows it.
             "import _virtualenv; x = ';'; import subprocess; subprocess.run('id')",
         ] {
-            assert!(!pth_signals(bad).is_empty(), "{bad}");
+            assert!(!pth_signals(bad, &|_| None).is_empty(), "{bad}");
         }
+    }
+
+    #[test]
+    fn modules_a_pth_imports_are_inspected() {
+        let finder = "import __editable___fx_finder; __editable___fx_finder.install()";
+        // setuptools' real finder: imports and path hooks, nothing else.
+        let real = "import sys\nfrom importlib.machinery import ModuleSpec, PathFinder\n\
+                    MAPPING = {'fx': '/src/fx'}\ndef install():\n    sys.meta_path.append(None)\n";
+        let shipped = |src: &'static str| {
+            move |m: &str| (m == "__editable___fx_finder").then(|| src.to_string())
+        };
+        assert!(pth_signals(finder, &shipped(real)).is_empty());
+        let evil = "def install():\n    open('/tmp/canary', 'w').write('x')\n";
+        let found = pth_signals(finder, &shipped(evil));
+        assert_eq!(
+            found,
+            ["writes files at Python start (in module __editable___fx_finder)"]
+        );
+        // A helper's own imports are followed too.
+        let modules = |m: &str| match m {
+            "_virtualenv" => Some("import _helper2\n".to_string()),
+            "_helper2" => Some("import os; os.system('id')\n".to_string()),
+            _ => None,
+        };
+        assert!(!pth_signals("import _virtualenv", &modules).is_empty());
+        assert_eq!(
+            imported_modules(
+                "import a.b, c as d; from e.f import g; __import__('h.i'); importlib.import_module(\"j\")"
+            ),
+            ["a", "c", "e", "h", "j"]
+        );
     }
 
     #[test]

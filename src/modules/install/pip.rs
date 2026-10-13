@@ -152,6 +152,23 @@ fn wheel_pth(path: &Path) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
+/// A file at the root of a wheel (`name.py`, `pkg/__init__.py`), as text.
+fn wheel_file(path: &Path, name: &str) -> Option<String> {
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path).ok()?).ok()?;
+    let f = zip.by_name(name).ok()?;
+    let mut text = String::new();
+    f.take(1024 * 1024).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// Why a wheel's `.pth` code looks malicious ([`super::inspect::pth_signals`]),
+/// with the modules it imports read from the wheel itself.
+fn wheel_pth_signals(path: &Path, code: &str) -> Vec<String> {
+    super::inspect::pth_signals(code, &|m| {
+        super::inspect::module_source(m, |f| wheel_file(path, f))
+    })
+}
+
 /// `setup.py` from an sdist (`.tar.gz` or `.zip`), if it has one.
 fn sdist_setup_py(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_string_lossy().into_owned();
@@ -624,7 +641,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
             Kind::Wheel => {
                 for (pth, code) in wheel_pth(path).unwrap_or_default() {
                     startup_code.push(format!("{}=={} ({pth})", item.name, item.version));
-                    let signals = super::inspect::pth_signals(&code);
+                    let signals = wheel_pth_signals(path, &code);
                     if !signals.is_empty() {
                         let f = package_finding(
                             "INSTALL/StartupCode",
@@ -755,7 +772,7 @@ pub fn run(opts: InstallOpts<'_>) -> Result<Report> {
     for e in std::fs::read_dir(&built)?.flatten() {
         let p = e.path();
         for (pth, code) in wheel_pth(&p).unwrap_or_default() {
-            let signals = super::inspect::pth_signals(&code);
+            let signals = wheel_pth_signals(&p, &code);
             if !signals.is_empty() {
                 report.findings.push(package_finding(
                     "INSTALL/StartupCode",

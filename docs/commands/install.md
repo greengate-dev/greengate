@@ -77,9 +77,9 @@ package's scripts run in a sandbox where:
   toolchains a build needs (`PATH` entries, `~/.nvm`, `~/.cargo`, `~/.rustup`,
   `~/.local/share/uv`, node-gyp headers, …), which stay read-only; credential
   files inside those (`~/.cargo/credentials`, …) stay masked,
-- the project's secret files are masked, in workspace packages too: `.env`
-  and `.env.*`, `.npmrc`, `.yarnrc.yml`, `.pypirc`, `.netrc`,
-  `.git-credentials`, `.git/config`,
+- the project's secret files are masked, in workspace packages and behind
+  symlinked directories too: `.env` and `.env.*`, `.npmrc`, `.yarnrc.yml`,
+  `.pypirc`, `.netrc`, `.git-credentials`, `.git/config`,
 - there is no network (unless the package is listed in
   `[supply_chain] script_network`), and the script has its own namespaces
   and terminal session.
@@ -128,7 +128,7 @@ afterwards as usual — they are the project's code.
 | `INSTALL/UnplannedPackage` | A package was installed that the plan did not contain. The install stops before any script runs; its own scripts never run, even under `--no-fail`. |
 | `INSTALL/BuildNotAllowed` | pnpm will not run this package's install scripts (not in `onlyBuiltDependencies`), so greengate does not either. |
 | `INSTALL/SuspiciousBuildScript` | A new crate's build script or proc-macro uses networking, shells out, or embeds an encoded payload. |
-| `INSTALL/StartupCode` | A wheel, downloaded or built from source, adds a `.pth` file whose code runs at every Python start and looks suspicious. |
+| `INSTALL/StartupCode` | A wheel, downloaded or built from source, adds a `.pth` file whose code runs at every Python start — its lines or a module they import from the wheel — and looks suspicious. |
 | `INSTALL/HashMismatch` | A downloaded pip artifact does not match the sha256 the index published. |
 
 Plus every `deps check` rule from the plan phase.

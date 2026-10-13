@@ -17,6 +17,7 @@
 //! filesystem afterwards.
 
 use anyhow::{Result, bail};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -284,28 +285,46 @@ pub fn keep_var(name: &str, env_allow: &[String]) -> bool {
 /// settings such as `PIP_INDEX_URL` or `HTTPS_PROXY` often embed a
 /// credential; the URL itself stays, so a private index is not swapped for
 /// a public one, it only refuses the unauthenticated request.
+///
+/// The user information is everything up to the last `@` before the path
+/// (the first `/`): it may hold `:`, `,`, `;`, `?` or `#` written out
+/// unencoded, and none of them hides the rest. Several URLs can share a
+/// value, separated by whitespace or commas; a proxy written without a
+/// scheme (`user:password@proxy:3128`) is covered too.
 pub fn without_url_credentials(value: &str) -> Option<String> {
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    let mut changed = false;
-    while let Some(i) = rest.find("://") {
-        let (head, tail) = rest.split_at(i + 3);
-        out.push_str(head);
-        let end = tail
-            .find(|c: char| matches!(c, '/' | '?' | '#' | ',' | ';') || c.is_whitespace())
-            .unwrap_or(tail.len());
-        let authority = &tail[..end];
-        match authority.rfind('@') {
-            Some(at) => {
-                out.push_str(&authority[at + 1..]);
-                changed = true;
+    let mut cut: Vec<(usize, usize)> = Vec::new();
+    let mut offset = 0;
+    for word in value.split_inclusive(char::is_whitespace) {
+        let w = word.trim_end();
+        let schemes: Vec<usize> = w.match_indices("://").map(|(i, _)| i + 3).collect();
+        for &start in &schemes {
+            let end = w[start..].find(['/', '\\']).map_or(w.len(), |e| start + e);
+            if let Some(at) = w[start..end].rfind('@') {
+                cut.push((offset + start, offset + start + at + 1));
             }
-            None => out.push_str(authority),
         }
-        rest = &tail[end..];
+        if schemes.is_empty()
+            && let Some(at) = w.rfind('@')
+            && w[..at].contains(':')
+            && !w[..at].contains(['/', '\\'])
+        {
+            cut.push((offset, offset + at + 1));
+        }
+        offset += word.len();
     }
-    out.push_str(rest);
-    changed.then_some(out)
+    if cut.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut pos = 0;
+    for (from, to) in cut {
+        if from >= pos {
+            out.push_str(&value[pos..from]);
+            pos = to;
+        }
+    }
+    out.push_str(&value[pos..]);
+    Some(out)
 }
 
 /// Reduce what `cmd` inherits of `vars` (the environment) to what an
@@ -450,10 +469,18 @@ impl Sandbox<'_> {
     }
 }
 
+/// The most directories [`project_secrets`] searches; past it, it warns
+/// that the rest are not masked.
+const SECRET_SEARCH_MAX_DIRS: usize = 50_000;
+
 /// Files in the project that may hold credentials: every `.env*` and
 /// [`PROJECT_SECRETS`] file in the root and in workspace packages, at any
-/// depth outside [`SECRET_SEARCH_SKIP`], and `.git/config`. Searched once
-/// per project and run, not once per package.
+/// depth outside [`SECRET_SEARCH_SKIP`], and `.git/config` — each by its
+/// real path, which is where the mask goes. Symlinked directories are
+/// followed wherever they lead (a shared `config/` outside the project is
+/// readable in the sandbox too), each real directory once; a link to the
+/// project or one of its parents adds nothing, so it is not followed.
+/// Searched once per project and run, not once per package.
 fn project_secrets(project: &Path) -> Vec<PathBuf> {
     static FOUND: std::sync::Mutex<Vec<(PathBuf, Vec<PathBuf>)>> =
         std::sync::Mutex::new(Vec::new());
@@ -461,28 +488,42 @@ fn project_secrets(project: &Path) -> Vec<PathBuf> {
     if let Some((_, files)) = found.iter().find(|(p, _)| p == project) {
         return files.clone();
     }
+    let root = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
     let mut out: Vec<PathBuf> = Vec::new();
-    let mut stack = vec![project.to_path_buf()];
+    let mut seen: HashSet<PathBuf> = HashSet::from([root.clone()]);
+    let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
+        if seen.len() > SECRET_SEARCH_MAX_DIRS {
+            crate::utils::terminal::warn(&format!(
+                "More than {SECRET_SEARCH_MAX_DIRS} directories in {}: secret files past them are not masked from install scripts.",
+                project.display()
+            ));
+            break;
+        }
         for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let n = e.file_name();
             let n = n.to_string_lossy();
             let path = e.path();
-            // Directory symlinks are not followed (no loops, nothing
-            // outside the project); file symlinks are masked like files.
-            if e.file_type().is_ok_and(|t| t.is_dir()) {
-                if !SECRET_SEARCH_SKIP.contains(&n.as_ref()) && !path.join("pyvenv.cfg").is_file()
+            if path.is_dir() {
+                let Ok(real) = std::fs::canonicalize(&path) else {
+                    continue;
+                };
+                if SECRET_SEARCH_SKIP.contains(&n.as_ref())
+                    || real.join("pyvenv.cfg").is_file()
+                    || root.starts_with(&real)
+                    || !seen.insert(real.clone())
                 {
-                    stack.push(path);
+                    continue;
                 }
+                stack.push(real);
             } else if is_secret_file(&n) && path.is_file() {
-                out.push(path);
+                out.extend(std::fs::canonicalize(&path).ok());
             }
         }
     }
-    out.push(project.join(".git/config"));
-    out.retain(|p| p.is_file());
+    out.extend(std::fs::canonicalize(root.join(".git/config")).ok());
     out.sort();
+    out.dedup();
     found.push((project.to_path_buf(), out.clone()));
     out
 }
@@ -612,6 +653,28 @@ mod tests {
         );
         assert_eq!(without_url_credentials("https://pypi.org/simple"), None);
         assert_eq!(without_url_credentials("localhost,.corp"), None);
+        // Unencoded punctuation in the password does not end it early.
+        for pw in ["dummy,password", "pw;x", "p?w", "p#w", "a:b@c"] {
+            let url = format!("https://dummy-user:{pw}@example.invalid/simple");
+            assert_eq!(
+                without_url_credentials(&url).as_deref(),
+                Some("https://example.invalid/simple"),
+                "{pw}"
+            );
+        }
+        assert_eq!(
+            without_url_credentials(
+                "https://u:p@a.example,https://b.example,https://v:q@c.example"
+            )
+            .as_deref(),
+            Some("https://a.example,https://b.example,https://c.example")
+        );
+        // A proxy without a scheme; scp-style git remotes are not credentials.
+        assert_eq!(
+            without_url_credentials("user:pa,ss@proxy.corp:3128").as_deref(),
+            Some("proxy.corp:3128")
+        );
+        assert_eq!(without_url_credentials("git@github.com:org/repo.git"), None);
     }
 
     #[test]
@@ -719,6 +782,64 @@ mod tests {
         assert!(masked(".git/config") > at("--ro-bind", &project.path().join(".git")));
         // After the writable package directory, which would show it again.
         assert!(masked("packages/app/.env") > at("--bind", &app));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn secrets_behind_directory_symlinks_are_masked() {
+        if !bwrap_works() {
+            eprintln!("bubblewrap unavailable here; skipped");
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        // A shared config directory the sandbox can see, and one it cannot
+        // (under the private /tmp), both linked from a workspace package.
+        let shared = tempfile::tempdir().unwrap();
+        let hidden = tempfile::tempdir().unwrap();
+        std::fs::write(shared.path().join(".env"), "SECRET=shared").unwrap();
+        std::fs::write(shared.path().join("app.json"), "{}").unwrap();
+        std::fs::create_dir_all(hidden.path().join("deep")).unwrap();
+        std::fs::write(hidden.path().join("deep/.env"), "SECRET=hidden").unwrap();
+        let app = project.path().join("packages/app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::os::unix::fs::symlink(shared.path(), app.join("config")).unwrap();
+        std::os::unix::fs::symlink(hidden.path(), app.join("other")).unwrap();
+        // Cycles and links to a parent are not followed.
+        std::os::unix::fs::symlink(project.path(), app.join("root")).unwrap();
+        std::os::unix::fs::symlink(&app, shared.path().join("back")).unwrap();
+        let found = project_secrets(project.path());
+        let real = |p: &Path| std::fs::canonicalize(p).unwrap();
+        assert_eq!(found, {
+            let mut v = vec![
+                real(&shared.path().join(".env")),
+                real(&hidden.path().join("deep/.env")),
+            ];
+            v.sort();
+            v
+        });
+        let sb = Sandbox {
+            isolation: Isolation::Bwrap,
+            project: project.path(),
+            tmp: tmp.path(),
+            writable: Vec::new(),
+            read_only: vec![shared.path().to_path_buf()],
+            inner: Vec::new(),
+            network: false,
+            env_allow: &[],
+            project_copy: None,
+        };
+        let script = "test -s packages/app/config/app.json && test ! -s packages/app/config/.env && echo ok";
+        let out = sb
+            .command_with_home("sh", &["-c".into(), script.into()], None)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "ok",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[cfg(target_os = "linux")]
