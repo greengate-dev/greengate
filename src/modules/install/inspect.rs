@@ -357,15 +357,34 @@ fn startup_line_signals(l: &str) -> Vec<String> {
     out
 }
 
-/// Top-level names of the modules Python code imports: `import a.b, c`,
-/// `from a import b`, `__import__('a')`, `importlib.import_module('a')`.
-fn imported_modules(code: &str) -> Vec<String> {
-    let ident = |s: &str| {
-        let top = s.split('.').next().unwrap_or("");
-        (!top.is_empty()
-            && !top.starts_with(|c: char| c.is_ascii_digit())
-            && top.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-        .then(|| top.to_string())
+/// The modules Python code imports, by full name: `import a.b, c`,
+/// `from a.b import c` (`a.b`, and `a.b.c` in case `c` is a submodule),
+/// `__import__('a.b')`, `importlib.import_module('a.b')`. Relative imports
+/// (`from .x import y`) resolve against `package`, the package the code
+/// belongs to; without one they are skipped.
+fn imported_modules(code: &str, package: Option<&str>) -> Vec<String> {
+    let valid = |name: &str| {
+        name.split('.').all(|part| {
+            !part.is_empty()
+                && !part.starts_with(|c: char| c.is_ascii_digit())
+                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    // `from` targets: `..x` is `x` in the parent of `package`.
+    let absolute = |target: &str| -> Option<String> {
+        let rest = target.trim_start_matches('.');
+        let dots = target.len() - rest.len();
+        if dots == 0 {
+            return Some(rest.to_string());
+        }
+        let mut base: Vec<&str> = package?.split('.').collect();
+        for _ in 1..dots {
+            base.pop()?;
+        }
+        if !rest.is_empty() {
+            base.push(rest);
+        }
+        (!base.is_empty()).then(|| base.join("."))
     };
     let mut out: Vec<String> = Vec::new();
     for line in code.lines() {
@@ -375,10 +394,19 @@ fn imported_modules(code: &str) -> Vec<String> {
                 out.extend(
                     names
                         .split(',')
-                        .filter_map(|n| n.split_whitespace().next().and_then(ident)),
+                        .filter_map(|n| n.split_whitespace().next())
+                        .map(str::to_string),
                 );
-            } else if let Some(from) = stmt.strip_prefix("from ") {
-                out.extend(from.split_whitespace().next().and_then(ident));
+            } else if let Some(from) = stmt.strip_prefix("from ")
+                && let Some((target, names)) = from.split_once(" import ")
+                && let Some(module) = absolute(target.trim())
+            {
+                for n in names.replace(['(', ')'], " ").split(',') {
+                    if let Some(n) = n.split_whitespace().next().filter(|n| *n != "*") {
+                        out.push(format!("{module}.{n}"));
+                    }
+                }
+                out.push(module);
             }
             for call in ["__import__(", "import_module("] {
                 for (i, _) in stmt.match_indices(call) {
@@ -386,11 +414,12 @@ fn imported_modules(code: &str) -> Vec<String> {
                     let Some(q) = arg.chars().next().filter(|c| *c == '\'' || *c == '"') else {
                         continue;
                     };
-                    out.extend(arg[1..].split(q).next().and_then(ident));
+                    out.extend(arg[1..].split(q).next().map(str::to_string));
                 }
             }
         }
     }
+    out.retain(|n| valid(n));
     out.sort();
     out.dedup();
     out
@@ -403,11 +432,13 @@ fn imported_modules(code: &str) -> Vec<String> {
 /// `os.environ`; everything else on the line, including anything appended
 /// to a benign statement, is inspected.
 ///
-/// A line that imports a module runs that module too, so every module the
-/// lines import — benign ones included, and what those import in turn — is
-/// inspected the same way when `module` finds its source (the wheel or the
-/// environment ships it; `None` for the standard library and the like).
-pub fn pth_signals(code: &str, module: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+/// A line that imports a module runs that module too — and, for `a.b.c`,
+/// `a` and `a.b` first — so every module the lines import, benign ones
+/// included, and what those import in turn, is inspected the same way
+/// when `module` finds it (the wheel or the environment ships it; `None`
+/// for the standard library and the like). `module` gives its source and
+/// whether it is a package (`__init__.py`).
+pub fn pth_signals(code: &str, module: &dyn Fn(&str) -> Option<(String, bool)>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for line in code.lines() {
         let rest: Vec<&str> = pth_statements(line.trim())
@@ -418,14 +449,26 @@ pub fn pth_signals(code: &str, module: &dyn Fn(&str) -> Option<String>) -> Vec<S
             out.extend(startup_line_signals(&rest.join(";")));
         }
     }
-    let mut queue = imported_modules(code);
+    // Each name with its parent packages, which Python imports first.
+    let with_parents = |names: Vec<String>| -> Vec<String> {
+        names
+            .iter()
+            .flat_map(|n| {
+                n.match_indices('.')
+                    .map(|(i, _)| n[..i].to_string())
+                    .chain([n.clone()])
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    let mut queue = with_parents(imported_modules(code, None));
     let mut seen: HashSet<String> = HashSet::new();
     while let Some(name) = queue.pop() {
-        // A bound on helper chains; legitimate ones are one module deep.
-        if seen.len() >= 32 || !seen.insert(name.clone()) {
+        // A bound on helper chains; legitimate ones are a module or two.
+        if seen.len() >= 64 || !seen.insert(name.clone()) {
             continue;
         }
-        let Some(source) = module(&name) else {
+        let Some((source, is_package)) = module(&name) else {
             continue;
         };
         for line in source.lines() {
@@ -435,17 +478,26 @@ pub fn pth_signals(code: &str, module: &dyn Fn(&str) -> Option<String>) -> Vec<S
                     .map(|s| format!("{s} (in module {name})")),
             );
         }
-        queue.extend(imported_modules(&source));
+        let package = if is_package {
+            Some(name.as_str())
+        } else {
+            name.rsplit_once('.').map(|(p, _)| p)
+        };
+        queue.extend(with_parents(imported_modules(&source, package)));
     }
     out.sort();
     out.dedup();
     out
 }
 
-/// The source of module `name` in a directory of installed or packed
-/// modules: `name.py`, else `name/__init__.py`, read through `read`.
-pub fn module_source(name: &str, read: impl Fn(&str) -> Option<String>) -> Option<String> {
-    read(&format!("{name}.py")).or_else(|| read(&format!("{name}/__init__.py")))
+/// Module `name` (dotted) in a directory of installed or packed modules:
+/// `a/b.py`, else the package `a/b/__init__.py`, read through `read`; with
+/// whether it is a package.
+pub fn module_source(name: &str, read: impl Fn(&str) -> Option<String>) -> Option<(String, bool)> {
+    let path = name.replace('.', "/");
+    read(&format!("{path}.py"))
+        .map(|s| (s, false))
+        .or_else(|| read(&format!("{path}/__init__.py")).map(|s| (s, true)))
 }
 
 /// The length of the longest run of base64/hex characters that mixes
@@ -650,7 +702,7 @@ mod tests {
         let real = "import sys\nfrom importlib.machinery import ModuleSpec, PathFinder\n\
                     MAPPING = {'fx': '/src/fx'}\ndef install():\n    sys.meta_path.append(None)\n";
         let shipped = |src: &'static str| {
-            move |m: &str| (m == "__editable___fx_finder").then(|| src.to_string())
+            move |m: &str| (m == "__editable___fx_finder").then(|| (src.to_string(), false))
         };
         assert!(pth_signals(finder, &shipped(real)).is_empty());
         let evil = "def install():\n    open('/tmp/canary', 'w').write('x')\n";
@@ -661,17 +713,48 @@ mod tests {
         );
         // A helper's own imports are followed too.
         let modules = |m: &str| match m {
-            "_virtualenv" => Some("import _helper2\n".to_string()),
-            "_helper2" => Some("import os; os.system('id')\n".to_string()),
+            "_virtualenv" => Some(("import _helper2\n".to_string(), false)),
+            "_helper2" => Some(("import os; os.system('id')\n".to_string(), false)),
             _ => None,
         };
         assert!(!pth_signals("import _virtualenv", &modules).is_empty());
         assert_eq!(
             imported_modules(
-                "import a.b, c as d; from e.f import g; __import__('h.i'); importlib.import_module(\"j\")"
+                "import a.b, c as d; from e.f import g, (h as i); __import__('j.k'); importlib.import_module(\"l\")",
+                None
             ),
-            ["a", "c", "e", "h", "j"]
+            ["a.b", "c", "e.f", "e.f.g", "e.f.h", "j.k", "l"]
         );
+        assert_eq!(
+            imported_modules(
+                "from . import x; from .y import z; from ..w import v",
+                Some("p.q")
+            ),
+            ["p.q", "p.q.x", "p.q.y", "p.q.y.z", "p.w", "p.w.v"]
+        );
+        assert!(imported_modules("from . import x", None).is_empty());
+    }
+
+    #[test]
+    fn submodules_a_pth_imports_are_inspected() {
+        // A wheel's files, as `module_source` reads them.
+        let files = |f: &str| match f {
+            "fixture_pkg/__init__.py" => Some(String::new()),
+            "fixture_pkg/payload.py" => Some("open('/tmp/canary', 'w').write('x')\n".into()),
+            "fixture_pkg/rel/__init__.py" => Some("from . import inner\n".into()),
+            "fixture_pkg/rel/inner.py" => Some("import os; os.system('id')\n".into()),
+            _ => None,
+        };
+        let module = |m: &str| module_source(m, files);
+        for line in [
+            "import fixture_pkg.payload",
+            "from fixture_pkg import payload",
+            "import __editable___fx_finder; __import__('fixture_pkg.payload')",
+            "import fixture_pkg.rel",
+        ] {
+            assert!(!pth_signals(line, &module).is_empty(), "{line}");
+        }
+        assert!(pth_signals("import fixture_pkg", &module).is_empty());
     }
 
     #[test]

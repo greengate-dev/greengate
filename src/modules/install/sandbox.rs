@@ -477,10 +477,11 @@ const SECRET_SEARCH_MAX_DIRS: usize = 50_000;
 /// [`PROJECT_SECRETS`] file in the root and in workspace packages, at any
 /// depth outside [`SECRET_SEARCH_SKIP`], and `.git/config` — each by its
 /// real path, which is where the mask goes. Symlinked directories are
-/// followed wherever they lead (a shared `config/` outside the project is
-/// readable in the sandbox too), each real directory once; a link to the
-/// project or one of its parents adds nothing, so it is not followed.
-/// Searched once per project and run, not once per package.
+/// followed wherever they lead — a shared `config/` outside the project, or
+/// a parent of the project, whose other directories are readable in the
+/// sandbox too — each real directory once, so the project itself and link
+/// cycles are walked only once. `/proc`, `/sys` and `/dev` are the
+/// sandbox's own. Searched once per project and run, not once per package.
 fn project_secrets(project: &Path) -> Vec<PathBuf> {
     static FOUND: std::sync::Mutex<Vec<(PathBuf, Vec<PathBuf>)>> =
         std::sync::Mutex::new(Vec::new());
@@ -510,7 +511,9 @@ fn project_secrets(project: &Path) -> Vec<PathBuf> {
                 };
                 if SECRET_SEARCH_SKIP.contains(&n.as_ref())
                     || real.join("pyvenv.cfg").is_file()
-                    || root.starts_with(&real)
+                    || ["/proc", "/sys", "/dev"]
+                        .iter()
+                        .any(|d| real.starts_with(d))
                     || !seen.insert(real.clone())
                 {
                     continue;
@@ -805,7 +808,7 @@ mod tests {
         std::fs::create_dir_all(&app).unwrap();
         std::os::unix::fs::symlink(shared.path(), app.join("config")).unwrap();
         std::os::unix::fs::symlink(hidden.path(), app.join("other")).unwrap();
-        // Cycles and links to a parent are not followed.
+        // Cycles end at directories already searched.
         std::os::unix::fs::symlink(project.path(), app.join("root")).unwrap();
         std::os::unix::fs::symlink(&app, shared.path().join("back")).unwrap();
         let found = project_secrets(project.path());
@@ -830,6 +833,51 @@ mod tests {
             project_copy: None,
         };
         let script = "test -s packages/app/config/app.json && test ! -s packages/app/config/.env && echo ok";
+        let out = sb
+            .command_with_home("sh", &["-c".into(), script.into()], None)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "ok",
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn links_to_a_parent_directory_are_searched() {
+        if !bwrap_works() {
+            eprintln!("bubblewrap unavailable here; skipped");
+            return;
+        }
+        // outer/proj is the project; outer/sibling/.env is reachable
+        // through a workspace link to outer.
+        let outer = tempfile::tempdir().unwrap();
+        let project = outer.path().join("proj");
+        let app = project.join("packages/app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(outer.path().join("sibling")).unwrap();
+        std::fs::write(outer.path().join("sibling/.env"), "SECRET=x").unwrap();
+        std::fs::write(outer.path().join("sibling/readme"), "x").unwrap();
+        std::os::unix::fs::symlink(outer.path(), app.join("config")).unwrap();
+        let real = std::fs::canonicalize(outer.path().join("sibling/.env")).unwrap();
+        assert_eq!(project_secrets(&project), [real]);
+        let tmp = tempfile::tempdir().unwrap();
+        let sb = Sandbox {
+            isolation: Isolation::Bwrap,
+            project: &project,
+            tmp: tmp.path(),
+            writable: Vec::new(),
+            // Stands in for a parent directory the sandbox can see.
+            read_only: vec![outer.path().to_path_buf()],
+            inner: Vec::new(),
+            network: false,
+            env_allow: &[],
+            project_copy: None,
+        };
+        let script = "test -s packages/app/config/sibling/readme && test ! -s packages/app/config/sibling/.env && echo ok";
         let out = sb
             .command_with_home("sh", &["-c".into(), script.into()], None)
             .output()
