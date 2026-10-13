@@ -359,16 +359,34 @@ fn startup_line_signals(l: &str) -> Vec<String> {
 
 /// The modules Python code imports, by full name: `import a.b, c`,
 /// `from a.b import c` (`a.b`, and `a.b.c` in case `c` is a submodule),
-/// `__import__('a.b')`, `importlib.import_module('a.b')`. Relative imports
-/// (`from .x import y`) resolve against `package`, the package the code
-/// belongs to; without one they are skipped.
+/// `__import__('a.b')`, `importlib.import_module('a.b')` — read from the
+/// syntax tree, so parenthesised and continued imports spanning lines and
+/// imports inside functions count. Relative imports (`from .x import y`)
+/// resolve against `package`, the package the code belongs to; without one
+/// they are skipped.
 fn imported_modules(code: &str, package: Option<&str>) -> Vec<String> {
-    let valid = |name: &str| {
-        name.split('.').all(|part| {
-            !part.is_empty()
-                && !part.starts_with(|c: char| c.is_ascii_digit())
-                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
+    let mut parser = tree_sitter::Parser::new();
+    let language: tree_sitter::Language = tree_sitter_python::LANGUAGE.into();
+    if parser.set_language(&language).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(code, None) else {
+        return Vec::new();
+    };
+    let src = code.as_bytes();
+    // Node text without whitespace (`a . b` is `a.b`).
+    let text = |n: tree_sitter::Node<'_>| -> String {
+        n.utf8_text(src)
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    // The module named by an `import` list entry (`a.b`, `a.b as c`).
+    let entry = |n: tree_sitter::Node<'_>| match n.kind() {
+        "dotted_name" => Some(text(n)),
+        "aliased_import" => n.child_by_field_name("name").map(text),
+        _ => None,
     };
     // `from` targets: `..x` is `x` in the parent of `package`.
     let absolute = |target: &str| -> Option<String> {
@@ -387,38 +405,61 @@ fn imported_modules(code: &str, package: Option<&str>) -> Vec<String> {
         (!base.is_empty()).then(|| base.join("."))
     };
     let mut out: Vec<String> = Vec::new();
-    for line in code.lines() {
-        for stmt in pth_statements(line) {
-            let stmt = stmt.trim();
-            if let Some(names) = stmt.strip_prefix("import ") {
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "import_statement" => {
+                let mut cursor = node.walk();
                 out.extend(
-                    names
-                        .split(',')
-                        .filter_map(|n| n.split_whitespace().next())
-                        .map(str::to_string),
+                    node.children_by_field_name("name", &mut cursor)
+                        .filter_map(entry),
                 );
-            } else if let Some(from) = stmt.strip_prefix("from ")
-                && let Some((target, names)) = from.split_once(" import ")
-                && let Some(module) = absolute(target.trim())
-            {
-                for n in names.replace(['(', ')'], " ").split(',') {
-                    if let Some(n) = n.split_whitespace().next().filter(|n| *n != "*") {
-                        out.push(format!("{module}.{n}"));
+            }
+            "import_from_statement" => {
+                if let Some(module) = node
+                    .child_by_field_name("module_name")
+                    .and_then(|m| absolute(&text(m)))
+                {
+                    let mut cursor = node.walk();
+                    for name in node
+                        .children_by_field_name("name", &mut cursor)
+                        .filter_map(entry)
+                    {
+                        out.push(format!("{module}.{name}"));
                     }
-                }
-                out.push(module);
-            }
-            for call in ["__import__(", "import_module("] {
-                for (i, _) in stmt.match_indices(call) {
-                    let arg = stmt[i + call.len()..].trim_start();
-                    let Some(q) = arg.chars().next().filter(|c| *c == '\'' || *c == '"') else {
-                        continue;
-                    };
-                    out.extend(arg[1..].split(q).next().map(str::to_string));
+                    out.push(module);
                 }
             }
+            "call" => {
+                let function = node.child_by_field_name("function").map(text);
+                let first = node
+                    .child_by_field_name("arguments")
+                    .and_then(|a| a.named_child(0))
+                    .filter(|a| a.kind() == "string");
+                if let (Some(f), Some(arg)) = (function, first)
+                    && (f.ends_with("__import__") || f.ends_with("import_module"))
+                {
+                    let mut cursor = arg.walk();
+                    let content: Vec<String> = arg
+                        .named_children(&mut cursor)
+                        .filter(|c| c.kind() == "string_content")
+                        .map(text)
+                        .collect();
+                    out.push(content.concat());
+                }
+            }
+            _ => {}
         }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
+    let valid = |name: &str| {
+        name.split('.').all(|part| {
+            !part.is_empty()
+                && !part.starts_with(|c: char| c.is_ascii_digit())
+                && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
     out.retain(|n| valid(n));
     out.sort();
     out.dedup();
@@ -510,7 +551,13 @@ pub fn encoded_blob(text: &str) -> Option<usize> {
             digit |= c.is_ascii_digit();
             alpha |= c.is_ascii_alphabetic();
         }
-        if run.len() >= BLOB_MIN && digit && alpha {
+        // An absolute path (an editable finder's mapping, a Nix store path)
+        // is not a payload: its segments are short, while `/` is one
+        // base64 character in 64.
+        let segments: Vec<&str> = run.split('/').filter(|s| !s.is_empty()).collect();
+        let path =
+            run.starts_with('/') && segments.len() >= 3 && segments.iter().all(|s| s.len() < 64);
+        if run.len() >= BLOB_MIN && digit && alpha && !path {
             best = Some(best.map_or(run.len(), |b| b.max(run.len())));
         }
     };
@@ -720,7 +767,7 @@ mod tests {
         assert!(!pth_signals("import _virtualenv", &modules).is_empty());
         assert_eq!(
             imported_modules(
-                "import a.b, c as d; from e.f import g, (h as i); __import__('j.k'); importlib.import_module(\"l\")",
+                "import a.b, c as d; from e.f import (g, h as i); __import__('j.k'); importlib.import_module(\"l\")",
                 None
             ),
             ["a.b", "c", "e.f", "e.f.g", "e.f.h", "j.k", "l"]
@@ -733,6 +780,24 @@ mod tests {
             ["p.q", "p.q.x", "p.q.y", "p.q.y.z", "p.w", "p.w.v"]
         );
         assert!(imported_modules("from . import x", None).is_empty());
+        // Statements spanning lines, and imports inside functions.
+        assert_eq!(
+            imported_modules(
+                "from fixture_pkg import (\n    payload,\n    other as o,\n)\nimport a, \\\n    b.c\ndef install():\n    import d\n    __import__(\n        'e.f'\n    )\n",
+                None
+            ),
+            [
+                "a",
+                "b.c",
+                "d",
+                "e.f",
+                "fixture_pkg",
+                "fixture_pkg.other",
+                "fixture_pkg.payload"
+            ]
+        );
+        // Mentions in strings and comments are not imports.
+        assert!(imported_modules("x = 'import evil'  # import other\n", None).is_empty());
     }
 
     #[test]
@@ -746,6 +811,13 @@ mod tests {
             _ => None,
         };
         let module = |m: &str| module_source(m, files);
+        // A helper importing the payload in a statement spanning lines.
+        let helper = |f: &str| match f {
+            "_helper.py" => Some("from fixture_pkg import (\n    payload,\n)\n".into()),
+            _ => files(f),
+        };
+        let helper_module = |m: &str| module_source(m, helper);
+        assert!(!pth_signals("import _helper", &helper_module).is_empty());
         for line in [
             "import fixture_pkg.payload",
             "from fixture_pkg import payload",
@@ -855,6 +927,15 @@ mod tests {
         // A long sha512 integrity string in a lockfile-like line is a blob,
         // but a long word list without digits is not.
         assert_eq!(encoded_blob(&"abcdefghij".repeat(20)), None);
+        // Absolute paths with hashed or long segments are not payloads, but
+        // a blob that merely starts with `/` still is.
+        for path in [
+            "MAPPING = {'pkg': '/tmp/claude-1000/-home-user-Documents-OpenSource/e9b9eba7-50a5-4c42-8c4d-2dce96c24478/scratchpad/helpers/pkg2/code'}",
+            "'/nix/store/0c2kzhmw1p1q7nrbnkv1q0j8ri1d7b8s-python3.12-setuptools-69.0.3/lib/python3.12/site-packages'",
+        ] {
+            assert_eq!(encoded_blob(path), None, "{path}");
+        }
+        assert!(encoded_blob(&format!("'/{blob}'")).is_some());
     }
 
     #[test]
