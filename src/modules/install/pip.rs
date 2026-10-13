@@ -911,7 +911,7 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         let r = repo.path();
         let git = |args: &[&str]| {
-            let o = std::process::Command::new("git")
+            let o = std::process::Command::new("git") // greengate: ignore — building a test repository
                 .args(["-c", "user.email=t@t", "-c", "user.name=t", "-C"])
                 .arg(r)
                 .args(args)

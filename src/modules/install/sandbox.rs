@@ -686,7 +686,7 @@ mod tests {
             ("DATABASE_URL", "postgres://u:p@db/app"),
         ]
         .map(|(k, v)| (k.into(), v.into()));
-        let mut cmd = Command::new("true");
+        let mut cmd = Command::new("true"); // greengate: ignore — test command, never run
         scrub_env(
             &mut cmd,
             vars.into_iter(),
